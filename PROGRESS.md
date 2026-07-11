@@ -9,7 +9,7 @@ when all BUILD-PLAN acceptance criteria pass.
 |---|---|---|
 | M0 — Scaffold, config, identity, encryption check | **done** (2026-07-11) | all acceptance criteria pass; see below |
 | M1 — Event log core | **done** (2026-07-11) | crash matrix rows 1–8 green; benchmark recorded |
-| M2 — Object store + text classes | not started | |
+| M2 — Object store + text classes | **done** (2026-07-11) | object crash rows green; content_expired typed; policy tested |
 | M3 — SQLite projection + FTS + reindex | not started | |
 | M4 — Daemon, CLI, outbox, receipts | not started | |
 | M5 — Exports, 3-way merge, conflicts | not started | |
@@ -191,12 +191,81 @@ Tasks completed (one commit each):
 log, cmd/cairn); `go vet` clean. Crash matrix ~250 scenarios green.
 Benchmark numbers above from a real-fs run of `TestAppendRecover10k`.
 
+## M2 — Object store + text classes
+
+**Status: DONE.** All acceptance criteria pass.
+
+Tasks completed:
+- [x] **Content-addressed store** (`internal/object`): BLAKE3 hex over raw
+      uncompressed bytes; `objects/<first2>/<rest>`; `Put` = the
+      temp→fsync→rename→dir-fsync atomic publish (fsx primitive); idempotent
+      dedup on identical content; **verify-on-collision**: existing object
+      with different bytes at the address is a hard error and is never
+      touched; `Get` re-verifies content against the address (corrupt bytes
+      never served as valid); benign rename-race tolerance.
+- [x] **Text-class policy** (`ApplyPolicy`): >1 MiB canonical/eager →
+      auto-downgrade to ephemeral; configurable per-message canonical
+      ceiling (only meaningful below the fixed 1 MiB threshold; portable
+      config field); daily canonical-byte ceiling via persisted
+      `UsageTracker` (.cairn/canonical-usage.json, derived state, UTC-day
+      rollover); operator override keeps the declared class (flag is wired
+      to the CLI in M4; outbox callers never get it); downgrade is always a
+      visible PolicyDecision with reason — never a rejection, no review
+      queue (rulings §5).
+- [x] **Ephemeral TTL + typed content_expired**: `HousekeepEphemeral(refs)`
+      deletes objects whose EVERY reference is ephemeral and past the 7-day
+      TTL (any canonical/eager or unexpired ref keeps it); `Fetch` returns
+      the typed `*ExpiredError` (content_expired) for TTL-explained absence
+      and plain ErrNotFound otherwise (doctor-reportable).
+- [x] **Object-before-event wired into the M1 append path**: the crash-matrix
+      send pipeline now uses the real `object.Store.Put` before `log.Append`;
+      recoverAndCheck verifies acked events' objects via `store.Get`
+      (content-verified), so crash rows 1–8 exercise the real store.
+
+### Acceptance criteria → evidence
+1. *Crash rows for object writes green* — `TestPutCrashMatrix` (crash before
+   every mutating op of Put × SIGKILL × power-sim: address holds complete
+   object or nothing; retry succeeds) plus `TestCrashMatrixRows1to8` /
+   `TestInjectedWriteFailures` re-running the full pipeline against the
+   real store.
+2. *Expired ephemeral fetch returns content_expired while its event replays
+   fine* — `TestExpiredEphemeralEventReplaysFine` (end to end: publish
+   ephemeral → TTL passes → housekeeping deletes object → log recovery
+   replays the event, doctor clean, fetch returns typed
+   `*object.ExpiredError`); store-level `TestHousekeepingAndContentExpired`
+   (incl. mixed-ref retention and idempotent housekeeping).
+3. *Downgrade policy covered by tests* — `TestApplyPolicyDowngrades`
+   (canonical/eager >1 MiB → ephemeral; ephemeral is the floor; override
+   honored; small bodies untouched; unknown class rejected),
+   `TestApplyPolicyPerMessageCeiling`, `TestDailyCanonicalCeiling`
+   (persistence + UTC rollover + override accounting).
+
+### Deviations
+- **Housekeeping "loop"**: BUILD-PLAN says loop; the resident daemon that
+  hosts it arrives in M4. M2 delivers the complete `HousekeepEphemeral`
+  operation (idempotent, ref-driven); M4's housekeeping goroutine calls it
+  with refs from the M3 projection. Recorded so M4 doesn't forget the wiring.
+- **Ref-driven retention**: object files carry no metadata (immutable,
+  shareable across events with different classes); retention decisions take
+  the refs list (class + created_at per referencing event) as input —
+  supplied by the projection from M3 on, by tests directly today. An object
+  is kept if ANY reference is non-ephemeral or unexpired.
+
+### Author rulings needed
+- None new in M2.
+
+### Test results (2026-07-11)
+`go test ./...` green (incl. object package: 9 tests, crash matrix rows for
+Put, policy suite, housekeeping/expiry integration). `go vet` clean.
+
 ## Resume-cold notes
-- Next milestone: **M2 — Object store + text classes**. Build on
-  `fsx.WriteFileAtomic` (already the object-write primitive in the crash
-  matrix). BLAKE3 addressing `objects/<first2>/<rest>`, never-overwrite
-  verify-on-collision, >1 MiB auto-downgrade policy (operator CLI override
-  only), daily ceilings, ephemeral TTL housekeeping, typed content_expired,
-  object-before-event ordering wired into the M1 append path (sendPipeline
-  in crash_test.go is the shape to productionize).
+- Next milestone: **M3 — SQLite projection + FTS + reindex**. DDL is in
+  build/sql/projection.sql (remember: `source_refs` table was added post-M0
+  as an M9 ingest hook — project message.publish `source_ref` when present).
+  Replay hooks into `log.Open`'s OnRecord callback. Checkpoint row commits
+  in the SAME transaction as the projection (rulings §6). mattn/go-sqlite3
+  with FTS5 build tag; contentless FTS keyed by revision_id; retraction =
+  flag; observed-remove link/pin tables; reindex --lexical side-build +
+  atomic swap; --semantic stub. Object refs for housekeeping come from the
+  projection (`object.Ref` shape already defined).
 - `// RULING-NEEDED:` markers in code: one (root-key storage, M0).
