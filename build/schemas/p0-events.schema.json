@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-mesh/p0-events/v1",
+  "title": "Agent Mesh P0 Event Payloads (normative, rulings v0.3.1 §2)",
+  "description": "Envelope per spec §4.1. Payloads below. NO FLOATS anywhere: integers and strings only. Timestamps: RFC3339 UTC strings, microsecond precision. Unknown fields: preserved in canonical storage (signed), ignored by projection. Logical IDs: UUIDv7 strings. Hashes: BLAKE3 lowercase hex (64 chars).",
+  "$defs": {
+    "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+    "hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "textClass": { "enum": ["canonical", "eager-searchable", "ephemeral"] },
+    "priority": { "type": "integer", "minimum": 0, "maximum": 3 },
+
+    "mesh.genesis": {
+      "type": "object",
+      "required": ["mesh_id", "root_pubkey", "initial_device_cert"],
+      "properties": {
+        "mesh_id": { "$ref": "#/$defs/uuid" },
+        "root_pubkey": { "type": "string", "description": "base64 Ed25519 public key" },
+        "initial_device_cert": { "$ref": "#/$defs/deviceCert" }
+      }
+    },
+
+    "deviceCert": {
+      "type": "object",
+      "required": ["device_id", "pubkey", "generation", "issued_at", "root_signature"],
+      "properties": {
+        "device_id": { "$ref": "#/$defs/uuid" },
+        "pubkey": { "type": "string" },
+        "generation": { "type": "integer", "minimum": 1 },
+        "issued_at": { "type": "string", "format": "date-time" },
+        "display_name": { "type": "string" },
+        "root_signature": { "type": "string", "description": "base64 Ed25519 sig over canonical cert minus this field" }
+      }
+    },
+
+    "device.add": {
+      "type": "object",
+      "required": ["cert"],
+      "properties": { "cert": { "$ref": "#/$defs/deviceCert" } },
+      "description": "Submitted by an already-admitted device; cert must be root-signed."
+    },
+
+    "device.revoke": {
+      "type": "object",
+      "required": ["device_id"],
+      "properties": {
+        "device_id": { "$ref": "#/$defs/uuid" },
+        "reason": { "type": "string" }
+      },
+      "description": "Root-signed. Old origin becomes read-only. Required by mesh migrate (P0)."
+    },
+
+    "message.publish": {
+      "type": "object",
+      "required": ["message_id", "revision_id", "body_hash", "body_len", "body_mime", "text_class", "declared_priority"],
+      "properties": {
+        "message_id": { "$ref": "#/$defs/uuid" },
+        "revision_id": { "$ref": "#/$defs/uuid" },
+        "body_hash": { "$ref": "#/$defs/hash" },
+        "body_bytes": { "type": "string", "description": "OPTIONAL inline copy, only when body ≤ 64 KiB; object remains authoritative" },
+        "body_len": { "type": "integer", "minimum": 0 },
+        "body_mime": { "type": "string", "default": "text/markdown" },
+        "text_class": { "$ref": "#/$defs/textClass" },
+        "declared_priority": { "$ref": "#/$defs/priority", "description": "IMMUTABLE sender testimony" },
+        "thread_id": { "$ref": "#/$defs/uuid" },
+        "reply_to_message_id": { "$ref": "#/$defs/uuid" },
+        "reply_to_revision_id": { "$ref": "#/$defs/uuid" },
+        "recipients": { "type": "array", "items": { "type": "string" }, "description": "agent view names; drives mandatory inclusion" },
+        "attachments": { "type": "array", "items": {
+          "type": "object",
+          "required": ["object_hash", "byte_len", "mime"],
+          "properties": {
+            "object_hash": { "$ref": "#/$defs/hash" },
+            "byte_len": { "type": "integer" },
+            "mime": { "type": "string" },
+            "filename": { "type": "string" }
+          }
+        }}
+      },
+      "description": "message.reply is this same payload with reply_to_* set — an atomic publish variant creating a new logical message. Initial topic links are separate topic.link.add events (may share the same outbox request)."
+    },
+
+    "message.revise_body": {
+      "type": "object",
+      "required": ["message_id", "revisions"],
+      "properties": {
+        "message_id": { "$ref": "#/$defs/uuid" },
+        "revisions": {
+          "type": "array", "minItems": 1, "maxItems": 2,
+          "items": {
+            "type": "object",
+            "required": ["revision_id", "parent_revision_ids", "body_hash", "body_len"],
+            "properties": {
+              "revision_id": { "$ref": "#/$defs/uuid" },
+              "parent_revision_ids": { "type": "array", "items": { "$ref": "#/$defs/uuid" }, "minItems": 1, "maxItems": 2 },
+              "body_hash": { "$ref": "#/$defs/hash" },
+              "body_bytes": { "type": "string" },
+              "body_len": { "type": "integer" },
+              "machine_merged": { "type": "boolean" }
+            }
+          },
+          "description": "One item = normal revision. Two items = merge: [0] operator-branch revision (parent = base), [1] merged revision (parents = [operator-branch, head], machine_merged flag)."
+        }
+      }
+    },
+
+    "message.retract": {
+      "type": "object",
+      "required": ["message_id"],
+      "properties": {
+        "message_id": { "$ref": "#/$defs/uuid" },
+        "reason": { "type": "string" }
+      },
+      "description": "Targets the logical message; hides all revisions from default retrieval; history preserved; not undoable in P0 (restore is P1)."
+    },
+
+    "topic.create": {
+      "type": "object",
+      "required": ["topic_id", "name"],
+      "properties": {
+        "topic_id": { "$ref": "#/$defs/uuid" },
+        "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9/_-]*$" }
+      }
+    },
+
+    "topic.link.add": {
+      "type": "object",
+      "required": ["link_id", "message_id", "topic_id"],
+      "properties": {
+        "link_id": { "$ref": "#/$defs/uuid" },
+        "message_id": { "$ref": "#/$defs/uuid" },
+        "topic_id": { "$ref": "#/$defs/uuid" },
+        "protected": { "type": "boolean", "description": "human-added; immune to automatic removal" }
+      }
+    },
+
+    "topic.link.remove": {
+      "type": "object",
+      "required": ["removed_link_ids"],
+      "properties": { "removed_link_ids": { "type": "array", "items": { "$ref": "#/$defs/uuid" }, "minItems": 1 } },
+      "description": "Observed-remove: retracts only assertions actually observed; concurrent adds survive."
+    },
+
+    "blob.pin": {
+      "type": "object",
+      "required": ["pin_id", "principal_id", "object_hash", "durability"],
+      "properties": {
+        "pin_id": { "$ref": "#/$defs/uuid" },
+        "principal_id": { "type": "string" },
+        "object_hash": { "$ref": "#/$defs/hash" },
+        "durability": { "enum": ["ephemeral", "normal", "important", "pinned"] }
+      }
+    },
+
+    "blob.unpin": {
+      "type": "object",
+      "required": ["pin_ids"],
+      "properties": { "pin_ids": { "type": "array", "items": { "$ref": "#/$defs/uuid" }, "minItems": 1 } },
+      "description": "Object stays pinned while ANY active pin intent exists."
+    },
+
+    "signal.emit": {
+      "type": "object",
+      "required": ["message_id", "kind"],
+      "properties": {
+        "message_id": { "$ref": "#/$defs/uuid" },
+        "kind": { "enum": ["important", "ignore", "priority_confirm", "found", "not_found"] },
+        "weight": { "type": "integer", "minimum": 1, "maximum": 10 }
+      }
+    }
+  }
+}
