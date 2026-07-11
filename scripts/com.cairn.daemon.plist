@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- launchd autostart for the cairn daemon (BUILD-PLAN M8).
+     Install:
+       sed "s|CAIRN_BIN|$(command -v cairn)|; s|CAIRN_DIR_PATH|$HOME/cairn|; s|HOME_PATH|$HOME|" \
+         scripts/com.cairn.daemon.plist > ~/Library/LaunchAgents/com.cairn.daemon.plist
+       launchctl load ~/Library/LaunchAgents/com.cairn.daemon.plist
+     Uninstall: launchctl unload ~/Library/LaunchAgents/com.cairn.daemon.plist -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.cairn.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>CAIRN_BIN</string>
+    <string>daemon</string>
+    <string>--dir</string>
+    <string>CAIRN_DIR_PATH</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>HOME_PATH/Library/Logs/cairn-daemon.log</string>
+  <key>StandardErrorPath</key><string>HOME_PATH/Library/Logs/cairn-daemon.log</string>
+</dict>
+</plist>

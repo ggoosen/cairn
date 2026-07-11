@@ -54,5 +54,6 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newOutcomeCmd(&dir, "manual-workaround", "manual_workaround", "Record that a manual workaround was used"))
 	root.AddCommand(newGatesCmd(&dir))
 	root.AddCommand(newReserveCmd(&dir))
+	root.AddCommand(newSetupAgentCmd(&dir))
 	return root
 }

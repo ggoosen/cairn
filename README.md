@@ -5,7 +5,25 @@ crash-safe message + knowledge daemon for AI agent sessions. The design
 survived five rounds of adversarial LLM review; this pack is the frozen
 output of that process.
 
-## How to use
+## Install (fresh machine, < 10 minutes)
+
+Prereqs: Go 1.23+, git, a FileVault-encrypted Mac (or `--allow-unencrypted`).
+
+```bash
+git clone https://github.com/ggoosen/cairn && cd cairn
+make build                                   # bin/cairn (CGO + sqlite_fts5)
+export PATH="$PWD/bin:$PATH"
+cairn init                                   # ~/cairn + device identity + genesis
+cairn daemon &                               # the resident single writer
+cairn send "hello cairn" && cairn search hello
+```
+
+Then read **DOGFOOD.md** for agent-surface wiring, the 30-handoff
+evaluation protocol, autostart, and backups.
+
+## Building the project from the pack (historical)
+
+The original build-pack flow:
 
 ```bash
 mkdir cairn && cd cairn
@@ -13,8 +31,6 @@ unzip ~/Downloads/cairn-buildpack.zip -d .
 git init
 claude
 ```
-
-Then start with:
 
 > Read CLAUDE.md and follow its read order. Then begin Milestone M0 from
 > build/BUILD-PLAN.md. Work one milestone at a time. Maintain PROGRESS.md.

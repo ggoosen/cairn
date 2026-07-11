@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/google/uuid"
@@ -507,5 +508,47 @@ func newReserveCmd(dirFlag *string) *cobra.Command {
 			return nil
 		},
 	})
+	return cmd
+}
+
+func newSetupAgentCmd(dirFlag *string) *cobra.Command {
+	var topics []string
+	var interest string
+	cmd := &cobra.Command{
+		Use:   "setup-agent <name>",
+		Short: "Create an agent view: views/<name>/{outbox,fetched,conflicts} + view.json",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := args[0]
+			if name == "" || strings.ContainsAny(name, "/\\") || strings.Contains(name, "..") {
+				return fmt.Errorf("invalid agent view name %q (plain names only)", name)
+			}
+			dir, err := config.PortableDir(*dirFlag)
+			if err != nil {
+				return err
+			}
+			if _, err := identity.Load(dir); err != nil {
+				return err
+			}
+			base := filepath.Join(dir, config.ViewsDirName, name)
+			for _, sub := range []string{"outbox", "fetched", "conflicts"} {
+				if err := os.MkdirAll(filepath.Join(base, sub), 0o700); err != nil {
+					return err
+				}
+			}
+			viewCfg := filepath.Join(base, "view.json")
+			if _, err := os.Stat(viewCfg); err != nil {
+				blob, _ := json.MarshalIndent(daemon.ViewConfig{Topics: topics, InterestQuery: interest}, "", "  ")
+				if err := os.WriteFile(viewCfg, blob, 0o644); err != nil {
+					return err
+				}
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "agent view %q ready:\n  drop .md files or bundles in %s\n  digests land at %s\n  edit %s for hard topic filters / interest query\n",
+				name, filepath.Join(base, "outbox"), filepath.Join(base, "digest.md"), viewCfg)
+			return nil
+		},
+	}
+	cmd.Flags().StringSliceVar(&topics, "topic", nil, "hard topic filter(s) for this view's digest")
+	cmd.Flags().StringVar(&interest, "interest", "", "natural-language interest query for digest relevance")
 	return cmd
 }
