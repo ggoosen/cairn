@@ -11,7 +11,7 @@ when all BUILD-PLAN acceptance criteria pass.
 | M1 — Event log core | **done** (2026-07-11) | crash matrix rows 1–8 green; benchmark recorded |
 | M2 — Object store + text classes | **done** (2026-07-11) | object crash rows green; content_expired typed; policy tested |
 | M3 — SQLite projection + FTS + reindex | **done** (2026-07-11) | byte-identical reindex; idempotent resume; property tests green |
-| M4 — Daemon, CLI, outbox, receipts | not started | |
+| M4 — Daemon, CLI, outbox, receipts | **done** (2026-07-11) | receipts idempotent; concurrent senders serialize; migrate matrix green |
 | M5 — Exports, 3-way merge, conflicts | not started | |
 | M6 — Embeddings, ranking, digest, why-ranked | not started | |
 | M7 — Telemetry, gates harness, full fault matrix | not started | |
@@ -338,15 +338,99 @@ Tasks completed:
 tests incl. byte-identity, resume-at-every-cut, observed-remove properties,
 expired-body reindex race). `go vet -tags sqlite_fts5 ./...` clean.
 
+## M4 — Daemon, CLI, outbox, receipts
+
+**Status: DONE.** All acceptance criteria pass.
+
+Tasks completed:
+- [x] **Daemon** (`internal/daemon`): resident single writer — exclusive
+      flock in device-local state + unix-socket JSON IPC (short socket path
+      under TempDir, registered in device state; never PID files); startup:
+      identity + encryption check, active-origin recovery with projection
+      catch-up wired into the scan (OnRecord), other origins replayed
+      read-only with FIXPOINT key resolution (migrate creates origins
+      admitted by earlier ones), seq-cache reconcile, revoked-device write
+      refusal; the send path (rulings §3): policy → object → signed chained
+      event → durable append (ACK) → synchronous FTS projection (projection
+      failure after ack degrades with a warning, never rejects); initial
+      topic links as separate events in the same request; SimpleEvent for
+      retract/link/pin/signal; Fetch (manifest/body pair, trust=untrusted,
+      typed content_expired); housekeeping via projection ObjectRefs;
+      Run loops (outbox poll + housekeeping tickers).
+- [x] **Outbox** (`internal/outbox`): canonical <request_id>.ready bundle
+      (strict request.json, body/body_file, publish|reply), .md convenience
+      shorthand with STRICT yaml front-matter whitelist; request_id =
+      correlation_id on every event (new projected `correlation_id` column,
+      DDL updated in both build/sql and the embedded schema); receipts are a
+      pure function of (request_id, result) — no timestamps — written
+      atomically ONLY after event durability; duplicate detection via
+      EventsByCorrelation regenerates the identical receipt without new
+      events; invalid bundles → rejected/<id>/error.json (structured), no
+      ack; operator override is impossible via the outbox.
+- [x] **`cairn migrate`** (`identity.Migrate`): offline ceremony — STAGE new
+      identity (key + root-signed cert + old-device-id in pending.json) →
+      device.add (signed by old device) → device.revoke (signed by the ROOT
+      key; ChainVerifier now registers the root key at genesis) → swap
+      device-local identity with the config write as the COMMIT MARKER →
+      cleanup. Fully crash-resumable; a completion guard prevents rerun
+      re-entry after the swap.
+- [x] **CLI**: daemon, send, reply, retract, topic create, link, pin,
+      signal, search (lexical, flagged for M6 fusion), peek, fetch, migrate,
+      doctor, reindex, init, identity show; honest stubs for digest /
+      why-ranked (M6), resolve (M5), found / not-found / manual-workaround
+      (M7). Mutations REQUIRE the daemon (rulings §6) and fail with a clear
+      message otherwise.
+
+### Acceptance criteria → evidence
+1. *Duplicate bundle returns identical receipt* —
+   `TestDuplicateBundleIdenticalReceipt`: same request_id re-dropped →
+   byte-identical receipt, zero new events, zero new messages.
+2. *Crash-during-receipt retry regenerates same receipt* —
+   `TestCrashDuringReceiptRetryIdentical`: events durable, receipt removed
+   (the crash window), bundle re-dropped → regenerated receipt is
+   byte-identical.
+3. *Concurrent CLI senders serialize correctly* —
+   `TestConcurrentSendersSerialize`: 10 parallel publishes → all acked
+   events present exactly once after restart, chain contiguous and
+   signature-valid (Walk verifies).
+4. *Migrate crash between add/revoke recovers per matrix* —
+   `TestMigrateCrashMatrix`: EIO after EVERY mutating fs op of the ceremony
+   (faultFS over the real fs, File.Write/Sync ticked); every intermediate
+   state doctor-clean; rerun completes; final identity always usable.
+   `TestMigrateCleanCeremony`: rows 14/15 end state — old origin read-only
+   (daemon refuses a revoked device), new device publishes and searches.
+
+### Deviations
+- **`correlation_id` column added to the events projection** (build/sql +
+  embedded schema): the receipt-idempotency key must survive replay, so it
+  is projected from the envelope (the envelope field already existed).
+- **Later-milestone CLI verbs ship as stubs** naming their milestone (digest,
+  why-ranked → M6; resolve → M5; outcome commands → M7). BUILD-PLAN lists
+  them under M4's CLI; their semantics are defined by later milestones.
+- **Search over IPC is lexical-only** until M6 fusion (flagged in help text).
+- **Two bugs found by the fault matrix** (fixed): migrate rerun after a
+  post-swap crash would re-enter the ceremony and revoke the NEW device
+  (completion guard + commit-marker ordering); log.Open did not create the
+  segment directory for a fresh (post-migrate) origin.
+
+### Author rulings needed
+- None new in M4.
+
+### Test results (2026-07-11)
+`go test -tags sqlite_fts5 ./...` — all 10 packages green (daemon: 8 tests
+incl. migrate crash matrix; outbox: 6 tests incl. both receipt acceptance
+tests; CLI e2e). `go vet` clean.
+
 ## Resume-cold notes
-- Next milestone: **M4 — Daemon, CLI, outbox, receipts**. Daemon lifecycle:
-  OS file lock + unix-socket JSON IPC, single writer owning append + Apply
-  (projection.Apply is the OnRecord hook at startup and the post-ack step
-  on live sends), view regen, housekeeping loop
-  (object.HousekeepEphemeral(projection.ObjectRefs())). Outbox: atomic
-  bundle contract + .md shorthand, request_id idempotency (receipt
-  regenerated identically on retry — receipts via fsx.WriteFileAtomic),
-  rejected/ with structured errors. Full CLI verb set. `cairn migrate`
-  offline ceremony (root key is device-local — see M0 ruling). Remember:
-  ALWAYS build/test with -tags sqlite_fts5 (make test).
+- Next milestone: **M5 — Exports, 3-way merge, conflicts**. Export
+  generator with read-only front-matter {message_id, revision_id,
+  base_revision_id, body_hash, exported_at}; ingest of edited exports:
+  base==head → normal revision; clean diff3 (git merge-file, pinned
+  semantics) → ONE revise_body event with TWO revision objects (operator
+  branch + merged, machine_merged flag — schema supports it); conflict →
+  conflicts/<id>/{BASE,CURRENT,OPERATOR_EDIT,RESOLVE}.md + `cairn resolve`;
+  front-matter mutation rejected; retracted-target rejected with error
+  receipt; `cairn doctor conflicts`; LF/UTF-8 normalization. The revise
+  path needs a daemon ReviseBody method (Publish covers only new messages).
+  Remember -tags sqlite_fts5 (make test).
 - `// RULING-NEEDED:` markers in code: one (root-key storage, M0).
