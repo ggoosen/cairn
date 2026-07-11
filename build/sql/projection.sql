@@ -111,6 +111,14 @@ CREATE TABLE attachments (
   PRIMARY KEY (message_id, object_hash)
 );
 
+-- Ingest hook (M9 `cairn ingest`): source provenance of imported messages,
+-- projected from message.publish payloads carrying source_ref. Rebuildable
+-- from events like every other table; no P0 behavior reads it.
+CREATE TABLE source_refs (
+  path TEXT PRIMARY KEY,
+  message_id TEXT NOT NULL REFERENCES messages(message_id)
+);
+
 CREATE TABLE signals (
   event_id TEXT PRIMARY KEY REFERENCES events(event_id),
   message_id TEXT NOT NULL,

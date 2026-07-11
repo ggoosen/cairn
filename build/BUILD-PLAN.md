@@ -117,6 +117,15 @@ behavior).
 drill demonstrates portable-only restore creates a new origin; operator
 evaluation can begin.
 
+## M9 — Ingest (stub; post-P0)
+**Build:** `cairn ingest` — scan/manifest/apply pipeline for importing
+existing knowledge bases (llm-wiki style repos, docs trees); built post-M8
+against a live mesh. Hooks already in place from P0: optional
+`source_ref`/`relates_to` fields on message.publish
+(build/schemas/p0-events.schema.json) and the `source_refs` projection
+table (build/sql/projection.sql). No P0 milestone builds any ingest
+behavior beyond schema acceptance and that table.
+
 ---
 
 ## Sequencing notes for Claude Code sessions

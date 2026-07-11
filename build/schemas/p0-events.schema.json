@@ -74,7 +74,23 @@
             "mime": { "type": "string" },
             "filename": { "type": "string" }
           }
-        }}
+        }},
+        "source_ref": {
+          "type": "object",
+          "required": ["path", "content_hash", "imported_at"],
+          "properties": {
+            "path": { "type": "string", "description": "source path within the imported knowledge base" },
+            "repo": { "type": "string", "description": "OPTIONAL origin repo/tree identifier" },
+            "content_hash": { "$ref": "#/$defs/hash", "description": "BLAKE3 of the source file as imported" },
+            "imported_at": { "type": "string", "format": "date-time" }
+          },
+          "description": "OPTIONAL ingest hook (M9 `cairn ingest`): provenance of a message imported from an existing knowledge base. No P0 behavior beyond schema acceptance + the source_refs projection table."
+        },
+        "relates_to": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/uuid" },
+          "description": "OPTIONAL ingest hook (M9): message_ids this message relates to (e.g. wiki cross-links). No P0 behavior beyond schema acceptance."
+        }
       },
       "description": "message.reply is this same payload with reply_to_* set — an atomic publish variant creating a new logical message. Initial topic links are separate topic.link.add events (may share the same outbox request)."
     },
