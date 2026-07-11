@@ -87,9 +87,9 @@ func TestCLISendSearchPeekRetract(t *testing.T) {
 	if err != nil || !strings.Contains(dout, "# digest — operator") {
 		t.Fatalf("digest: %v\n%s", err, dout)
 	}
-	// outcome commands remain M7 stubs
-	if _, err := runCLI(t, "found", "--dir", dir); err == nil || !strings.Contains(err.Error(), "M7") {
-		t.Fatalf("found stub: %v", err)
+	// outcome commands need a real interaction id (M7)
+	if _, err := runCLI(t, "found", "0190a1b2-dead-7000-8000-000000000000", "--dir", dir); err == nil {
+		t.Fatal("found accepted an unknown interaction id")
 	}
 }
 

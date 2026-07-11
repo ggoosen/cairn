@@ -442,17 +442,6 @@ func newResolveCmd(dirFlag *string) *cobra.Command {
 	}
 }
 
-// stub returns a command that names the milestone its behavior lands in.
-func stub(use, short, milestone string) *cobra.Command {
-	return &cobra.Command{
-		Use:   use,
-		Short: short + " (lands in " + milestone + ")",
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return fmt.Errorf("%s is not available yet: it lands in %s (see build/BUILD-PLAN.md)", use, milestone)
-		},
-	}
-}
-
 func readAllStdin(cmd *cobra.Command) ([]byte, error) {
 	return io.ReadAll(cmd.InOrStdin())
 }

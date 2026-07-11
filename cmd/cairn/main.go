@@ -49,8 +49,10 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newResolveCmd(&dir))
 	root.AddCommand(newDigestCmd(&dir))
 	root.AddCommand(newWhyRankedCmd(&dir))
-	root.AddCommand(stub("found", "Record a successful retrieval outcome", "M7"))
-	root.AddCommand(stub("not-found", "Record a failed retrieval outcome", "M7"))
-	root.AddCommand(stub("manual-workaround", "Record a manual workaround outcome", "M7"))
+	root.AddCommand(newOutcomeCmd(&dir, "found", "found", "Record a successful retrieval outcome"))
+	root.AddCommand(newOutcomeCmd(&dir, "not-found", "not_found", "Record a failed retrieval outcome"))
+	root.AddCommand(newOutcomeCmd(&dir, "manual-workaround", "manual_workaround", "Record that a manual workaround was used"))
+	root.AddCommand(newGatesCmd(&dir))
+	root.AddCommand(newReserveCmd(&dir))
 	return root
 }
