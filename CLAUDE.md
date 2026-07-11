@@ -1,6 +1,6 @@
-# CLAUDE.md — Agent Mesh P0 Build Instructions
+# CLAUDE.md — Cairn P0 Build Instructions
 
-You are building **Agent Mesh P0**: a local-first, crash-safe message and knowledge
+You are building **Cairn P0**: a local-first, crash-safe message and knowledge
 daemon for AI agent sessions. The design has survived five rounds of adversarial
 review. Your job is implementation, not redesign.
 
@@ -18,7 +18,7 @@ review. Your job is implementation, not redesign.
 
 ## Hard rules (non-negotiable, from the rulings)
 
-- **Language: Go 1.23+.** Single binary `mesh` (daemon + CLI subcommands).
+- **Language: Go 1.23+.** Single binary `cairn` (daemon + CLI subcommands).
 - **Precedence:** rulings-v0.3.1 > spec-v0.3 > this file > your judgment.
   If you find a genuine contradiction or gap, STOP, record it in
   `PROGRESS.md` under "Author rulings needed", pick the most conservative
@@ -43,7 +43,7 @@ review. Your job is implementation, not redesign.
   rejection after acknowledgement.
 - Sealed segments and stored objects are immutable. Never overwrite an object.
 - Device private keys live in device-local state, never in the portable
-  mesh directory. A portable-data-only restore creates a new origin.
+  cairn directory. A portable-data-only restore creates a new origin.
 - Platform: macOS arm64 primary; Linux best-effort; no Windows.
 
 ## Key library choices (pinned intent; substitute only if broken, and record why)
@@ -80,8 +80,8 @@ review. Your job is implementation, not redesign.
 ## Repository layout (create in M0)
 
 ```
-mesh/
-├── cmd/mesh/            # main: daemon + CLI subcommands
+cairn/
+├── cmd/cairn/            # main: daemon + CLI subcommands
 ├── internal/
 │   ├── config/          # TOML config (portable + device-local) + constants.go
 │   ├── identity/        # keys, certs, genesis, migrate, encrypted-volume check
@@ -106,6 +106,6 @@ mesh/
 Every engineering gate in spec §11 (as amended by rulings §10) passes:
 zero acknowledged-event loss across the full TESTING.md matrix; 100%
 provenance on fetched results; 100% budget compliance; P95 send-ack →
-lexical-digest-visible < 200 ms on the dev machine. `mesh doctor` reports
+lexical-digest-visible < 200 ms on the dev machine. `cairn doctor` reports
 clean on a corpus that has survived the fault matrix. The operator can then
 begin the 30-handoff product evaluation described in BUILD-PLAN M8.

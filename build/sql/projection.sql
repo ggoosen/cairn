@@ -1,13 +1,13 @@
--- Agent Mesh P0 — SQLite projection DDL (rulings v0.3.1 §6)
+-- Cairn P0 — SQLite projection DDL (rulings v0.3.1 §6)
 -- The projection is DERIVED. Deleting this database and running
--- `mesh reindex` MUST reproduce identical query results from the log.
+-- `cairn reindex` MUST reproduce identical query results from the log.
 -- PRAGMAs set at open: journal_mode=WAL; synchronous=FULL; foreign_keys=ON.
 -- Single writer: the daemon. Schema version is monotonic.
 
 CREATE TABLE meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
-);  -- schema_version, embedding_model_id, mesh_id
+);  -- schema_version, embedding_model_id, cairn_id
 
 -- Projection checkpoint: committed in the SAME transaction as projections.
 CREATE TABLE checkpoint (
@@ -166,5 +166,5 @@ CREATE TABLE rank_explanations (
 );
 
 -- NOTE: telemetry (interactions, impressions, outcomes) lives in a SEPARATE
--- database (.mesh/telemetry.sqlite) per rulings §10 / spec §4.5 stream
+-- database (.cairn/telemetry.sqlite) per rulings §10 / spec §4.5 stream
 -- classes — never in the event log, never replicated.

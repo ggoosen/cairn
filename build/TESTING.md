@@ -1,4 +1,4 @@
-# Agent Mesh P0 — Test Plan (Crash/Fault Matrix)
+# Cairn P0 — Test Plan (Crash/Fault Matrix)
 
 Core invariant (assert after EVERY scenario):
 > After restart, every acknowledged event exists exactly once by event_id,
@@ -55,7 +55,7 @@ Harness requirements:
 - Ephemeral expiry racing fetch and racing reindex → content_expired typed
   result; no crash; event intact.
 - Restored portable data WITHOUT device-local identity → daemon refuses to
-  write under old origin; `mesh init --adopt` path creates new origin.
+  write under old origin; `cairn init --adopt` path creates new origin.
 - seq cache BEHIND log (fine, reconstructed) and AHEAD of log (log wins,
   cache reset, warning logged).
 - Volume states: encrypted / unencrypted / indeterminate → start / refuse /
@@ -95,5 +95,5 @@ daemon RSS.
 
 30 genuine cross-session handoffs across 3 named agent views; diary
 baseline of copy-paste workflow; Success@5, time-to-useful-context,
-manual-workaround rate via `mesh found/not-found/manual-workaround`
-bound to interaction_ids; weekly `mesh gates` report.
+manual-workaround rate via `cairn found/not-found/manual-workaround`
+bound to interaction_ids; weekly `cairn gates` report.

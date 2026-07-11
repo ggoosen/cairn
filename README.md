@@ -1,6 +1,6 @@
-# Agent Mesh — P0 Build Pack
+# Cairn — P0 Build Pack
 
-Everything Claude Code needs to build Agent Mesh P0: a local-first,
+Everything Claude Code needs to build Cairn P0: a local-first,
 crash-safe message + knowledge daemon for AI agent sessions. The design
 survived five rounds of adversarial LLM review; this pack is the frozen
 output of that process.
@@ -8,8 +8,8 @@ output of that process.
 ## How to use
 
 ```bash
-mkdir agent-mesh && cd agent-mesh
-unzip ~/Downloads/agent-mesh-buildpack.zip -d .
+mkdir cairn && cd cairn
+unzip ~/Downloads/cairn-buildpack.zip -d .
 git init
 claude
 ```
@@ -46,7 +46,7 @@ Document precedence when anything conflicts:
 - If Claude Code flags `RULING-NEEDED` items in PROGRESS.md, resolve them
   yourself or bring them back to the design conversation before they
   compound.
-- The definition of done is `mesh gates` green on the engineering gates
+- The definition of done is `cairn gates` green on the engineering gates
   (zero acknowledged-event loss, 100% provenance, 100% budget compliance,
   P95 lexical visibility < 200 ms) — then the 30-handoff human evaluation
   (M8 / DOGFOOD.md) decides whether P1 gets built.

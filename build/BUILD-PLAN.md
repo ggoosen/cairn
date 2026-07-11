@@ -1,4 +1,4 @@
-# Agent Mesh P0 — Build Plan (M0–M8)
+# Cairn P0 — Build Plan (M0–M8)
 
 Rules: one milestone at a time, in order. A milestone is done when ALL its
 acceptance criteria pass and PROGRESS.md is updated. Spec references are to
@@ -9,14 +9,14 @@ docs/spec-v0.3.md (§) and docs/rulings-v0.3.1.md (R§).
 ## M0 — Scaffold, config, identity, encryption check
 **Build:** repo layout per CLAUDE.md; TOML config (portable + device-local)
 with versioned schema; `internal/config/constants.go` holding EVERY tunable;
-Ed25519 keygen; device-local state dir; `mesh init` (creates mesh dir,
-genesis + initial device cert per R§2/R§4); `mesh identity show`;
+Ed25519 keygen; device-local state dir; `cairn init` (creates cairn dir,
+genesis + initial device cert per R§2/R§4); `cairn identity show`;
 encrypted-volume check (macOS `fdesetup status`; Linux best-effort dm-crypt;
 unknown → fail closed; `--allow-unencrypted` persisted device-local,
 warned every start, per R§9).
-**Accept:** `mesh init` on a FileVault Mac produces a valid genesis event
+**Accept:** `cairn init` on a FileVault Mac produces a valid genesis event
 (verifiable), portable/device-local separation is correct (no key material
-under the mesh dir), unencrypted volume refuses start without the flag.
+under the cairn dir), unencrypted volume refuses start without the flag.
 
 ## M1 — Event log core (the crash-safe heart)
 **Build:** canonical JSON (RFC 8785) with no-floats enforcement + test
@@ -24,7 +24,7 @@ vectors; envelope + signing (signing_bytes/record_bytes split, R§1);
 frame format + CRC32C; segment append with full durability ordering (R§3);
 open/sealed segments (seal at 64 MiB / 10k events, sealed header + BLAKE3
 root); startup recovery (trailing-frame truncation, chain + signature
-verification, seq-from-log); `mesh doctor` (walk, verify, report).
+verification, seq-from-log); `cairn doctor` (walk, verify, report).
 **Crash tests written WITH the code:** kill/power-sim at every point in
 TESTING.md §1 rows 1–8; ENOSPC/EIO/short-write injection via a fault-
 injecting fs wrapper.
@@ -46,7 +46,7 @@ covered by tests.
 **Build:** DDL from build/sql/projection.sql; replay-from-log; checkpoint
 row in same tx (R§6); contentless FTS5 keyed by revision_id +
 current-head table; retraction as projection flag; observed-remove link/pin
-tables; `mesh reindex --lexical` (side-build + atomic swap) and the
+tables; `cairn reindex --lexical` (side-build + atomic swap) and the
 `--semantic` stub; unicode61 tokenchars `_ - # @`.
 **Accept:** delete index.sqlite → reindex reproduces byte-identical query
 results; crash mid-projection resumes idempotently; property tests for
@@ -58,7 +58,7 @@ cobra CLI (`send, reply, retract, link, pin, signal, search, digest, peek,
 fetch, why-ranked, found/not-found/manual-workaround, doctor, reindex,
 resolve, init, identity, migrate`); outbox watcher: atomic bundle contract
 + `.md` convenience shorthand, request_id idempotency, receipt-after-
-durability, rejected/ with structured errors (R§8); `mesh migrate` offline
+durability, rejected/ with structured errors (R§8); `cairn migrate` offline
 ceremony incl. device.revoke (R§4).
 **Accept:** duplicate bundle returns identical receipt; crash-during-receipt
 retry regenerates same receipt; concurrent CLI senders serialize correctly;
@@ -68,9 +68,9 @@ migrate crash between add/revoke recovers per matrix.
 **Build:** export generator with read-only front-matter (R§8); ingest of
 edited exports: base==head → normal revision; clean diff3 → single event
 creating TWO revision objects (operator branch + merged, flagged); conflict
-→ conflicts/<id>/{BASE,CURRENT,OPERATOR_EDIT,RESOLVE}.md + `mesh resolve`;
+→ conflicts/<id>/{BASE,CURRENT,OPERATOR_EDIT,RESOLVE}.md + `cairn resolve`;
 front-matter mutation rejected; retracted-target rejected with error
-receipt; `mesh doctor conflicts`; LF/UTF-8 normalization.
+receipt; `cairn doctor conflicts`; LF/UTF-8 normalization.
 **Accept:** merge race tests (stale edit vs 1 and vs N intervening
 revisions; retraction racing ingest) green; crash-during-merge leaves no
 half-graph.
@@ -83,7 +83,7 @@ fallback); RRF k=60 + percentile + deterministic ties; both P0 profiles
 with constants from constants.go; effective_P decay + suspension; mandatory
 inclusion + omitted_mandatory_count; budget_chars accounting over the
 COMPLETE payload; digest views from local view config (hard filters +
-optional interest query, R§7); per-line `> [MESH] ` prefixing;
+optional interest query, R§7); per-line `> [CAIRN] ` prefixing;
 fetched/ manifest+body pair; `why_ranked` printing stored arithmetic;
 `reindex --semantic` full path incl. model-migration invalidation.
 **Accept:** golden-corpus retrieval tests (build testdata/corpus of ~200
@@ -95,22 +95,22 @@ lexical_only served, reindex heals.
 ## M7 — Telemetry, gates harness, full fault matrix
 **Build:** local telemetry.sqlite (never in event log): interactions with
 ids/positions/budgets/outcomes, inferred=true flagging (R§10); outcome
-commands bound to interaction_id; `mesh gates` report (engineering gates
+commands bound to interaction_id; `cairn gates` report (engineering gates
 computed; product gates template for human entry); emergency reserve
 (64 MiB preallocated, operator-only release, R§11); complete every
 remaining TESTING.md row incl. simulated power-cycle loss of unfsynced
 state (use a tmpfs/loopback harness or fs shim that drops unsynced writes);
 1M-event synthetic scorecard run.
-**Accept:** entire fault matrix green in CI; `mesh gates` shows zero-loss,
+**Accept:** entire fault matrix green in CI; `cairn gates` shows zero-loss,
 provenance 100%, budget 100%, and P95 lexical visibility < 200 ms on the
 dev machine; scorecard numbers recorded in PROGRESS.md.
 
 ## M8 — Dogfood package (exit to evaluation)
-**Build:** `mesh setup-agent <name>` (creates view + config); a
+**Build:** `cairn setup-agent <name>` (creates view + config); a
 DOGFOOD.md quickstart for the operator: wiring three agent surfaces
 (Claude Code project A, project B, a chat-agent copy/paste view), the
 30-handoff diary protocol, baseline collection, and how to run
-`mesh gates` weekly; launchd plist for daemon autostart on macOS;
+`cairn gates` weekly; launchd plist for daemon autostart on macOS;
 backup script (portable data only) + restore drill (verifies new-origin
 behavior).
 **Accept:** fresh-machine install from README in <10 minutes; restore

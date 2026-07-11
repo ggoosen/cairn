@@ -1,17 +1,23 @@
-# Agent Mesh P0 — Implementation Architecture (Condensed)
+# Cairn P0 — Implementation Architecture (Condensed)
+
+> **Naming note:** the project was renamed from "Agent Mesh" to **Cairn**
+> (binary `cairn`, event-hash domain separator `cairn-event-v1`, envelope field
+> `cairn_id`, genesis type `cairn.genesis`, quote prefix `> [CAIRN] `). The
+> historical documents under `docs/` retain the original "mesh" naming; read
+> `mesh` there as `cairn`.
 
 One resident, single-writer daemon per machine. Agents interact via the
-filesystem (outbox drops, generated views) and the `mesh` CLI (which talks to
+filesystem (outbox drops, generated views) and the `cairn` CLI (which talks to
 the daemon over a local unix socket). Everything an agent sends becomes a
 signed, immutable event in an append-only log. SQLite is a rebuildable
 projection of that log. Retrieval is budget-capped and rank-explained.
 
 ```
         agent session                    operator
-      │ drop .md / bundle │            │ mesh CLI │
+      │ drop .md / bundle │            │ cairn CLI │
       ▼                   ▼            ▼          ▼
 ┌─────────────────────────────────────────────────────────┐
-│                    mesh daemon (Go)                      │
+│                    cairn daemon (Go)                      │
 │                                                          │
 │  outbox ingester ──► validator ──► EVENT LOG (append,    │
 │   (atomic bundles,     (schema,      fsync, ack) ────────┼──► receipt
@@ -36,18 +42,18 @@ projection of that log. Retrieval is budget-capped and rank-explained.
 ## On-disk layout
 
 ```
-PORTABLE (the mesh directory, default ~/mesh — backup/copy freely)
+PORTABLE (the cairn directory, default ~/cairn — backup/copy freely)
 ├── events/<origin>/<generation>/seg_*.seg     # framed, signed records
 ├── objects/<xx>/<blake3-hex>                  # bodies + blobs, immutable
 ├── exports/                                   # generated markdown (front-matter)
 └── views/<agent-id>/{digest.md, search-results/, fetched/, conflicts/, outbox/}
 
-DEVICE-LOCAL ($XDG_DATA_HOME/agent-mesh/<mesh_id>/device/ or macOS equivalent)
+DEVICE-LOCAL ($XDG_DATA_HOME/cairn/<cairn_id>/device/ or macOS equivalent)
 ├── device.key (0600 / keychain)   ├── device.cert
 ├── seq_state.json (cache only)    └── config-device.toml (incl. --allow-unencrypted flag)
 
-DERIVED (inside mesh dir, rebuildable, excluded from backup by default)
-└── .mesh/{index.sqlite, vectors, telemetry.sqlite}
+DERIVED (inside cairn dir, rebuildable, excluded from backup by default)
+└── .cairn/{index.sqlite, vectors, telemetry.sqlite}
 ```
 
 ## The write path (the most important 30 lines in the system)
@@ -57,7 +63,7 @@ DERIVED (inside mesh dir, rebuildable, excluded from backup by default)
    downgrade to ephemeral), retracted-target rejection.
 3. Persist body/blob objects: temp → fsync → rename → **fsync dir**.
 4. Build event: payload → envelope → canonical signing_bytes → event_id =
-   BLAKE3("agent-mesh-event-v1" || signing_bytes) → Ed25519 sign.
+   BLAKE3("cairn-event-v1" || signing_bytes) → Ed25519 sign.
 5. Frame record_bytes: magic+version | u64-LE length | bytes | CRC32C.
 6. Append to open segment; **fdatasync**.
 7. **Acknowledge** (write receipt for outbox; return for CLI). Never before.
@@ -74,7 +80,7 @@ higher); replay any events past the projection checkpoint.
 ## Event model in brief
 
 - Envelope per spec §4.1; payloads per `build/schemas/p0-events.schema.json`.
-- P0 types: mesh.genesis, device.add, device.revoke, message.publish,
+- P0 types: cairn.genesis, device.add, device.revoke, message.publish,
   message.revise_body, message.retract, message.reply, topic.create,
   topic.link.add, topic.link.remove, blob.pin, blob.unpin, signal.emit.
 - Revision DAG: message_id stable; revisions immutable; merge revisions have
@@ -100,8 +106,8 @@ higher); replay any events past the projection checkpoint.
   effective_P = (priority/3)·2^(−age/60h), suspended by pin/priority_confirm.
 - why_ranked(msg): prints the exact arithmetic from stored scoring inputs.
 - fetch materialises views/<agent>/fetched/{id.manifest.json, id.body.md};
-  body file contains ONLY the body; digest lines quoting mesh content are
-  prefixed per-line with `> [MESH] `.
+  body file contains ONLY the body; digest lines quoting cairn content are
+  prefixed per-line with `> [CAIRN] `.
 
 ## Non-goals in P0 (do not build)
 
