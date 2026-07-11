@@ -41,6 +41,9 @@ type Request struct {
 	Weight     int    `json:"weight,omitempty"`
 	Actor      string `json:"actor,omitempty"`
 
+	// exports
+	Path string `json:"path,omitempty"`
+
 	// reads
 	Query            string `json:"query,omitempty"`
 	K                int    `json:"k,omitempty"`
@@ -57,6 +60,8 @@ type Response struct {
 	Results []projection.SearchResult `json:"results,omitempty"`
 	Message *projection.MessageInfo   `json:"message,omitempty"`
 	Fetched *FetchResult              `json:"fetched,omitempty"`
+	Ingest  *IngestResult             `json:"ingest,omitempty"`
+	Path    string                    `json:"path,omitempty"`
 	Status  map[string]any            `json:"status,omitempty"`
 }
 
@@ -257,6 +262,27 @@ func (d *Daemon) dispatch(req Request) Response {
 			return fail(err)
 		}
 		return Response{OK: true, Fetched: res}
+
+	case "export":
+		path, err := d.Export(req.MessageID)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Path: path}
+
+	case "export-ingest":
+		res, err := d.IngestExport(req.Path)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Ingest: res}
+
+	case "resolve":
+		res, err := d.Resolve(req.MessageID)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Ingest: res}
 
 	case "status":
 		d.mu.Lock()

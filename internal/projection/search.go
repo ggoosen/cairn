@@ -200,3 +200,27 @@ func (p *Projection) MessageInfo(messageID string) (*MessageInfo, error) {
 	mi.Retracted = retracted == 1
 	return &mi, nil
 }
+
+// RevisionInfo is one revision row (export-ingest base validation).
+type RevisionInfo struct {
+	RevisionID string
+	MessageID  string
+	BodyHash   string
+	BodyLen    int64
+	BodyMime   string
+}
+
+// RevisionInfo looks up a revision by id.
+func (p *Projection) RevisionInfo(revisionID string) (*RevisionInfo, error) {
+	var ri RevisionInfo
+	err := p.db.QueryRow(`SELECT revision_id, message_id, body_hash, body_len, body_mime
+		FROM revisions WHERE revision_id=?`, revisionID).Scan(
+		&ri.RevisionID, &ri.MessageID, &ri.BodyHash, &ri.BodyLen, &ri.BodyMime)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("revision %s not found", revisionID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &ri, nil
+}

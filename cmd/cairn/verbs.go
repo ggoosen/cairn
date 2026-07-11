@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/google/uuid"
@@ -344,6 +345,54 @@ func newMigrateCmd(dirFlag *string) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&displayName, "display-name", "", "display name for the new device certificate")
 	return cmd
+}
+
+func newExportCmd(dirFlag *string) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "export <message-id>",
+		Short: "Render exports/<message-id>.md (read-only front-matter; edit the body, then `cairn export ingest`)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := call(dirFlag, daemon.Request{Op: "export", MessageID: args[0]})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), resp.Path)
+			return nil
+		},
+	}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "ingest <path>",
+		Short: "Ingest an edited export: base==head → revision; clean diff3 → machine-merged; conflict → conflicts/",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			abs, err := filepath.Abs(args[0])
+			if err != nil {
+				return err
+			}
+			resp, err := call(dirFlag, daemon.Request{Op: "export-ingest", Path: abs})
+			if err != nil {
+				return err
+			}
+			return printJSON(cmd, resp.Ingest)
+		},
+	})
+	return cmd
+}
+
+func newResolveCmd(dirFlag *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "resolve <message-id>",
+		Short: "Resolve a merge conflict: applies conflicts/<id>/RESOLVE.md against the current head",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := call(dirFlag, daemon.Request{Op: "resolve", MessageID: args[0]})
+			if err != nil {
+				return err
+			}
+			return printJSON(cmd, resp.Ingest)
+		},
+	}
 }
 
 // stub returns a command that names the milestone its behavior lands in.

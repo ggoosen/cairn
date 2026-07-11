@@ -104,3 +104,43 @@ func TestCLIMutationsRequireDaemon(t *testing.T) {
 		t.Fatalf("unhelpful error: %v", err)
 	}
 }
+
+// M5 CLI flow: export → edit body → ingest → revised; doctor conflicts clean.
+func TestCLIExportIngest(t *testing.T) {
+	dir := setupEnv(t)
+	if out, err := runCLI(t, "init", "--dir", dir); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	startTestDaemon(t, dir)
+
+	out, err := runCLI(t, "send", "exportable content line\n", "--dir", dir)
+	if err != nil {
+		t.Fatalf("send: %v\n%s", err, out)
+	}
+	var pub daemon.PublishResult
+	json.Unmarshal([]byte(out), &pub)
+
+	out, err = runCLI(t, "export", pub.MessageID, "--dir", dir)
+	if err != nil {
+		t.Fatalf("export: %v\n%s", err, out)
+	}
+	path := strings.TrimSpace(out)
+	content, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(content), "message_id: "+pub.MessageID) {
+		t.Fatalf("export file: %v\n%s", err, content)
+	}
+
+	edited := strings.Replace(string(content), "exportable content line", "exportable content line EDITED", 1)
+	if err := os.WriteFile(path, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runCLI(t, "export", "ingest", path, "--dir", dir)
+	if err != nil || !strings.Contains(out, `"revised"`) {
+		t.Fatalf("ingest: %v\n%s", err, out)
+	}
+
+	out, err = runCLI(t, "doctor", "conflicts", "--dir", dir)
+	if err != nil || !strings.Contains(out, "no unresolved conflicts") {
+		t.Fatalf("doctor conflicts: %v\n%s", err, out)
+	}
+}
