@@ -10,7 +10,7 @@ when all BUILD-PLAN acceptance criteria pass.
 | M0 — Scaffold, config, identity, encryption check | **done** (2026-07-11) | all acceptance criteria pass; see below |
 | M1 — Event log core | **done** (2026-07-11) | crash matrix rows 1–8 green; benchmark recorded |
 | M2 — Object store + text classes | **done** (2026-07-11) | object crash rows green; content_expired typed; policy tested |
-| M3 — SQLite projection + FTS + reindex | not started | |
+| M3 — SQLite projection + FTS + reindex | **done** (2026-07-11) | byte-identical reindex; idempotent resume; property tests green |
 | M4 — Daemon, CLI, outbox, receipts | not started | |
 | M5 — Exports, 3-way merge, conflicts | not started | |
 | M6 — Embeddings, ranking, digest, why-ranked | not started | |
@@ -258,14 +258,95 @@ Tasks completed:
 `go test ./...` green (incl. object package: 9 tests, crash matrix rows for
 Put, policy suite, housekeeping/expiry integration). `go vet` clean.
 
+## M3 — SQLite projection + FTS + reindex
+
+**Status: DONE.** All acceptance criteria pass.
+
+Tasks completed:
+- [x] **Projection** (`internal/projection`): DDL embedded from
+      build/sql/projection.sql (drift-pinned by
+      `TestSchemaMatchesNormativeDDL`); WAL + synchronous=FULL + FKs on,
+      single connection; `Apply` projects one verified event in ONE
+      transaction that also advances the per-origin checkpoint row
+      (rulings §6) — an event is fully projected+checkpointed or untouched;
+      events ≤ checkpoint skipped (idempotent), sequence gaps are errors.
+      All P0 payloads projected: publish/reply (messages, revisions,
+      recipients, attachments, source_refs hook), revise_body (1–2
+      revisions incl. merge parents + head move), retract (flag only, FTS
+      untouched), topic.create, link add/remove (observed-remove),
+      pin/unpin, signal.emit, genesis→meta; unknown types preserved in
+      events table only.
+- [x] **FTS**: contentless FTS5 keyed by immutable revision_id via fts_map,
+      unicode61 tokenchars `_-#@` (from the DDL); synchronous lexical insert
+      at Apply time; enrichment table records lexical_indexed; missing body
+      (expired ephemeral) → recorded, never fatal.
+- [x] **Search API** (deterministic, M6 fuses it with vectors):
+      `SearchLexical` over HEAD revisions with bm25 ordering and
+      message_id/revision_id tie-breaks; retracted excluded by default,
+      `include_retracted` opt-in; `VisibleLinks`/`LiveLinkIDs`/`ActivePins`;
+      `ObjectRefs` feeds M2 housekeeping (pinned objects excluded).
+- [x] **Replay/reindex**: read-only `log.Walk` (new Strict scan mode: full
+      verification, hard error on defects, tolerates the un-acked torn tail
+      without mutating — daemon recovery owns truncation); `log.Origins`
+      enumeration; `Replay` = walk every origin, Apply past checkpoint;
+      `ReindexLexical` side-builds at index.sqlite.rebuild, folds WAL
+      (wal_checkpoint TRUNCATE), atomically renames over the live db;
+      `ReindexSemantic` stub errors clearly until M6.
+- [x] **CLI**: `cairn reindex --lexical|--semantic` (identity + encryption
+      check first); CLI test builds a real projection on a fresh cairn.
+- [x] **testutil.Chain**: shared signed-event-chain builder for
+      projection/outbox/daemon suites.
+
+### Acceptance criteria → evidence
+1. *Delete index.sqlite → reindex reproduces byte-identical query results* —
+   `TestReindexByteIdentical`: snapshot of 5 queries × {default,
+   include_retracted} + link sets serialized to JSON, database deleted,
+   reindexed, snapshots compared byte-for-byte.
+2. *Crash mid-projection resumes idempotently* — `TestCrashMidProjectionResumes`:
+   for EVERY prefix length, apply-prefix → close → reopen → Replay resumes
+   from checkpoint to the exact full state; re-Apply of an old event is a
+   no-op. (Torn-transaction safety inside a single Apply is SQLite
+   WAL+synchronous=FULL, checkpoint committed in the same tx.)
+3. *Property tests: concurrent link add/remove + retraction visibility* —
+   `TestObservedRemoveLinkProperties` (same assertions in every valid order
+   converge; a remove never kills adds it didn't list; protected links
+   survive automatic (non-operator) removal but yield to operator removal);
+   retraction: hidden by default, visible with include_retracted, identical
+   across full reindex (replayable history).
+
+### Deviations
+- **`sqlite_fts5` build tag is now mandatory repo-wide** (mattn/go-sqlite3
+  compiles FTS5 only behind it — anticipated by CLAUDE.md's library table).
+  Makefile targets (`make test` / `make vet` / `make build`) encode it;
+  CLAUDE.md workflow line updated accordingly.
+- **SQLite runs outside fsx** (CGO owns its own I/O). Acceptable because the
+  projection is DERIVED state: its crash-safety story is rebuild-from-log
+  (proven by the acceptance tests), not zero-loss. ReindexLexical therefore
+  takes an explicit real-fs dbPath; production uses .cairn/index.sqlite.
+- **log.Strict mode added** (third scan mode) for read-only replay/reindex.
+
+### Author rulings needed
+- **Protected-link removal semantics (minor):** spec §5.5 says auto-processes
+  may not remove protected links. P0 implementation: a topic.link.remove
+  whose actor_principal_id ≠ "operator" skips protected links; operator
+  removals always apply. Flagged for confirmation when P1 capability
+  enforcement lands (no code marker — behavior is spec-supported; noted here
+  for the P1 revisit).
+
+### Test results (2026-07-11)
+`go test -tags sqlite_fts5 ./...` — all 8 packages green (projection: 7
+tests incl. byte-identity, resume-at-every-cut, observed-remove properties,
+expired-body reindex race). `go vet -tags sqlite_fts5 ./...` clean.
+
 ## Resume-cold notes
-- Next milestone: **M3 — SQLite projection + FTS + reindex**. DDL is in
-  build/sql/projection.sql (remember: `source_refs` table was added post-M0
-  as an M9 ingest hook — project message.publish `source_ref` when present).
-  Replay hooks into `log.Open`'s OnRecord callback. Checkpoint row commits
-  in the SAME transaction as the projection (rulings §6). mattn/go-sqlite3
-  with FTS5 build tag; contentless FTS keyed by revision_id; retraction =
-  flag; observed-remove link/pin tables; reindex --lexical side-build +
-  atomic swap; --semantic stub. Object refs for housekeeping come from the
-  projection (`object.Ref` shape already defined).
+- Next milestone: **M4 — Daemon, CLI, outbox, receipts**. Daemon lifecycle:
+  OS file lock + unix-socket JSON IPC, single writer owning append + Apply
+  (projection.Apply is the OnRecord hook at startup and the post-ack step
+  on live sends), view regen, housekeeping loop
+  (object.HousekeepEphemeral(projection.ObjectRefs())). Outbox: atomic
+  bundle contract + .md shorthand, request_id idempotency (receipt
+  regenerated identically on retry — receipts via fsx.WriteFileAtomic),
+  rejected/ with structured errors. Full CLI verb set. `cairn migrate`
+  offline ceremony (root key is device-local — see M0 ruling). Remember:
+  ALWAYS build/test with -tags sqlite_fts5 (make test).
 - `// RULING-NEEDED:` markers in code: one (root-key storage, M0).
