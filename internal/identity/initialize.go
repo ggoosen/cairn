@@ -132,9 +132,10 @@ func Initialize(opts InitOptions) (*InitResult, error) {
 	if err := SaveKey(filepath.Join(deviceDir, config.DeviceKeyName), devicePriv); err != nil {
 		return nil, err
 	}
-	// P0 keeps the root key device-local (0600) so device.add / migrate can
-	// root-sign offline. Spec §3.1 wants it in separate operator recovery
-	// storage; recorded in PROGRESS.md ("Author rulings needed").
+	// RULING-NEEDED: root-key storage. P0 keeps the root key device-local
+	// (0600) so device.add / migrate can root-sign offline; spec §3.1 wants
+	// it in separate operator recovery storage. Conservative interpretation
+	// + explicit backup instruction; see PROGRESS.md "Author rulings needed".
 	if err := SaveKey(filepath.Join(deviceDir, config.RootKeyName), rootPriv); err != nil {
 		return nil, err
 	}

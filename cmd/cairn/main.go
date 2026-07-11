@@ -29,6 +29,7 @@ func newRootCmd() *cobra.Command {
 	}
 	root.PersistentFlags().StringVar(&dir, "dir", "", "path to the portable cairn directory (default ~/cairn, or $CAIRN_DIR)")
 
-	_ = dir // subcommands (init, identity) are added as M0 tasks land
+	root.AddCommand(newInitCmd(&dir))
+	root.AddCommand(newIdentityCmd(&dir))
 	return root
 }

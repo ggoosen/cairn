@@ -2,6 +2,7 @@ package identity
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -42,6 +43,17 @@ type VolumeChecker interface {
 type SystemVolumeChecker struct{}
 
 func (SystemVolumeChecker) Status(path string) (VolumeStatus, string, error) {
+	// Fault-injection hook for the TESTING.md volume-state rows (encrypted /
+	// unencrypted / indeterminate) at the process boundary. Never set outside
+	// tests.
+	switch os.Getenv("CAIRN_FAKE_VOLUME_STATUS") {
+	case "encrypted":
+		return VolumeEncrypted, "injected by CAIRN_FAKE_VOLUME_STATUS", nil
+	case "unencrypted":
+		return VolumeUnencrypted, "injected by CAIRN_FAKE_VOLUME_STATUS", nil
+	case "unknown":
+		return VolumeUnknown, "injected by CAIRN_FAKE_VOLUME_STATUS", nil
+	}
 	switch runtime.GOOS {
 	case "darwin":
 		return darwinStatus(path)
@@ -52,11 +64,12 @@ func (SystemVolumeChecker) Status(path string) (VolumeStatus, string, error) {
 	}
 }
 
-// darwinStatus: `fdesetup status` reports FileVault for the boot volume.
-// If path is NOT on the boot volume the answer would be about the wrong
-// disk, so we report unknown (fail closed) rather than guess.
+// darwinStatus: `fdesetup status` reports FileVault for the boot container
+// (System + Data volumes, encrypted together). If path is on neither, the
+// answer would be about the wrong disk, so we report unknown (fail closed)
+// rather than guess about e.g. an external drive.
 func darwinStatus(path string) (VolumeStatus, string, error) {
-	same, err := sameDeviceAsRoot(path)
+	same, err := onBootContainer(path)
 	if err != nil {
 		return VolumeUnknown, "cannot stat path", err
 	}
@@ -108,13 +121,21 @@ func linuxStatus(path string) (VolumeStatus, string, error) {
 	return VolumeUnencrypted, "no dm-crypt layer under " + source, nil
 }
 
-func sameDeviceAsRoot(path string) (bool, error) {
-	var a, b syscall.Stat_t
-	if err := syscall.Stat(path, &a); err != nil {
+// onBootContainer: true if path shares a device with the System volume (/)
+// or the Data volume (/System/Volumes/Data) — FileVault encrypts both.
+func onBootContainer(path string) (bool, error) {
+	var p syscall.Stat_t
+	if err := syscall.Stat(path, &p); err != nil {
 		return false, err
 	}
-	if err := syscall.Stat("/", &b); err != nil {
-		return false, err
+	for _, ref := range []string{"/", "/System/Volumes/Data"} {
+		var r syscall.Stat_t
+		if err := syscall.Stat(ref, &r); err != nil {
+			continue // Data volume may not exist on older layouts
+		}
+		if p.Dev == r.Dev {
+			return true, nil
+		}
 	}
-	return a.Dev == b.Dev, nil
+	return false, nil
 }
