@@ -244,3 +244,24 @@ func (p *Projection) RevisionInfo(revisionID string) (*RevisionInfo, error) {
 	}
 	return &ri, nil
 }
+
+// SourceRefMessage returns the message imported from a source path
+// (M9 ingest idempotency lookup); "" if the path was never imported.
+func (p *Projection) SourceRefMessage(path string) (string, error) {
+	var id string
+	err := p.db.QueryRow(`SELECT message_id FROM source_refs WHERE path=?`, path).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}
+
+// TopicIDByName resolves a topic name; "" if absent.
+func (p *Projection) TopicIDByName(name string) (string, error) {
+	var id string
+	err := p.db.QueryRow(`SELECT topic_id FROM topics WHERE name=?`, name).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}

@@ -49,6 +49,10 @@ type Request struct {
 	Outcome string         `json:"outcome,omitempty"`
 	Search2 *SearchOptions `json:"search_opts,omitempty"`
 
+	// ingest (M9)
+	Body       string `json:"body,omitempty"`
+	SourcePath string `json:"source_path,omitempty"`
+
 	// reads
 	Query            string `json:"query,omitempty"`
 	K                int    `json:"k,omitempty"`
@@ -60,19 +64,21 @@ type Request struct {
 
 // Response is the IPC reply.
 type Response struct {
-	OK      bool                      `json:"ok"`
-	Error   string                    `json:"error,omitempty"`
-	Publish *PublishResult            `json:"publish,omitempty"`
-	EventID string                    `json:"event_id,omitempty"`
-	Results []projection.SearchResult `json:"results,omitempty"`
-	Search  *SearchOutput             `json:"search,omitempty"`
-	Digest  *DigestOutput             `json:"digest,omitempty"`
-	Text    string                    `json:"text,omitempty"`
-	Message *projection.MessageInfo   `json:"message,omitempty"`
-	Fetched *FetchResult              `json:"fetched,omitempty"`
-	Ingest  *IngestResult             `json:"ingest,omitempty"`
-	Path    string                    `json:"path,omitempty"`
-	Status  map[string]any            `json:"status,omitempty"`
+	OK         bool                      `json:"ok"`
+	Error      string                    `json:"error,omitempty"`
+	Publish    *PublishResult            `json:"publish,omitempty"`
+	EventID    string                    `json:"event_id,omitempty"`
+	Results    []projection.SearchResult `json:"results,omitempty"`
+	Search     *SearchOutput             `json:"search,omitempty"`
+	Digest     *DigestOutput             `json:"digest,omitempty"`
+	Text       string                    `json:"text,omitempty"`
+	Message    *projection.MessageInfo   `json:"message,omitempty"`
+	Fetched    *FetchResult              `json:"fetched,omitempty"`
+	Ingest     *IngestResult             `json:"ingest,omitempty"`
+	TopicID    string                    `json:"topic_id,omitempty"`
+	Path       string                    `json:"path,omitempty"`
+	MessageID2 string                    `json:"message_id,omitempty"`
+	Status     map[string]any            `json:"status,omitempty"`
 }
 
 // SocketPath returns the daemon's unix socket location: short, deterministic
@@ -275,6 +281,27 @@ func (d *Daemon) dispatch(req Request) Response {
 			return fail(err)
 		}
 		return Response{OK: true, Text: text}
+
+	case "revise":
+		res, err := d.Revise(req.MessageID, req.Body)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Ingest: res}
+
+	case "topic-ensure":
+		id, _, err := d.TopicEnsure(req.TopicName)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, TopicID: id}
+
+	case "source-ref":
+		id, err := d.proj.SourceRefMessage(req.SourcePath)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, EventID: "", MessageID2: id}
 
 	case "outcome":
 		if err := d.Outcome(req.InteractionID, req.Outcome, req.MessageID); err != nil {

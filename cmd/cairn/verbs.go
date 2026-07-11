@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
@@ -42,6 +43,8 @@ func printJSON(cmd *cobra.Command, v any) error {
 	fmt.Fprintln(cmd.OutOrStdout(), string(blob))
 	return nil
 }
+
+func timeNow() time.Time { return time.Now() }
 
 func newUUID() string {
 	u, err := uuid.NewV7()

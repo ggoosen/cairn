@@ -55,5 +55,6 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newGatesCmd(&dir))
 	root.AddCommand(newReserveCmd(&dir))
 	root.AddCommand(newSetupAgentCmd(&dir))
+	root.AddCommand(newIngestCmd(&dir))
 	return root
 }

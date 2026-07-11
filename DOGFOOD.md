@@ -107,7 +107,21 @@ Device identity is intentionally NOT in backups: a restore is a NEW origin
 (`cairn init --adopt`), old history is preserved read-only. The root key is
 backed up separately, offline, once (see step 1).
 
-## 7. Deferred items to run once during the evaluation
+## 7. Importing an existing knowledge base (optional)
+
+To seed cairn from a docs tree or llm-wiki style repo:
+
+```sh
+cairn ingest scan ~/notes/team-wiki          # writes cairn-ingest-manifest.json
+$EDITOR cairn-ingest-manifest.json           # review the plan (publish/revise/skip)
+cairn ingest apply                           # idempotent; provenance via source_ref
+```
+
+Re-running scan+apply after edits revises only the changed pages. Imported
+messages carry `source_ref` (repo/path/hash) and `relates_to` ([[wiki
+links]] resolved to message ids); topics mirror the directory structure.
+
+## 8. Deferred items to run once during the evaluation
 
 - Overnight 1M scorecard: `CAIRN_SCORECARD=1000000 go test -tags sqlite_fts5
   -run TestScorecard -v -timeout 600m ./internal/daemon/` — append the row

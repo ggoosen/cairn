@@ -277,6 +277,32 @@ func (d *Daemon) appendRevision(messageID string, bodies [][2]any, machineMerged
 	return res, nil
 }
 
+// Revise appends one normal revision with the CURRENT head as base (the
+// M9 ingest update path — base==head by construction, so no merge arises).
+func (d *Daemon) Revise(messageID, body string) (*IngestResult, error) {
+	info, err := d.proj.MessageInfo(messageID)
+	if err != nil {
+		return nil, err
+	}
+	return d.ingestEdit(messageID, info.HeadRevisionID, "", []byte(body), false)
+}
+
+// TopicEnsure returns the topic id for a name, creating the topic if absent
+// (idempotent — repeated ingests must not fail on UNIQUE names).
+func (d *Daemon) TopicEnsure(name string) (topicID string, created bool, err error) {
+	if id, err := d.proj.TopicIDByName(name); err != nil {
+		return "", false, err
+	} else if id != "" {
+		return id, false, nil
+	}
+	id := d.newUUID()
+	if _, err := d.SimpleEvent("topic.create", "topic", id,
+		map[string]any{"topic_id": id, "name": name}, PublishRequest{Actor: "operator"}); err != nil {
+		return "", false, err
+	}
+	return id, true, nil
+}
+
 // Resolve applies conflicts/<id>/RESOLVE.md against the then-current head
 // (rulings §8). The resolution event carries TWO revisions: the operator
 // branch (OPERATOR_EDIT.md, parent = the original export base) and the

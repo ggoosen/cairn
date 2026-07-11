@@ -286,6 +286,18 @@ type PublishRequest struct {
 	ReplyToMessageID string   `json:"reply_to_message_id,omitempty"`
 	Recipients       []string `json:"recipients,omitempty"`
 	TopicIDs         []string `json:"topic_ids,omitempty"` // initial links: separate events, same request
+
+	// M9 ingest hooks (schema: optional fields on message.publish)
+	SourceRef *SourceRef `json:"source_ref,omitempty"`
+	RelatesTo []string   `json:"relates_to,omitempty"`
+}
+
+// SourceRef is the ingest provenance payload (schema §message.publish).
+type SourceRef struct {
+	Path        string `json:"path"`
+	Repo        string `json:"repo,omitempty"`
+	ContentHash string `json:"content_hash"`
+	ImportedAt  string `json:"imported_at"`
 }
 
 // PublishResult is the acknowledgement (and receipt body — deterministic
@@ -393,6 +405,15 @@ func (d *Daemon) Publish(req PublishRequest) (*PublishResult, error) {
 	}
 	if len(req.Recipients) > 0 {
 		payload["recipients"] = req.Recipients
+	}
+	if req.SourceRef != nil {
+		if req.SourceRef.Path == "" || req.SourceRef.ContentHash == "" || req.SourceRef.ImportedAt == "" {
+			return nil, errors.New("source_ref requires path, content_hash, imported_at")
+		}
+		payload["source_ref"] = req.SourceRef
+	}
+	if len(req.RelatesTo) > 0 {
+		payload["relates_to"] = req.RelatesTo
 	}
 	eventType := "message.publish"
 	if req.ReplyToMessageID != "" {
