@@ -13,7 +13,7 @@ when all BUILD-PLAN acceptance criteria pass.
 | M3 — SQLite projection + FTS + reindex | **done** (2026-07-11) | byte-identical reindex; idempotent resume; property tests green |
 | M4 — Daemon, CLI, outbox, receipts | **done** (2026-07-11) | receipts idempotent; concurrent senders serialize; migrate matrix green |
 | M5 — Exports, 3-way merge, conflicts | **done** (2026-07-11) | merge races + retraction race green; no half-graphs |
-| M6 — Embeddings, ranking, digest, why-ranked | not started | |
+| M6 — Embeddings, ranking, digest, why-ranked | **done** (2026-07-11) | Success@5 0.97; budgets never exceeded; why-ranked exact |
 | M7 — Telemetry, gates harness, full fault matrix | not started | |
 | M8 — Dogfood package | not started | |
 
@@ -495,18 +495,99 @@ Tasks completed:
 daemon export suite: 7 incl. the merge crash matrix; CLI export flow).
 `go vet` clean.
 
+## M6 — Embeddings, ranking, digest, why-ranked
+
+**Status: DONE.** All acceptance criteria pass.
+
+Tasks completed:
+- [x] **Embed interface** (`internal/embed`): pinned Embedder interface
+      (ModelID/Dim/Embed/Close; unit vectors; models never mixed).
+      Implementations: `Python` — the CLAUDE.md-sanctioned real-model
+      fallback (sentence-transformers subprocess with the PINNED
+      all-MiniLM-L6-v2, venv at .cairn/embed-venv or $CAIRN_EMBED_PYTHON);
+      `BagOfWords` — deterministic dev/test embedder (distinct ModelID so
+      its vectors can never be compared with the real model's). No embedder
+      provisioned ⇒ daemon serves lexical_only (degradation ladder step 4).
+- [x] **Vector store**: plain vectors table per the DDL (float32 LE blobs),
+      brute-force cosine over head revisions (rulings §7 sanctions the
+      fallback for candidate sets < 5k — P0 corpus is hundreds);
+      InsertVector marks enrichment in the same transaction; model id
+      pinned in meta; InvalidateVectors for migration.
+- [x] **Ranking** (`internal/rank`, pure): RRF k=60; percentile over the
+      union (strictly-smaller counting; single candidate ⇒ R=1); freshness
+      2^(−age/half-life) as bonus-only; effective_P =
+      (declared/3)·2^(−age/60h) suspended by active pin or priority_confirm;
+      both P0 profiles from constants.go; tie order mandatory class → score
+      → wall time → event_id; RankUniformR for query-less digests (R=1.0);
+      budget_chars = Unicode scalars over the COMPLETE payload
+      (header + entries + truncation marker) via TakeWithinBudget.
+- [x] **Search** (daemon): FTS top-100 + vector top-100 → fusion → profile →
+      budget; retrieval_mode full|lexical_only; interaction_id per call;
+      rank_explanations stored as shortest-round-trip decimal STRINGS.
+- [x] **Digest**: local view config (views/<agent>/view.json: hard topic
+      filters + optional interest query — never events); mandatory inclusion
+      (explicit recipients, then pins) before scored items, budget-counted,
+      overflow drops oldest-first with omitted_mandatory_count; digest.md
+      written atomically; EVERY quoted body line prefixed `> [CAIRN] `.
+- [x] **why_ranked**: prints the exact stored arithmetic; CLI verb live.
+- [x] **Enricher**: background goroutine (2s tick, batch 64) — agents never
+      wait; EnrichOnce refuses model mixing; `reindex --semantic` (via
+      daemon IPC) = invalidate-on-migration + full backfill.
+- [x] **CLI**: search --budget, digest --view --budget, why-ranked; stubs
+      remain only for M7 outcome commands.
+
+### Acceptance criteria → evidence
+1. *Golden corpus* — 184 messages / 4 synthetic projects + 8 anchors, 30
+   queries with known-relevant sets (generated deterministically in
+   corpus code): **Success@5 = 0.97** (gate ≥ 0.70), **lexical_only
+   top-10 = 0.63** (gate ≥ 0.60). CI runs the deterministic dev embedder;
+   real-model numbers to be recorded during M8 dogfood setup.
+2. *Budget compliance property* — budgets {1 … 2^20} for search AND digest:
+   payload rune count never exceeds; mandatory overflow produces
+   omitted_mandatory_count > 0 under a tight budget.
+3. *why-ranked exact* — stored components recompute to the IDENTICAL score
+   (shortest-round-trip decimal strings), stored rank == returned rank,
+   text carries the stored arithmetic.
+4. *Kill enricher mid-batch* — partial enrichment then embedder death ⇒
+   lexical_only with results; restore + reindex --semantic ⇒ zero pending,
+   full mode. Plus model-migration invalidation (mix refused, reindex
+   migrates).
+
+### Deviations
+- **ONNX in-process binding not used** (CLAUDE.md fallback rule invoked):
+  no onnxruntime dylib on the dev machine and the binding needs a WordPiece
+  tokenizer implementation — outside one working session. The identical-
+  interface Python-venv path (sentence-transformers, same pinned model) is
+  the real-model implementation; venv provisioning is an M8 DOGFOOD setup
+  step. `config.EmbeddingModelHash` stays empty until the artifact is
+  vendored (flagged in constants.go).
+- **sqlite-vec not integrated**: brute-force cosine is the active path —
+  explicitly sanctioned by rulings §7 for < 5k candidates (P0 scale).
+  The vectors table matches the DDL, so a vec0 virtual table can replace
+  the scan in P1 without schema change.
+- **CI retrieval numbers use the deterministic dev embedder** (BagOfWords,
+  distinct model id). Honest limitation, recorded; the ranking pipeline
+  (fusion, percentile, budgets, explanations) is fully exercised.
+
+### Author rulings needed
+- None new (the two open items: M0 root-key storage, M5 resolve semantics).
+
+### Test results (2026-07-11)
+`go test -tags sqlite_fts5 ./...` — all 12 packages green. Golden-corpus
+numbers above. `go vet` clean.
+
 ## Resume-cold notes
-- Next milestone: **M6 — Embeddings, ranking, digest, why-ranked**. The
-  biggest remaining: ONNX MiniLM (pin artifact hash in constants when
-  vendored; Python-venv fallback rule in CLAUDE.md if the binding fails on
-  macOS arm64 within one session); background enricher goroutine +
-  retrieval_mode; sqlite-vec (asg017 bindings) + brute-force fallback
-  (vectors table already in DDL); RRF k=60 + percentile + deterministic
-  ties; both P0 profiles (constants.go); effective_P decay + suspension;
-  mandatory inclusion + omitted_mandatory_count; budget_chars over the
-  COMPLETE payload; digest views from local view config; per-line
-  `> [CAIRN] ` prefix (config.QuotePrefix); why_ranked from
-  rank_explanations; testdata/corpus (~200 messages, ~30 queries,
-  Success@5 ≥ 70% assertion); reindex --semantic full path.
+- Next milestone: **M7 — Telemetry, gates harness, full fault matrix**.
+  telemetry.sqlite (SEPARATE db, never events/replicated): interactions
+  with ids/positions/budgets/outcomes, inferred=true flags; outcome
+  commands (found/not-found/manual-workaround) bound to interaction_id
+  (search/digest already return one); `cairn gates` (engineering gates
+  computed: zero-loss from matrix runs, provenance 100%, budget 100%,
+  P95 ack→lexical-visible < 200 ms measured; product gates template);
+  emergency reserve (64 MiB preallocated file, operator-only release,
+  ≤64 KiB, rulings §11 + reserve fault rows); remaining TESTING.md rows
+  (power-sim already in MemFS; volume-state rows via CAIRN_FAKE_VOLUME_STATUS;
+  restored-portable-data row; clock rollback row); 1M-event synthetic
+  scorecard (append/recover/search timings into PROGRESS.md).
   Remember -tags sqlite_fts5 (make test).
 - `// RULING-NEEDED:` markers in code: one (root-key storage, M0).
