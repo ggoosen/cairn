@@ -15,7 +15,7 @@ when all BUILD-PLAN acceptance criteria pass.
 | M5 — Exports, 3-way merge, conflicts | **done** (2026-07-11) | merge races + retraction race green; no half-graphs |
 | M6 — Embeddings, ranking, digest, why-ranked | **done** (2026-07-11) | Success@5 0.97; budgets never exceeded; why-ranked exact |
 | M7 — Telemetry, gates harness, full fault matrix | **done** (2026-07-11) | matrix complete; P95 gate 1.5ms at 100k; scorecard recorded |
-| M8 — Dogfood package | not started | |
+| M8 — Dogfood package | **done** (2026-07-11) | install smoke 2s; restore drill CI-verified; **P0 COMPLETE** |
 
 ## M0 — Scaffold, config, identity, encryption check
 
@@ -666,15 +666,76 @@ Tasks completed:
 `go test -tags sqlite_fts5 ./...` — 11 packages green; `go vet` clean.
 Scorecard runs above (10k foreground, 100k detached, both PASS).
 
+## M8 — Dogfood package
+
+**Status: DONE. P0 IS COMPLETE — operator evaluation can begin.**
+
+Tasks completed:
+- [x] **`cairn setup-agent <name>`**: creates views/<name>/{outbox, fetched,
+      conflicts} + view.json (--topic hard filters, --interest query);
+      path-metacharacter names refused.
+- [x] **DOGFOOD.md**: install quickstart; optional embed-venv provisioning
+      (real-model embeddings); wiring the three agent surfaces (Claude Code
+      project A/B via CLAUDE.md snippets + outbox/digest, chat copy/paste
+      view); the 30-handoff diary protocol with the copy-paste baseline
+      week; weekly `cairn gates`/`doctor` review; backup/restore procedure;
+      the deferred 1M-scorecard command; the rulings-§10 exit
+      interpretation (config falsified before thesis).
+- [x] **launchd autostart**: scripts/com.cairn.daemon.plist (sed-install
+      one-liner in DOGFOOD.md; KeepAlive, logs to ~/Library/Logs).
+- [x] **Backup + restore drill**: scripts/cairn-backup.sh (rsync of
+      portable data ONLY — .cairn/ derived state and device identity
+      excluded by design) and scripts/cairn-restore-drill.sh (asserts the
+      restored copy is REFUSED without identity, then `init --adopt`
+      creates a new origin with the old history archived read-only).
+
+### Acceptance criteria → evidence
+1. *Fresh-machine install from README in <10 minutes* — README install
+   section rewritten (clone → make build → init → daemon → send/search).
+   Timed smoke on this machine: build → init (real FileVault check) →
+   daemon → send → search → setup-agent → digest → gates in **2 seconds**
+   (a true fresh machine adds `git clone` + first `go build` module
+   downloads: minutes, nowhere near 10).
+2. *Restore drill demonstrates portable-only restore creates a new origin* —
+   `TestBackupRestoreDrillScripts` runs BOTH real shell scripts end to end
+   in CI: backup excludes derived+identity; restored data refused; adopt
+   creates a working new origin; events-preadopt-<old-id>/ preserved.
+3. *Operator evaluation can begin* — DOGFOOD.md is the complete protocol;
+   `cairn gates` tracks it weekly.
+
+### Deviations
+- None beyond those already recorded (M6 embedding backend, M7 1M
+  scorecard deferral).
+
+### Test results (2026-07-11)
+`go test -tags sqlite_fts5 ./...` — 11 packages green; `go vet` clean.
+
+---
+
+# P0 DEFINITION OF DONE — met
+
+Engineering gates (spec §11 as amended by rulings §10):
+- **Zero acknowledged-event loss** across the TESTING.md matrix — every
+  row automated and green (M1–M7 crash/fault matrices).
+- **100% provenance** on fetched results — manifests carry source event +
+  hashes; gates report verifies.
+- **100% budget compliance** — property-tested (payload never exceeds
+  budget_chars incl. metadata/markers); telemetry-tracked at runtime.
+- **P95 send-ack → lexical-digest-visible = 1.52 ms at 100k events**
+  (gate < 200 ms) on the dev machine.
+- `cairn doctor` clean on corpora that survived the fault matrix.
+
+The 30-handoff product evaluation (DOGFOOD.md) is now the operator's.
+
+Open author rulings (non-blocking, conservative interpretations shipped):
+1. M0 — root-key storage (device-local + backup instruction vs offline
+   export ceremony).
+2. M5 — resolve merges against the conflict-time head (documented).
+
 ## Resume-cold notes
-- Next milestone: **M8 — Dogfood package** (the last one): `cairn
-  setup-agent <name>` (creates views/<name>/{outbox,fetched,conflicts} +
-  view.json); DOGFOOD.md quickstart (three agent surfaces, 30-handoff diary
-  protocol, baseline collection, weekly `cairn gates`, embed-venv
-  provisioning for real-model embeddings); launchd plist for daemon
-  autostart; backup script (portable data only — exclude .cairn/) +
-  restore drill proving new-origin behavior (init --adopt exists);
-  optionally kick off the overnight 1M scorecard. Accept: fresh-machine
-  install from README < 10 min; restore drill demonstrates portable-only
-  restore creates a new origin.
+- **All P0 milestones (M0–M8) are complete.** Next steps live outside P0:
+  the operator's 30-handoff evaluation (DOGFOOD.md), the overnight 1M
+  scorecard, embed-venv provisioning for real-model retrieval numbers,
+  resolution of the two open author rulings, and — post-evaluation — P1
+  (BUILD-PLAN) or M9 ingest (stub in BUILD-PLAN; hooks already shipped).
 - `// RULING-NEEDED:` markers in code: one (root-key storage, M0).
