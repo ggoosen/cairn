@@ -12,7 +12,7 @@ when all BUILD-PLAN acceptance criteria pass.
 | M2 — Object store + text classes | **done** (2026-07-11) | object crash rows green; content_expired typed; policy tested |
 | M3 — SQLite projection + FTS + reindex | **done** (2026-07-11) | byte-identical reindex; idempotent resume; property tests green |
 | M4 — Daemon, CLI, outbox, receipts | **done** (2026-07-11) | receipts idempotent; concurrent senders serialize; migrate matrix green |
-| M5 — Exports, 3-way merge, conflicts | not started | |
+| M5 — Exports, 3-way merge, conflicts | **done** (2026-07-11) | merge races + retraction race green; no half-graphs |
 | M6 — Embeddings, ranking, digest, why-ranked | not started | |
 | M7 — Telemetry, gates harness, full fault matrix | not started | |
 | M8 — Dogfood package | not started | |
@@ -421,16 +421,92 @@ Tasks completed:
 incl. migrate crash matrix; outbox: 6 tests incl. both receipt acceptance
 tests; CLI e2e). `go vet` clean.
 
+## M5 — Exports, 3-way merge, conflicts
+
+**Status: DONE.** All acceptance criteria pass.
+
+Tasks completed:
+- [x] **Merge core** (`internal/merge`): pinned diff3 = `git merge-file -p`
+      (operator edit × export base × current head; labeled markers);
+      exit 0 = clean, positive = conflict-marked output; NormalizeLF
+      (CRLF/CR → LF, BOM strip, UTF-8 validation — invalid UTF-8 rejected).
+- [x] **Exports** (`internal/views` + daemon): `cairn export <id>` renders
+      exports/<message_id>.md with READ-ONLY front-matter {message_id,
+      revision_id, base_revision_id, body_hash, exported_at} (strict YAML);
+      regenerated after every successful ingest/resolve.
+- [x] **Ingest** (`daemon.IngestExport` via `cairn export ingest <path>`):
+      front-matter validated field-by-field against the projection (unknown
+      fields, hash/message/revision mismatches, deleted front-matter → all
+      rejected with a structured <export>.reject.json error receipt);
+      retracted target → rejected ("restore requires explicit operator
+      action"); unchanged body → no event; base==head → ONE normal
+      revision; head moved + clean diff3 → ONE revise_body event with TWO
+      revision objects (operator branch parent=base; machine-merged head
+      parents=[branch, head], machine_merged=true); conflict →
+      views/operator/conflicts/<id>/{BASE,CURRENT,OPERATOR_EDIT,RESOLVE}.md
+      + conflict.json manifest, RESOLVE.md seeded with the marked merge.
+- [x] **Resolve** (`cairn resolve <id>`): applies RESOLVE.md as the human
+      resolution — event carries the operator branch (OPERATOR_EDIT.md,
+      parent = original base) + resolved head (parents = [branch,
+      current head], machine_merged=false); head moved during resolution →
+      diff3 against the conflict-time head, clean → apply, conflict →
+      materialization refreshed; marker guard refuses half-edited
+      RESOLVE.md; success removes the conflict dir and refreshes the export.
+- [x] **`cairn doctor conflicts`**: lists unresolved conflict dirs, nonzero
+      exit on debt.
+
+### Acceptance criteria → evidence
+1. *Merge race tests green* — `TestExportIngestCleanMergeRaces` (stale edit
+   vs 1 and vs 3 intervening revisions → two-revision merge event, both
+   sides' changes in the merged head); `TestConflictAndResolve` (overlapping
+   edits → full materialization, marker guard, resolution applied, debt
+   cleared); `TestRetractionRacesIngest` (retract-then-ingest → rejected
+   with error receipt, no revision created); `TestFrontMatterMutationRejected`
+   (4 mutation shapes); `TestUnchangedExportIsNoOp`; CRLF normalization.
+2. *Crash-during-merge leaves no half-graph* — `TestMergeCrashLeavesNoHalfGraph`:
+   EIO after EVERY mutating fs op of a merge ingest → the message has
+   either its pre-ingest revisions or the COMPLETE 2-revision merge (2 or 4
+   revisions, never 3), doctor clean, daemon restarts fine. Atomicity is by
+   construction: both revisions ride ONE event; objects land first.
+
+### Deviations
+- **Resolve semantics made precise** (rulings §8 says "runs the same merge
+  path against then-current head" without naming the base): replaying the
+  ORIGINAL export base re-conflicts forever on the very line the operator
+  just resolved. Implemented: the resolution is authoritative relative to
+  the conflict-time head; if the head moved again, RESOLVE is diff3-merged
+  against the new head (base = conflict-time head). The event preserves the
+  operator branch and marks the resolved head machine_merged=false (human
+  merge). Flagged for author confirmation (behavior documented in code).
+- **Conflicts live under views/operator/conflicts/** — spec §7.3 places
+  conflicts/ per agent view; the operator is the export editor in P0.
+- **Export ingest is explicit** (`cairn export ingest`), not a filesystem
+  watcher: editor temp-saves make auto-ingest of exports/ hostile; the
+  outbox remains the watched surface. exported_at is the one front-matter
+  field not verifiable against the log (not stored); all others are.
+
+### Author rulings needed
+- **Resolve base semantics** (above): confirm resolution-merges-against-
+  conflict-time-head; P0 behavior is conservative and never loses either
+  branch.
+
+### Test results (2026-07-11)
+`go test -tags sqlite_fts5 ./...` — all 11 packages green (merge: 4;
+daemon export suite: 7 incl. the merge crash matrix; CLI export flow).
+`go vet` clean.
+
 ## Resume-cold notes
-- Next milestone: **M5 — Exports, 3-way merge, conflicts**. Export
-  generator with read-only front-matter {message_id, revision_id,
-  base_revision_id, body_hash, exported_at}; ingest of edited exports:
-  base==head → normal revision; clean diff3 (git merge-file, pinned
-  semantics) → ONE revise_body event with TWO revision objects (operator
-  branch + merged, machine_merged flag — schema supports it); conflict →
-  conflicts/<id>/{BASE,CURRENT,OPERATOR_EDIT,RESOLVE}.md + `cairn resolve`;
-  front-matter mutation rejected; retracted-target rejected with error
-  receipt; `cairn doctor conflicts`; LF/UTF-8 normalization. The revise
-  path needs a daemon ReviseBody method (Publish covers only new messages).
+- Next milestone: **M6 — Embeddings, ranking, digest, why-ranked**. The
+  biggest remaining: ONNX MiniLM (pin artifact hash in constants when
+  vendored; Python-venv fallback rule in CLAUDE.md if the binding fails on
+  macOS arm64 within one session); background enricher goroutine +
+  retrieval_mode; sqlite-vec (asg017 bindings) + brute-force fallback
+  (vectors table already in DDL); RRF k=60 + percentile + deterministic
+  ties; both P0 profiles (constants.go); effective_P decay + suspension;
+  mandatory inclusion + omitted_mandatory_count; budget_chars over the
+  COMPLETE payload; digest views from local view config; per-line
+  `> [CAIRN] ` prefix (config.QuotePrefix); why_ranked from
+  rank_explanations; testdata/corpus (~200 messages, ~30 queries,
+  Success@5 ≥ 70% assertion); reindex --semantic full path.
   Remember -tags sqlite_fts5 (make test).
 - `// RULING-NEEDED:` markers in code: one (root-key storage, M0).
