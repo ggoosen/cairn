@@ -14,7 +14,7 @@ when all BUILD-PLAN acceptance criteria pass.
 | M4 — Daemon, CLI, outbox, receipts | **done** (2026-07-11) | receipts idempotent; concurrent senders serialize; migrate matrix green |
 | M5 — Exports, 3-way merge, conflicts | **done** (2026-07-11) | merge races + retraction race green; no half-graphs |
 | M6 — Embeddings, ranking, digest, why-ranked | **done** (2026-07-11) | Success@5 0.97; budgets never exceeded; why-ranked exact |
-| M7 — Telemetry, gates harness, full fault matrix | not started | |
+| M7 — Telemetry, gates harness, full fault matrix | **done** (2026-07-11) | matrix complete; P95 gate 1.5ms at 100k; scorecard recorded |
 | M8 — Dogfood package | not started | |
 
 ## M0 — Scaffold, config, identity, encryption check
@@ -576,18 +576,105 @@ Tasks completed:
 `go test -tags sqlite_fts5 ./...` — all 12 packages green. Golden-corpus
 numbers above. `go vet` clean.
 
+## M7 — Telemetry, gates harness, full fault matrix
+
+**Status: DONE.** All acceptance criteria pass.
+
+Tasks completed:
+- [x] **Telemetry** (`internal/telemetry`): .cairn/telemetry.sqlite — a
+      SEPARATE database, never events, never replicated (verified: searches
+      and outcomes append NOTHING to the event log). Interactions (ids,
+      attribution, budgets, payload chars, result positions, retrieval
+      mode), impressions, ack→lexical-visible latency samples. Missing
+      task/surface attribution is daemon-generated and flagged inferred=true
+      (rulings §10).
+- [x] **Outcome commands**: `cairn found | not-found | manual-workaround
+      <interaction-id> [--message]` — REQUIRE the interaction_id returned by
+      search/digest; unknown ids and bogus kinds refused.
+- [x] **`cairn gates`**: engineering gates computed (zero-loss via doctor +
+      CI matrix, provenance from fetched manifests, budget compliance from
+      telemetry, ack→visible P95 vs the 200 ms constant); product gates
+      render from recorded outcomes with the ≥30-handoff caveat; the
+      automated | human-measured column is in the report (rulings §10).
+- [x] **Emergency reserve** (rulings §11): 64 MiB preallocated at daemon
+      start (.cairn/reserve.bin); ordinary sends never touch it (verified at
+      max declared priority — priority is NEVER reserve authorization);
+      `cairn reserve release` (operator) grants exactly ONE send ≤ 64 KiB
+      (`cairn send --emergency`); double release refused; oversized refused;
+      reserve re-preallocated after the emergency send.
+- [x] **`cairn init --adopt`** (restored-data row): archives the old history
+      read-only at events-preadopt-<old-cairn-id>/ (never deleted), drops
+      stale derived state, creates a completely new origin identity; plain
+      init still refuses restored data; the new origin publishes fine.
+- [x] **Remaining fault rows**: clock rollback + extreme-future timestamps
+      (ordering untouched, no freshness boost); row 10 view swap (faults
+      during digest regeneration never expose a partial digest.md);
+      SQLite failure AFTER ack degrades with a warning and never un-acks
+      (restart heals via replay); hash-valid frame with an INVALID signature
+      → doctor surfaces it, daemon refuses to start over it (conservative
+      quarantine for a single-writer log); missing referenced object →
+      `daemon.VerifyObjects` walks every origin's body references against
+      the store (expired ephemeral is a legitimate absence) and reports;
+      projection drift check (checkpoint vs log head).
+- [x] **Scorecard harness**: env-gated `TestScorecard`
+      (CAIRN_SCORECARD=<n>) measuring the TESTING.md §5 quantities on the
+      real send path. It immediately caught a real bug: FTS5 operator
+      characters in queries (hyphens etc.) caused syntax errors — queries
+      are now quoted per-term (FTSQuery), so agent queries can never
+      produce SQL-ish failures.
+
+### Acceptance criteria → evidence
+1. *Entire fault matrix green in CI* — every TESTING.md §1 row (1–15) and
+   §2/§3 item now has an automated test across M1–M7 (crash matrices,
+   injected failures, reserve rows, adopt, clock, signature, objects,
+   properties). Full suite: 11 packages green.
+2. *`cairn gates` shows the four engineering gates green* — gates report
+   tested end-to-end (CLI + daemon); on the dev machine the P95 gate is
+   measured (below), provenance and budget compute from real data, doctor
+   clean.
+3. *Scorecard numbers recorded* — dev machine (M-series mac, APFS,
+   FileVault), full durability ordering, real daemon send path:
+
+   | n | append total | send-ack P50/P95 | ack→lexical-visible P95 | search P50/P95 | cold recovery | reindex --lexical |
+   |---|---|---|---|---|---|---|
+   | 10k  | 2m18s (13.8 ms/ev) | 13.2 / 16.2 ms | **1.14 ms** | 1.9 / 3.3 ms | 0.87 s | 2.4 s |
+   | 100k | 24m14s (14.5 ms/ev) | 13.8 / 18.0 ms | **1.52 ms** (gate < 200 ms ⇒ PASS) | 13.5 / 17.8 ms | 8.5 s | 27.7 s |
+
+   send-ack ≈ 14 ms is F_FULLFSYNC-bound (macOS durable-write cost), well
+   inside interactive tolerance; the GATE metric (ack → lexical visible)
+   is ~1.5 ms at 100k.
+
+### Deviations
+- **1M scorecard deferred**: at 14.5 ms/event a 1M append run is ≈ 4 h of
+  wall clock. 10k and 100k are measured (the 200 ms gate is defined at
+  100k — TESTING §5); scaling is linear in n for append and ~linear for
+  recovery/reindex (0.87 s→8.5 s, 2.4 s→27.7 s). Run overnight with
+  `CAIRN_SCORECARD=1000000 go test -tags sqlite_fts5 -run TestScorecard
+  -timeout 600m ./internal/daemon/` and append the row here (M8 note).
+- **Invalid-signature handling**: recovery refuses to start (hard error)
+  rather than quarantining-and-continuing — the quarantine flow proper
+  belongs to P1 replication of FOREIGN origins; for the local single-writer
+  log an invalid signature is corruption. Doctor surfaces it either way.
+- **ENOSPC on SQLite WAL**: not directly injectable (SQLite owns its I/O,
+  outside fsx); the equivalent guarantee — projection failure after ack
+  degrades and heals by replay — is tested directly.
+
+### Author rulings needed
+- None new (open items unchanged: M0 root-key storage, M5 resolve semantics).
+
+### Test results (2026-07-11)
+`go test -tags sqlite_fts5 ./...` — 11 packages green; `go vet` clean.
+Scorecard runs above (10k foreground, 100k detached, both PASS).
+
 ## Resume-cold notes
-- Next milestone: **M7 — Telemetry, gates harness, full fault matrix**.
-  telemetry.sqlite (SEPARATE db, never events/replicated): interactions
-  with ids/positions/budgets/outcomes, inferred=true flags; outcome
-  commands (found/not-found/manual-workaround) bound to interaction_id
-  (search/digest already return one); `cairn gates` (engineering gates
-  computed: zero-loss from matrix runs, provenance 100%, budget 100%,
-  P95 ack→lexical-visible < 200 ms measured; product gates template);
-  emergency reserve (64 MiB preallocated file, operator-only release,
-  ≤64 KiB, rulings §11 + reserve fault rows); remaining TESTING.md rows
-  (power-sim already in MemFS; volume-state rows via CAIRN_FAKE_VOLUME_STATUS;
-  restored-portable-data row; clock rollback row); 1M-event synthetic
-  scorecard (append/recover/search timings into PROGRESS.md).
-  Remember -tags sqlite_fts5 (make test).
+- Next milestone: **M8 — Dogfood package** (the last one): `cairn
+  setup-agent <name>` (creates views/<name>/{outbox,fetched,conflicts} +
+  view.json); DOGFOOD.md quickstart (three agent surfaces, 30-handoff diary
+  protocol, baseline collection, weekly `cairn gates`, embed-venv
+  provisioning for real-model embeddings); launchd plist for daemon
+  autostart; backup script (portable data only — exclude .cairn/) +
+  restore drill proving new-origin behavior (init --adopt exists);
+  optionally kick off the overnight 1M scorecard. Accept: fresh-machine
+  install from README < 10 min; restore drill demonstrates portable-only
+  restore creates a new origin.
 - `// RULING-NEEDED:` markers in code: one (root-key storage, M0).
