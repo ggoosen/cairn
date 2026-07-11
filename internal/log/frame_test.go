@@ -2,6 +2,7 @@ package log
 
 import (
 	"bytes"
+	"github.com/ggoosen/cairn/internal/fsx"
 	"io"
 	"os"
 	"path/filepath"
@@ -54,29 +55,22 @@ func TestFrameDetectsCorruption(t *testing.T) {
 	}
 }
 
-func TestWriteInitialSegment(t *testing.T) {
+func TestReadSegment(t *testing.T) {
 	dir := t.TempDir()
-	rec := []byte(`{"event":"genesis"}`)
-	path, err := WriteInitialSegment(dir, "device-1", 1, 1, [][]byte{rec})
+	recs := [][]byte{[]byte(`{"a":1}`), []byte(`{"b":2}`)}
+	var buf bytes.Buffer
+	for _, r := range recs {
+		EncodeFrame(&buf, r)
+	}
+	path := filepath.Join(dir, "seg_00000001.seg")
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadSegment(fsx.OS{}, path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(dir, "events", "device-1", "1", "seg_00000001.seg")
-	if path != want {
-		t.Fatalf("segment path %s, want %s", path, want)
-	}
-	got, err := ReadSegment(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 || !bytes.Equal(got[0], rec) {
+	if len(got) != 2 || !bytes.Equal(got[0], recs[0]) || !bytes.Equal(got[1], recs[1]) {
 		t.Fatalf("segment contents wrong: %q", got)
-	}
-	// never overwrite
-	if _, err := WriteInitialSegment(dir, "device-1", 1, 1, [][]byte{rec}); err == nil {
-		t.Fatal("initial segment overwritten")
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatal(err)
 	}
 }

@@ -1,10 +1,5 @@
 // Package log implements the append-only event log: frame format, segments,
-// durability ordering, seal, recovery, and doctor (rulings §3).
-//
-// M0 scope (pulled forward so `cairn init` persists genesis in the final
-// on-disk format, not a throwaway one): frame encode/decode and the initial
-// segment write with full fsync ordering. M1 adds append, recovery with
-// trailing-frame truncation, sealing, and doctor.
+// durable append, seal, recovery, and doctor (rulings §3).
 package log
 
 import (
@@ -13,10 +8,9 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
-	"os"
-	"path/filepath"
 
 	"github.com/ggoosen/cairn/internal/config"
+	"github.com/ggoosen/cairn/internal/fsx"
 )
 
 var castagnoli = crc32.MakeTable(crc32.Castagnoli)
@@ -58,6 +52,9 @@ func ReadFrame(r io.Reader) ([]byte, error) {
 		return nil, fmt.Errorf("unsupported frame version %d", head[4])
 	}
 	n := binary.LittleEndian.Uint64(head[5:13])
+	if n > config.MaxRecordBytes {
+		return nil, fmt.Errorf("frame length %d exceeds MaxRecordBytes (corrupt length field)", n)
+	}
 	record := make([]byte, n)
 	if _, err := io.ReadFull(r, record); err != nil {
 		return nil, fmt.Errorf("truncated record: %w", err)
@@ -72,70 +69,17 @@ func ReadFrame(r io.Reader) ([]byte, error) {
 	return record, nil
 }
 
-// SegmentDir returns events/<origin_device_id>/<generation> under the
-// portable dir. One directory per (origin, generation) — rulings §3.7.
-func SegmentDir(portableDir, originDeviceID string, generation int) string {
-	return filepath.Join(portableDir, config.EventsDirName, originDeviceID, fmt.Sprintf("%d", generation))
-}
-
-// SegmentName names a segment by its first sequence number.
-func SegmentName(firstSeq int64) string {
-	return fmt.Sprintf("seg_%08d.seg", firstSeq)
-}
-
-// WriteInitialSegment creates the first open segment for an origin and
-// appends the given records with the durability ordering of rulings §3:
-// write → fdatasync file → fsync the directory chain. Fails if the segment
-// already exists (never overwrite).
-func WriteInitialSegment(portableDir, originDeviceID string, generation int, firstSeq int64, records [][]byte) (string, error) {
-	dir := SegmentDir(portableDir, originDeviceID, generation)
-	if err := os.MkdirAll(dir, config.DirPerm); err != nil {
-		return "", err
-	}
-	path := filepath.Join(dir, SegmentName(firstSeq))
-
-	var buf bytes.Buffer
-	for _, rec := range records {
-		EncodeFrame(&buf, rec)
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, config.FilePerm)
-	if err != nil {
-		return "", fmt.Errorf("creating segment: %w", err)
-	}
-	if _, err := f.Write(buf.Bytes()); err != nil {
-		f.Close()
-		return "", err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return "", err
-	}
-	if err := f.Close(); err != nil {
-		return "", err
-	}
-	// fsync the directory chain (new dirs + new segment entry) so the
-	// entries themselves are durable: <gen>/ → <origin>/ → events/ → root.
-	for d := dir; ; d = filepath.Dir(d) {
-		if err := syncDir(d); err != nil {
-			return "", err
-		}
-		if d == portableDir {
-			break
-		}
-	}
-	return path, nil
-}
-
-// ReadSegment returns all complete records in a segment file.
-func ReadSegment(path string) ([][]byte, error) {
-	f, err := os.Open(path)
+// ReadSegment returns all complete records in a segment file (no
+// verification — recovery and doctor verify; this is the raw reader).
+func ReadSegment(fsys fsx.FS, path string) ([][]byte, error) {
+	blob, err := fsys.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	r := bytes.NewReader(blob)
 	var records [][]byte
 	for {
-		rec, err := ReadFrame(f)
+		rec, err := ReadFrame(r)
 		if err == io.EOF {
 			return records, nil
 		}
@@ -144,17 +88,4 @@ func ReadSegment(path string) ([][]byte, error) {
 		}
 		records = append(records, rec)
 	}
-}
-
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	err = d.Sync()
-	cerr := d.Close()
-	if err != nil {
-		return fmt.Errorf("fsync dir %s: %w", dir, err)
-	}
-	return cerr
 }

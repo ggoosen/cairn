@@ -14,6 +14,7 @@ import (
 
 	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/event"
+	"github.com/ggoosen/cairn/internal/fsx"
 	cairnlog "github.com/ggoosen/cairn/internal/log"
 )
 
@@ -175,10 +176,20 @@ func Initialize(opts InitOptions) (*InitResult, error) {
 			return nil, err
 		}
 	}
-	segPath, err := cairnlog.WriteInitialSegment(dir, deviceID, config.FirstGeneration, config.FirstSequence, [][]byte{record})
+	lg, err := cairnlog.Create(fsx.OS{}, dir, cairnlog.Origin{DeviceID: deviceID, Generation: config.FirstGeneration})
 	if err != nil {
 		return nil, err
 	}
+	if err := lg.Append(record, env); err != nil {
+		lg.Close()
+		return nil, fmt.Errorf("appending genesis: %w", err)
+	}
+	if err := lg.Close(); err != nil {
+		return nil, err
+	}
+	segPath := filepath.Join(
+		cairnlog.SegmentDir(dir, deviceID, config.FirstGeneration),
+		cairnlog.SegmentName(config.FirstSequence))
 
 	portable := &config.PortableConfig{
 		ConfigVersion: config.PortableConfigVersion,
@@ -276,7 +287,7 @@ func (l *Loaded) GenesisRecord() (*event.Envelope, *GenesisPayload, error) {
 	segPath := filepath.Join(
 		cairnlog.SegmentDir(l.Dir, l.Device.DeviceID, l.Device.OriginGeneration),
 		cairnlog.SegmentName(config.FirstSequence))
-	records, err := cairnlog.ReadSegment(segPath)
+	records, err := cairnlog.ReadSegment(fsx.OS{}, segPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading genesis segment: %w", err)
 	}

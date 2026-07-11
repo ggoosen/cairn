@@ -44,6 +44,12 @@ const (
 	SegmentSealBytes  = 64 << 20
 	SegmentSealEvents = 10_000
 
+	// MaxRecordBytes bounds a single record_bytes for frame-reading sanity:
+	// a torn/corrupt length field must produce a frame error, never an
+	// attempted multi-GiB allocation. Generous headroom above the largest
+	// legitimate event (inline bodies cap at 64 KiB + envelope + payload).
+	MaxRecordBytes = 16 << 20
+
 	// FirstGeneration / FirstSequence: origin sequencing starts at 1;
 	// ordering is (origin, generation, sequence) — never wall time.
 	FirstGeneration = 1
