@@ -51,3 +51,28 @@ func TestDoctorCleanThenDetectsCorruption(t *testing.T) {
 		t.Fatalf("no PROBLEM line in report:\n%s", out)
 	}
 }
+
+// M3 CLI-level: reindex --lexical builds the projection on a real cairn;
+// --semantic is a stub until M6.
+func TestReindexCLI(t *testing.T) {
+	dir := setupEnv(t)
+	if out, err := runCLI(t, "init", "--dir", dir); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	out, err := runCLI(t, "reindex", "--lexical", "--dir", dir)
+	if err != nil {
+		t.Fatalf("reindex --lexical: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "lexical projection rebuilt") {
+		t.Fatalf("unexpected output: %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".cairn", "index.sqlite")); err != nil {
+		t.Fatalf("projection db missing: %v", err)
+	}
+	if _, err := runCLI(t, "reindex", "--semantic", "--dir", dir); err == nil {
+		t.Fatal("semantic stub should error until M6")
+	}
+	if _, err := runCLI(t, "reindex", "--dir", dir); err == nil {
+		t.Fatal("no-flag reindex should error")
+	}
+}

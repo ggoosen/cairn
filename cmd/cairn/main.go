@@ -32,5 +32,6 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newInitCmd(&dir))
 	root.AddCommand(newIdentityCmd(&dir))
 	root.AddCommand(newDoctorCmd(&dir))
+	root.AddCommand(newReindexCmd(&dir))
 	return root
 }

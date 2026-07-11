@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"sort"
 	"strconv"
 
 	"github.com/ggoosen/cairn/internal/config"
@@ -51,11 +52,29 @@ func (r *DoctorReport) Summary(w io.Writer) {
 // learning starts from genesis each time.
 func Doctor(fsys fsx.FS, portableDir string, verify VerifyFunc) (*DoctorReport, error) {
 	report := &DoctorReport{}
+	origins, err := Origins(fsys, portableDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, origin := range origins {
+		_, oreport, err := scanOrigin(fsys, portableDir, origin, verify, VerifyOnly, nil)
+		if err != nil && !errors.Is(err, errStopScan) {
+			return nil, err
+		}
+		report.Origins = append(report.Origins, *oreport)
+	}
+	return report, nil
+}
+
+// Origins enumerates every (origin_device_id, generation) directory under
+// the portable dir, sorted deterministically (device id, then generation).
+func Origins(fsys fsx.FS, portableDir string) ([]Origin, error) {
 	eventsDir := filepath.Join(portableDir, config.EventsDirName)
 	deviceDirs, err := fsys.ReadDir(eventsDir)
 	if err != nil {
 		return nil, fmt.Errorf("reading events dir: %w", err)
 	}
+	var out []Origin
 	for _, dd := range deviceDirs {
 		if !dd.IsDir() {
 			continue
@@ -72,13 +91,14 @@ func Doctor(fsys fsx.FS, portableDir string, verify VerifyFunc) (*DoctorReport, 
 			if err != nil {
 				continue
 			}
-			origin := Origin{DeviceID: dd.Name(), Generation: gen}
-			_, oreport, err := scanOrigin(fsys, portableDir, origin, verify, VerifyOnly, nil)
-			if err != nil && !errors.Is(err, errStopScan) {
-				return nil, err
-			}
-			report.Origins = append(report.Origins, *oreport)
+			out = append(out, Origin{DeviceID: dd.Name(), Generation: gen})
 		}
 	}
-	return report, nil
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].DeviceID != out[j].DeviceID {
+			return out[i].DeviceID < out[j].DeviceID
+		}
+		return out[i].Generation < out[j].Generation
+	})
+	return out, nil
 }

@@ -23,6 +23,10 @@ type Mode int
 const (
 	Repair Mode = iota
 	VerifyOnly
+	// Strict: hard errors like Repair, but NEVER mutates — a trailing
+	// invalid frame is tolerated silently (daemon recovery owns truncation).
+	// Used by replay/reindex readers.
+	Strict
 )
 
 // Problem is one defect found while scanning (doctor output).
@@ -211,13 +215,16 @@ func scanOrigin(fsys fsx.FS, portableDir string, origin Origin, verify VerifyFun
 				return nil, report, hardErr(seg.path, fmt.Sprintf("interior corruption (%v) — refusing to truncate a sealed, non-final, or non-trailing region", frameErr))
 			}
 			report.TruncatedBytes = int64(len(blob)) - lastGood
-			if mode == Repair {
+			switch mode {
+			case Repair:
 				if err := truncateFile(fsys, seg.path, lastGood); err != nil {
 					return nil, report, fmt.Errorf("truncating trailing frame: %w", err)
 				}
-			} else {
+			case VerifyOnly:
 				report.Problems = append(report.Problems, Problem{Segment: seg.path,
 					Detail: fmt.Sprintf("trailing invalid frame (%v); recovery would truncate %d bytes", frameErr, report.TruncatedBytes)})
+			case Strict:
+				// tolerated: the un-acked torn tail is invisible to replay
 			}
 		}
 
@@ -248,15 +255,23 @@ func scanOrigin(fsys fsx.FS, portableDir string, origin Origin, verify VerifyFun
 	return st, report, nil
 }
 
-// fail: in Repair mode a defect aborts recovery with an error; in VerifyOnly
-// it is recorded and scanning of this origin stops (the chain state past a
-// defect is meaningless).
+// fail: in Repair/Strict modes a defect aborts the scan with an error; in
+// VerifyOnly it is recorded and scanning of this origin stops (the chain
+// state past a defect is meaningless).
 func fail(report *RecoveryReport, mode Mode, seg, detail string) error {
 	report.Problems = append(report.Problems, Problem{Segment: seg, Detail: detail})
-	if mode == Repair {
-		return fmt.Errorf("%s: %s", seg, detail)
+	if mode == VerifyOnly {
+		return errStopScan
 	}
-	return errStopScan
+	return fmt.Errorf("%s: %s", seg, detail)
+}
+
+// Walk iterates one origin's verified records read-only (Strict mode): full
+// verification, hard error on any defect, no mutations. The replay path for
+// projection build and reindex.
+func Walk(fsys fsx.FS, portableDir string, origin Origin, verify VerifyFunc, onRecord OnRecord) (*RecoveryReport, error) {
+	_, report, err := scanOrigin(fsys, portableDir, origin, verify, Strict, onRecord)
+	return report, err
 }
 
 var errStopScan = errors.New("scan stopped at first defect")

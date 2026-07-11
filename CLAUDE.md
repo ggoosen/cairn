@@ -71,8 +71,10 @@ review. Your job is implementation, not redesign.
 - TDD where it matters: the event log (M1) and outbox (M4) get their crash
   tests written alongside the implementation, not after.
 - Commit per completed task with message `M<milestone>: <task> — <summary>`.
-- Run `go test ./...` and `go vet ./...` before every commit. Keep the build
-  green at all times.
+- Run `go test -tags sqlite_fts5 ./...` and `go vet -tags sqlite_fts5 ./...`
+  (or `make test vet`) before every commit. Keep the build green at all
+  times. The `sqlite_fts5` tag is mandatory from M3 on — mattn/go-sqlite3
+  compiles FTS5 only behind it (anticipated in the library table below).
 - All tunable constants live in ONE commented config module
   (`internal/config/constants.go`) — ranking weights, half-lives, seal
   thresholds, limits. No magic numbers in code.
