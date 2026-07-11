@@ -16,6 +16,7 @@ when all BUILD-PLAN acceptance criteria pass.
 | M6 — Embeddings, ranking, digest, why-ranked | **done** (2026-07-11) | Success@5 0.97; budgets never exceeded; why-ranked exact |
 | M7 — Telemetry, gates harness, full fault matrix | **done** (2026-07-11) | matrix complete; P95 gate 1.5ms at 100k; scorecard recorded |
 | M8 — Dogfood package | **done** (2026-07-11) | install smoke 2s; restore drill CI-verified; **P0 COMPLETE** |
+| M9 — Ingest (post-P0) | **done** (2026-07-12) | scan/manifest/apply; idempotent; provenance via source_ref |
 
 ## M0 — Scaffold, config, identity, encryption check
 
@@ -732,10 +733,68 @@ Open author rulings (non-blocking, conservative interpretations shipped):
    export ceremony).
 2. M5 — resolve merges against the conflict-time head (documented).
 
+## M9 — Ingest (post-P0)
+
+**Status: DONE.** The BUILD-PLAN M9 stub defined no acceptance criteria;
+the criteria below were self-defined conservatively and all pass.
+
+Tasks completed:
+- [x] **`cairn ingest scan <dir>`** (`internal/ingest`): walks a docs tree /
+      llm-wiki repo (.md files, dot-dirs skipped), LF/UTF-8 normalizes,
+      classifies each file against the LIVE cairn — source_refs lookup by
+      `repo/relpath`, then head body-hash comparison → publish | revise |
+      skip; proposes topics from the directory structure (sanitized to the
+      schema's topic-name pattern); resolves [[wiki links]] (with |alias
+      support) to message ids across BOTH existing and about-to-be-published
+      files (ids pre-assigned in the manifest — caller-supplied logical ids
+      per rulings §2); unresolved links recorded. Output: a deterministic,
+      reviewable JSON manifest.
+- [x] **`cairn ingest apply --manifest …`**: executes the plan entirely
+      through daemon IPC (rulings §6 — ingest never appends independently
+      and can never use the operator class override): topic-ensure
+      (idempotent create-or-lookup), publish with source_ref
+      {path, repo, content_hash, imported_at} + relates_to + initial topic
+      links, revise via the daemon's base==head revision path; a source file
+      changed between scan and apply is REFUSED ("rerun scan") — never a
+      silent divergence between manifest hash and published content.
+- [x] **Plumbing**: PublishRequest carries source_ref/relates_to (validated,
+      projected into source_refs); new IPC ops revise / topic-ensure /
+      source-ref; projection lookups SourceRefMessage + TopicIDByName.
+- [x] **DOGFOOD.md §7**: operator instructions for seeding cairn from an
+      existing wiki.
+
+### Acceptance criteria (self-defined) → evidence
+1. *Deterministic reviewable manifest* — `TestIngestScanApplyEndToEnd`:
+   4-file synthetic wiki → correct publish classification, directory
+   topics (`team-wiki`, `team-wiki/eng`, `team-wiki/eng/deep`), wiki links
+   resolved to pre-assigned ids, unresolved link surfaced; manifest
+   round-trips through disk (`TestManifestRoundTrip`).
+2. *Full provenance on apply* — source_refs projected (path→message),
+   bodies searchable, topic links live, relates_to in the signed payloads.
+3. *Strict idempotency* — rescan+apply with no changes ⇒ 4 skips, zero
+   events, stable message ids; editing ONE file ⇒ exactly one revise event
+   and the new head is the search hit; scan/apply drift refused.
+4. *Policy respected* — >1 MiB canonical import is downgraded (ingest has
+   no operator override): `TestIngestCannotForceCanonical`.
+
+### Deviations
+- **source_ref paths are stored as `repo/relpath`** — this makes the
+  user-specified single-column `source_refs.path` primary key collision-free
+  across repos (the concern flagged when the hook landed). If two imports
+  use the SAME repo label for different trees, last-import-wins per path
+  (deterministic on replay).
+- relates_to remains payload-only (signed, replayable) — no projection
+  table for it yet; a P1/P2 reference-graph projection can add one without
+  schema conflict.
+
+### Test results (2026-07-12)
+`go test -tags sqlite_fts5 ./...` — 12 packages green (ingest: 3 tests,
+end-to-end over real daemon IPC). `go vet` clean.
+
 ## Resume-cold notes
-- **All P0 milestones (M0–M8) are complete.** Next steps live outside P0:
-  the operator's 30-handoff evaluation (DOGFOOD.md), the overnight 1M
-  scorecard, embed-venv provisioning for real-model retrieval numbers,
-  resolution of the two open author rulings, and — post-evaluation — P1
-  (BUILD-PLAN) or M9 ingest (stub in BUILD-PLAN; hooks already shipped).
+- **Every milestone in BUILD-PLAN.md (M0–M9) is complete.** What remains is
+  operator work and future phases: the 30-handoff evaluation (DOGFOOD.md),
+  the overnight 1M scorecard, embed-venv provisioning, the two open author
+  rulings, and P1 (networking/replication/MCP — a design phase, not a
+  BUILD-PLAN milestone).
 - `// RULING-NEEDED:` markers in code: one (root-key storage, M0).
