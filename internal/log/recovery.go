@@ -54,7 +54,7 @@ type OnRecord func(env *event.Envelope, recordBytes []byte) error
 // next_sequence from the log (cache is never consulted here — the verified
 // log is authoritative), and complete a threshold-crossing seal the crash
 // interrupted.
-func Open(fsys fsx.FS, portableDir string, origin Origin, verify VerifyFunc, onRecord OnRecord) (*Log, *RecoveryReport, error) {
+func Open(fsys fsx.FS, portableDir string, origin Origin, verify VerifyFunc, onRecord OnRecord, opts ...Option) (*Log, *RecoveryReport, error) {
 	st, report, err := scanOrigin(fsys, portableDir, origin, verify, Repair, onRecord)
 	if err != nil {
 		return nil, report, err
@@ -67,6 +67,11 @@ func Open(fsys fsx.FS, portableDir string, origin Origin, verify VerifyFunc, onR
 		verify:      verify,
 		nextSeq:     st.nextSeq,
 		lastEventID: st.lastEventID,
+		sealBytes:   config.SegmentSealBytes,
+		sealEvents:  config.SegmentSealEvents,
+	}
+	for _, o := range opts {
+		o(l)
 	}
 
 	if st.openSegment != "" {
@@ -82,7 +87,7 @@ func Open(fsys fsx.FS, portableDir string, origin Origin, verify VerifyFunc, onR
 
 		// A crash between threshold-crossing append and seal leaves an
 		// over-threshold open segment; complete the seal now.
-		if l.segBytes >= config.SegmentSealBytes || len(l.segEventIDs) >= config.SegmentSealEvents {
+		if l.segBytes >= l.sealBytes || len(l.segEventIDs) >= l.sealEvents {
 			if err := l.seal(); err != nil {
 				return nil, report, fmt.Errorf("completing interrupted seal: %w", err)
 			}

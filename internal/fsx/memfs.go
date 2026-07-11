@@ -123,6 +123,37 @@ func (m *MemFS) Restart() {
 	m.mu.Unlock()
 }
 
+// Clone deep-copies the filesystem state (crash-matrix harness: build the
+// base state once, clone per enumerated crash point). Inode aliasing between
+// the cache and durable namespaces is preserved.
+func (m *MemFS) Clone() *MemFS {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c := NewMemFS()
+	copied := map[*inode]*inode{}
+	dup := func(old *inode) *inode {
+		if n, ok := copied[old]; ok {
+			return n
+		}
+		n := &inode{
+			cache:   append([]byte(nil), old.cache...),
+			durable: append([]byte(nil), old.durable...),
+		}
+		copied[old] = n
+		return n
+	}
+	for p, ino := range m.inodes {
+		c.inodes[p] = dup(ino)
+	}
+	for p, ino := range m.durables {
+		c.durables[p] = dup(ino)
+	}
+	for d := range m.dirs {
+		c.dirs[d] = true
+	}
+	return c
+}
+
 // enter gates every operation: crash schedule, one-shot fault, op counting.
 func (m *MemFS) enter(op Op) error {
 	if m.crashed {

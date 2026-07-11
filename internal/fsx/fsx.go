@@ -81,6 +81,9 @@ func (OS) SyncDir(name string) error {
 func WriteFileAtomic(fsys FS, path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	tmp := path + ".tmp"
+	// A stale temp from an interrupted earlier attempt is always discardable
+	// (crash rows 1–2: "orphan temp removable") — clear it so retries work.
+	fsys.Remove(tmp)
 	f, err := fsys.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm)
 	if err != nil {
 		return err

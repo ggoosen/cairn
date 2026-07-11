@@ -56,6 +56,19 @@ type Log struct {
 	nextSeq     int64
 	lastEventID string
 	closed      bool
+
+	sealBytes  int64 // seal thresholds; default from config, overridable for tests
+	sealEvents int
+}
+
+// Option customizes a Log at construction.
+type Option func(*Log)
+
+// WithSealThresholds overrides the seal thresholds. TEST HOOK ONLY: the
+// canonical values (rulings §3.7) live in config and are the defaults; this
+// exists so the seal path is exercisable without 10k-event fixtures.
+func WithSealThresholds(bytes int64, events int) Option {
+	return func(l *Log) { l.sealBytes, l.sealEvents = bytes, events }
 }
 
 // SegmentDir returns events/<origin_device_id>/<generation> under the portable dir.
@@ -84,7 +97,7 @@ func parseSegmentName(name string) (int64, bool) {
 }
 
 // Create initializes an empty log for a brand-new origin (used by init).
-func Create(fsys fsx.FS, portableDir string, origin Origin) (*Log, error) {
+func Create(fsys fsx.FS, portableDir string, origin Origin, opts ...Option) (*Log, error) {
 	dir := SegmentDir(portableDir, origin.DeviceID, origin.Generation)
 	if err := fsys.MkdirAll(dir, config.DirPerm); err != nil {
 		return nil, err
@@ -92,12 +105,18 @@ func Create(fsys fsx.FS, portableDir string, origin Origin) (*Log, error) {
 	if entries, err := fsys.ReadDir(dir); err == nil && len(entries) > 0 {
 		return nil, fmt.Errorf("origin %s/%d already has segments", origin.DeviceID, origin.Generation)
 	}
-	return &Log{
-		fs:      fsys,
-		dir:     dir,
-		origin:  origin,
-		nextSeq: config.FirstSequence,
-	}, nil
+	l := &Log{
+		fs:         fsys,
+		dir:        dir,
+		origin:     origin,
+		nextSeq:    config.FirstSequence,
+		sealBytes:  config.SegmentSealBytes,
+		sealEvents: config.SegmentSealEvents,
+	}
+	for _, o := range opts {
+		o(l)
+	}
+	return l, nil
 }
 
 // Append durably appends one signed record (rulings §3 ordering — the caller
@@ -160,7 +179,7 @@ func (l *Log) Append(recordBytes []byte, env *event.Envelope) error {
 	l.lastEventID = env.EventID
 	l.nextSeq++
 
-	if l.segBytes >= config.SegmentSealBytes || len(l.segEventIDs) >= config.SegmentSealEvents {
+	if l.segBytes >= l.sealBytes || len(l.segEventIDs) >= l.sealEvents {
 		if err := l.seal(); err != nil {
 			// The append itself is durable; a failed seal leaves the segment
 			// open and valid. Recovery re-attempts the seal.
