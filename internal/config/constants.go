@@ -221,3 +221,34 @@ const (
 	PortableConfigVersion = 1
 	DeviceConfigVersion   = 1
 )
+
+// ---------------------------------------------------------------------------
+// Daemon (rulings §6, §8)
+// ---------------------------------------------------------------------------
+
+const (
+	// DaemonLockName: exclusive flock in device-local state — OS file lock +
+	// IPC ownership, never PID files alone (rulings §6).
+	DaemonLockName = "daemon.lock"
+
+	// OutboxPollInterval: how often the watcher scans views/*/outbox for
+	// renamed-in bundles and .md drops.
+	OutboxPollInterval = 250 * time.Millisecond
+
+	// HousekeepInterval: ephemeral-TTL housekeeping cadence (basic in-process
+	// loop; the P2 prioritised maintenance subsystem is out of P0 scope).
+	HousekeepInterval = 1 * time.Hour
+
+	// IPCMaxRequestBytes bounds one unix-socket JSON request (bodies are
+	// bounded well below this by MaxRecordBytes).
+	IPCMaxRequestBytes = 32 << 20
+
+	// OutboxReadySuffix marks an atomically-renamed-in bundle directory;
+	// receipts and rejections use the fixed names below.
+	OutboxReadySuffix  = ".ready"
+	OutboxRejectedDir  = "rejected"
+	OutboxProcessedDir = "processed"
+	OutboxRequestFile  = "request.json"
+	OutboxErrorFile    = "error.json"
+	ReceiptSuffix      = ".receipt.json"
+)

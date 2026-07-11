@@ -58,6 +58,8 @@ func (v *ChainVerifier) Verify(recordBytes []byte) (*event.Envelope, error) {
 		v.cairnID = pl.CairnID
 		v.rootPub = ed25519.PublicKey(rootPub)
 		v.keys[event.KeyID(devicePub)] = devicePub
+		// the root key signs device.revoke envelopes directly (rulings §2/§4)
+		v.keys[event.KeyID(v.rootPub)] = v.rootPub
 		return env, nil
 	}
 

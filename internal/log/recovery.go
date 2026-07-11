@@ -77,6 +77,11 @@ func Open(fsys fsx.FS, portableDir string, origin Origin, verify VerifyFunc, onR
 	for _, o := range opts {
 		o(l)
 	}
+	// A fresh origin (first open after migrate) has no directory yet; the
+	// first append needs it to exist.
+	if err := fsys.MkdirAll(l.dir, config.DirPerm); err != nil {
+		return nil, report, err
+	}
 
 	if st.openSegment != "" {
 		f, err := fsys.OpenFile(st.openSegment, os.O_WRONLY|os.O_APPEND, config.FilePerm)

@@ -8,6 +8,7 @@ require (
 	github.com/gowebpki/jcs v1.0.1
 	github.com/mattn/go-sqlite3 v1.14.47
 	github.com/spf13/cobra v1.10.2
+	gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c
 	lukechampine.com/blake3 v1.4.1
 )
 

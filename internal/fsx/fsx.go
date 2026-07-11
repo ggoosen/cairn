@@ -39,6 +39,7 @@ type FS interface {
 	OpenFile(name string, flag int, perm os.FileMode) (File, error)
 	Rename(oldpath, newpath string) error
 	Remove(name string) error
+	RemoveAll(path string) error
 	MkdirAll(path string, perm os.FileMode) error
 	ReadDir(name string) ([]fs.DirEntry, error)
 	ReadFile(name string) ([]byte, error)
@@ -55,6 +56,7 @@ func (OS) OpenFile(name string, flag int, perm os.FileMode) (File, error) {
 }
 func (OS) Rename(oldpath, newpath string) error         { return os.Rename(oldpath, newpath) }
 func (OS) Remove(name string) error                     { return os.Remove(name) }
+func (OS) RemoveAll(path string) error                  { return os.RemoveAll(path) }
 func (OS) MkdirAll(path string, perm os.FileMode) error { return os.MkdirAll(path, perm) }
 func (OS) ReadDir(name string) ([]fs.DirEntry, error)   { return os.ReadDir(name) }
 func (OS) ReadFile(name string) ([]byte, error)         { return os.ReadFile(name) }

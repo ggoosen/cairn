@@ -1,6 +1,8 @@
 package projection
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -125,4 +127,76 @@ func (p *Projection) ObjectRefs() ([]object.Ref, error) {
 		out = append(out, object.Ref{Hash: hash, TextClass: class, CreatedAt: t})
 	}
 	return out, rows.Err()
+}
+
+// AppliedEvent is a projected event row (receipt regeneration).
+type AppliedEvent struct {
+	EventID   string
+	EventType string
+	Payload   []byte
+}
+
+// EventsByCorrelation returns the events created under one outbox
+// request_id (correlation_id), in origin-sequence order — the idempotency
+// lookup: a duplicate bundle regenerates its receipt from these (rulings §8).
+func (p *Projection) EventsByCorrelation(correlationID string) ([]AppliedEvent, error) {
+	rows, err := p.db.Query(`SELECT event_id, event_type, payload_json FROM events
+		WHERE correlation_id=? ORDER BY origin_device_id, origin_generation, origin_sequence`, correlationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AppliedEvent
+	for rows.Next() {
+		var e AppliedEvent
+		var payload string
+		if err := rows.Scan(&e.EventID, &e.EventType, &payload); err != nil {
+			return nil, err
+		}
+		e.Payload = []byte(payload)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// MessageInfo is peek-level metadata for one logical message.
+type MessageInfo struct {
+	MessageID        string `json:"message_id"`
+	ThreadID         string `json:"thread_id,omitempty"`
+	ReplyToMessageID string `json:"reply_to_message_id,omitempty"`
+	HeadRevisionID   string `json:"head_revision_id"`
+	BodyHash         string `json:"body_hash"`
+	BodyLen          int64  `json:"body_len"`
+	BodyMime         string `json:"body_mime"`
+	TextClass        string `json:"text_class"`
+	Priority         int    `json:"declared_priority"`
+	Sender           string `json:"sender,omitempty"`
+	CreatedAt        string `json:"created_at"`
+	CreatedEventID   string `json:"created_event_id"`
+	Retracted        bool   `json:"retracted"`
+}
+
+// MessageInfo returns metadata for a message and its head revision.
+func (p *Projection) MessageInfo(messageID string) (*MessageInfo, error) {
+	var mi MessageInfo
+	var thread, reply, sender sql.NullString
+	var retracted int
+	err := p.db.QueryRow(`
+		SELECT m.message_id, m.thread_id, m.reply_to_message_id, m.head_revision_id,
+		       r.body_hash, r.body_len, r.body_mime, m.text_class, m.declared_priority,
+		       m.sender_principal_id, m.created_at, m.created_event_id, m.retracted
+		FROM messages m JOIN revisions r ON r.revision_id = m.head_revision_id
+		WHERE m.message_id = ?`, messageID).Scan(
+		&mi.MessageID, &thread, &reply, &mi.HeadRevisionID,
+		&mi.BodyHash, &mi.BodyLen, &mi.BodyMime, &mi.TextClass, &mi.Priority,
+		&sender, &mi.CreatedAt, &mi.CreatedEventID, &retracted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("message %s not found", messageID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	mi.ThreadID, mi.ReplyToMessageID, mi.Sender = thread.String, reply.String, sender.String
+	mi.Retracted = retracted == 1
+	return &mi, nil
 }

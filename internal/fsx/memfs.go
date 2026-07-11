@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -237,6 +238,28 @@ func (m *MemFS) Remove(name string) error {
 		return &os.PathError{Op: "remove", Path: name, Err: os.ErrNotExist}
 	}
 	delete(m.inodes, name)
+	return nil
+}
+
+// RemoveAll removes a path and all children (counts as ONE mutating op —
+// rm -rf granularity matches the crash model well enough for bundles).
+func (m *MemFS) RemoveAll(path string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.enter(OpRemove); err != nil {
+		return err
+	}
+	path = clean(path)
+	for p := range m.inodes {
+		if p == path || strings.HasPrefix(p, path+"/") {
+			delete(m.inodes, p)
+		}
+	}
+	for d := range m.dirs {
+		if d == path || strings.HasPrefix(d, path+"/") {
+			delete(m.dirs, d)
+		}
+	}
 	return nil
 }
 

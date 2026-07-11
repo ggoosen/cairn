@@ -28,11 +28,13 @@ CREATE TABLE events (
   previous_event_id TEXT,
   actor_principal_id TEXT,
   actor_task_id TEXT,
+  correlation_id TEXT,               -- outbox request_id; receipt idempotency key (rulings §8)
   wall_time TEXT NOT NULL,           -- RFC3339 string; never used for ordering
   payload_json TEXT NOT NULL,
   UNIQUE (origin_device_id, origin_generation, origin_sequence)
 );
 CREATE INDEX idx_events_type ON events(event_type);
+CREATE INDEX idx_events_correlation ON events(correlation_id) WHERE correlation_id IS NOT NULL;
 
 CREATE TABLE messages (
   message_id TEXT PRIMARY KEY,

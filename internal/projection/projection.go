@@ -117,11 +117,11 @@ func (p *Projection) Apply(env *event.Envelope, _ []byte) error {
 	}
 
 	if _, err := tx.Exec(`INSERT INTO events(event_id, event_type, origin_device_id, origin_generation, origin_sequence,
-			previous_event_id, actor_principal_id, actor_task_id, wall_time, payload_json)
-			VALUES (?,?,?,?,?,?,?,?,?,?)`,
+			previous_event_id, actor_principal_id, actor_task_id, correlation_id, wall_time, payload_json)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 		env.EventID, env.EventType, env.OriginDeviceID, env.OriginGeneration, env.OriginSequence,
 		nullable(env.PreviousOriginEventID), nullable(env.ActorPrincipalID), nullable(env.ActorTaskID),
-		env.WallTime, string(env.Payload)); err != nil {
+		nullable(env.CorrelationID), env.WallTime, string(env.Payload)); err != nil {
 		return fmt.Errorf("events insert for %s: %w", env.EventID, err)
 	}
 
