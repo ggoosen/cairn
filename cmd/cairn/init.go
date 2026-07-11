@@ -11,6 +11,7 @@ func newInitCmd(dirFlag *string) *cobra.Command {
 	var (
 		allowUnencrypted bool
 		displayName      string
+		adopt            bool
 	)
 	cmd := &cobra.Command{
 		Use:   "init",
@@ -21,17 +22,23 @@ func newInitCmd(dirFlag *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, err = identity.Initialize(identity.InitOptions{
+			opts := identity.InitOptions{
 				Dir:              dir,
 				DisplayName:      displayName,
 				AllowUnencrypted: allowUnencrypted,
 				Out:              cmd.OutOrStdout(),
-			})
+			}
+			if adopt {
+				_, err = identity.Adopt(opts)
+			} else {
+				_, err = identity.Initialize(opts)
+			}
 			return err
 		},
 	}
 	cmd.Flags().BoolVar(&allowUnencrypted, "allow-unencrypted", false,
 		"operator override: proceed on an unencrypted/unknown volume (persisted device-local; warns on every start)")
 	cmd.Flags().StringVar(&displayName, "display-name", "", "display name for this device's certificate")
+	cmd.Flags().BoolVar(&adopt, "adopt", false, "adopt restored portable data lacking device-local identity: archive old history, create a NEW origin identity")
 	return cmd
 }

@@ -303,3 +303,50 @@ func (l *Loaded) GenesisRecord() (*event.Envelope, *GenesisPayload, error) {
 	}
 	return env, pl, nil
 }
+
+// Adopt handles restored portable data WITHOUT device-local identity
+// (TESTING.md; spec §3.2: a raw folder restore ALWAYS creates a new origin
+// identity). The old event history is preserved read-only under
+// events-preadopt-<old-cairn-id>/ (never deleted), objects are retained
+// (content-addressed, shared), stale derived state is dropped, and a fresh
+// identity (new cairn_id, root, device, genesis) is created in place.
+func Adopt(opts InitOptions) (*InitResult, error) {
+	dir := opts.Dir
+	old, err := config.LoadPortable(dir)
+	if err != nil {
+		return nil, fmt.Errorf("adopt needs an existing portable directory: %w", err)
+	}
+	// refuse adopt when the device identity is actually present
+	if devDir, err := config.DeviceStateDir(old.CairnID); err == nil {
+		if _, err := config.LoadDevice(devDir); err == nil {
+			return nil, fmt.Errorf("device-local identity for cairn %s exists — adopt is only for restored data without identity", old.CairnID)
+		}
+	}
+
+	// quarantine the old history (preserved, read-only, never silently deleted)
+	archive := filepath.Join(dir, "events-preadopt-"+old.CairnID)
+	if _, err := os.Stat(archive); err == nil {
+		return nil, fmt.Errorf("adopt archive %s already exists — resolve manually", archive)
+	}
+	if _, err := os.Stat(filepath.Join(dir, config.EventsDirName)); err == nil {
+		if err := os.Rename(filepath.Join(dir, config.EventsDirName), archive); err != nil {
+			return nil, err
+		}
+	}
+	if err := os.Rename(filepath.Join(dir, config.PortableConfigName),
+		filepath.Join(dir, config.PortableConfigName+".preadopt-"+old.CairnID)); err != nil {
+		return nil, err
+	}
+	// stale derived state is rebuildable and belongs to the old identity
+	os.Remove(filepath.Join(dir, config.DerivedDirName, "index.sqlite"))
+	os.Remove(filepath.Join(dir, config.DerivedDirName, "index.sqlite-wal"))
+	os.Remove(filepath.Join(dir, config.DerivedDirName, "index.sqlite-shm"))
+	os.Remove(filepath.Join(dir, config.DerivedDirName, "telemetry.sqlite"))
+
+	res, err := Initialize(opts)
+	if err != nil {
+		return nil, fmt.Errorf("adopt re-initialization failed (old data archived at %s): %w", archive, err)
+	}
+	fmt.Fprintf(opts.Out, "adopted: new origin %s created; old history preserved read-only at %s\n", res.CairnID, archive)
+	return res, nil
+}

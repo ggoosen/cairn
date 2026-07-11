@@ -28,6 +28,7 @@ import (
 	cairnlog "github.com/ggoosen/cairn/internal/log"
 	"github.com/ggoosen/cairn/internal/object"
 	"github.com/ggoosen/cairn/internal/projection"
+	"github.com/ggoosen/cairn/internal/telemetry"
 )
 
 // Options parameterizes daemon startup (fs/clock/db path injectable for the
@@ -61,6 +62,7 @@ type Daemon struct {
 
 	lockFile *os.File
 	warn     io.Writer
+	tel      *telemetry.Store
 }
 
 // Start loads identity, acquires the single-writer lock, recovers the log
@@ -128,6 +130,13 @@ func Start(opts Options) (*Daemon, error) {
 	}
 	d.proj = proj
 
+	tel, err := telemetry.Open(telemetry.Path(opts.Dir))
+	if err != nil {
+		d.Close()
+		return nil, err
+	}
+	d.tel = tel
+
 	usage, err := object.LoadUsage(opts.FS, opts.Dir, loaded.Portable.DailyCanonicalBytes)
 	if err != nil {
 		d.Close()
@@ -138,6 +147,9 @@ func Start(opts Options) (*Daemon, error) {
 	if err := d.recover(); err != nil {
 		d.Close()
 		return nil, err
+	}
+	if err := d.EnsureReserve(); err != nil {
+		fmt.Fprintf(d.warn, "WARNING: emergency reserve not preallocated: %v\n", err)
 	}
 	return d, nil
 }
@@ -246,6 +258,10 @@ func (d *Daemon) Close() error {
 			first = err
 		}
 		d.proj = nil
+	}
+	if d.tel != nil {
+		d.tel.Close()
+		d.tel = nil
 	}
 	d.releaseLock()
 	return first
@@ -400,8 +416,12 @@ func (d *Daemon) Publish(req PublishRequest) (*PublishResult, error) {
 		return nil, err
 	}
 	// === ACK POINT: the publish event is durable ===
+	ackAt := time.Now()
 	res.EventIDs = append(res.EventIDs, env.EventID)
 	d.applyProjection(env, rec)
+	if d.tel != nil {
+		d.tel.RecordLatency("ack_to_lexical_visible", time.Since(ackAt), d.now())
+	}
 
 	// initial topic links: separate events sharing the request (rulings §2)
 	for _, topicID := range req.TopicIDs {

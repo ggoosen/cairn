@@ -145,3 +145,47 @@ func TestCLIExportIngest(t *testing.T) {
 		t.Fatalf("doctor conflicts: %v\n%s", err, out)
 	}
 }
+
+// M7 CLI flow: search returns interaction_id; outcome binds to it; gates
+// report renders with the automated/human-measured column.
+func TestCLIOutcomesAndGates(t *testing.T) {
+	dir := setupEnv(t)
+	if out, err := runCLI(t, "init", "--dir", dir); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	startTestDaemon(t, dir)
+
+	if out, err := runCLI(t, "send", "gates test message about beacons", "--dir", dir); err != nil {
+		t.Fatalf("send: %v\n%s", err, out)
+	}
+	out, err := runCLI(t, "search", "beacons", "--dir", dir, "--budget", "600")
+	if err != nil {
+		t.Fatalf("search: %v\n%s", err, out)
+	}
+	var so struct {
+		InteractionID string `json:"interaction_id"`
+	}
+	if err := json.Unmarshal([]byte(out), &so); err != nil || so.InteractionID == "" {
+		t.Fatalf("no interaction id: %v\n%s", err, out)
+	}
+	if out, err := runCLI(t, "found", so.InteractionID, "--dir", dir); err != nil {
+		t.Fatalf("found: %v\n%s", err, out)
+	}
+	out, err = runCLI(t, "gates", "--dir", dir)
+	if err != nil {
+		t.Fatalf("gates: %v\n%s", err, out)
+	}
+	for _, want := range []string{"automated", "human-measured", "1/1 found"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("gates missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "FAIL") {
+		t.Fatalf("gates FAIL on healthy cairn:\n%s", out)
+	}
+	// reserve status via CLI
+	out, err = runCLI(t, "reserve", "status", "--dir", dir)
+	if err != nil || !strings.Contains(out, `"present": true`) {
+		t.Fatalf("reserve status: %v\n%s", err, out)
+	}
+}

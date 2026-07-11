@@ -98,6 +98,7 @@ func newDaemonCmd(dirFlag *string) *cobra.Command {
 
 func newSendCmd(dirFlag *string) *cobra.Command {
 	var req daemon.PublishRequest
+	var emergency bool
 	cmd := &cobra.Command{
 		Use:   "send <body|-> ",
 		Short: "Publish a message (body as argument, or - for stdin)",
@@ -112,13 +113,18 @@ func newSendCmd(dirFlag *string) *cobra.Command {
 				body = string(blob)
 			}
 			req.Body = body
-			resp, err := call(dirFlag, daemon.Request{Op: "publish", Publish: &req})
+			op := "publish"
+			if emergency {
+				op = "emergency-publish"
+			}
+			resp, err := call(dirFlag, daemon.Request{Op: op, Publish: &req})
 			if err != nil {
 				return err
 			}
 			return printJSON(cmd, resp.Publish)
 		},
 	}
+	cmd.Flags().BoolVar(&emergency, "emergency", false, "consume the one-shot reserve release grant (requires `cairn reserve release`)")
 	cmd.Flags().StringVar(&req.Actor, "actor", "operator", "acting principal")
 	cmd.Flags().StringVar(&req.TaskID, "task-id", "", "task id for telemetry attribution")
 	cmd.Flags().StringVar(&req.TextClass, "class", "canonical", "text class: canonical|eager-searchable|ephemeral")
@@ -449,4 +455,68 @@ func stub(use, short, milestone string) *cobra.Command {
 
 func readAllStdin(cmd *cobra.Command) ([]byte, error) {
 	return io.ReadAll(cmd.InOrStdin())
+}
+
+func newOutcomeCmd(dirFlag *string, use, outcome, short string) *cobra.Command {
+	var messageID string
+	cmd := &cobra.Command{
+		Use:   use + " <interaction-id>",
+		Short: short + " (bound to the interaction_id returned by search/digest)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, err := call(dirFlag, daemon.Request{Op: "outcome", InteractionID: args[0], Outcome: outcome, MessageID: messageID})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "recorded %s for %s\n", outcome, args[0])
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&messageID, "message", "", "the message that satisfied (or failed) the retrieval")
+	return cmd
+}
+
+func newGatesCmd(dirFlag *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "gates",
+		Short: "Report the P0 gates (engineering gates computed; product gates from recorded outcomes)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resp, err := call(dirFlag, daemon.Request{Op: "gates"})
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(cmd.OutOrStdout(), resp.Text)
+			return nil
+		},
+	}
+}
+
+func newReserveCmd(dirFlag *string) *cobra.Command {
+	cmd := &cobra.Command{Use: "reserve", Short: "Emergency reserve (64 MiB preallocated; rulings §11)"}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "status",
+		Short: "Show reserve and release-grant state",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resp, err := call(dirFlag, daemon.Request{Op: "reserve-status"})
+			if err != nil {
+				return err
+			}
+			return printJSON(cmd, resp.Status)
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "release",
+		Short: "OPERATOR: release the reserve, granting ONE emergency send ≤ 64 KiB",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if _, err := call(dirFlag, daemon.Request{Op: "reserve-release"}); err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "reserve released: ONE emergency send ≤ 64 KiB is granted (cairn send --emergency)")
+			return nil
+		},
+	})
+	return cmd
 }

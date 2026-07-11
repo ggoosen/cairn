@@ -12,6 +12,7 @@ import (
 	"github.com/ggoosen/cairn/internal/fsx"
 	"github.com/ggoosen/cairn/internal/projection"
 	"github.com/ggoosen/cairn/internal/rank"
+	"github.com/ggoosen/cairn/internal/telemetry"
 )
 
 // SearchOptions is one search invocation (budget over the COMPLETE payload).
@@ -20,6 +21,11 @@ type SearchOptions struct {
 	K                int    `json:"k,omitempty"`
 	BudgetChars      int    `json:"budget_chars,omitempty"`
 	IncludeRetracted bool   `json:"include_retracted,omitempty"`
+
+	// attribution (rulings §10); missing values are inferred and flagged
+	TaskID          string `json:"task_id,omitempty"`
+	AgentSurface    string `json:"agent_surface,omitempty"`
+	AgentInstanceID string `json:"agent_instance_id,omitempty"`
 }
 
 // SearchOutput carries the ranked results plus the budget-compliant payload.
@@ -123,7 +129,43 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 	if len(scored) > opts.K {
 		scored = scored[:opts.K]
 	}
-	return d.finishRetrieval(scored, rows, rank.ProfileSearch, mode, opts.BudgetChars)
+	out, err := d.finishRetrieval(scored, rows, rank.ProfileSearch, mode, opts.BudgetChars)
+	if err != nil {
+		return nil, err
+	}
+	d.recordInteraction("search", out.InteractionID, opts.Query, opts.BudgetChars, out, opts.TaskID, opts.AgentSurface, opts.AgentInstanceID)
+	return out, nil
+}
+
+// recordInteraction logs telemetry (local-only; never an event). Missing
+// attribution is daemon-inferred and flagged (rulings §10).
+func (d *Daemon) recordInteraction(kind, interactionID, query string, budget int, out *SearchOutput, taskID, surface, instance string) {
+	if d.tel == nil {
+		return
+	}
+	inferred := false
+	if taskID == "" {
+		taskID = "task-" + interactionID[:8]
+		inferred = true
+	}
+	if surface == "" {
+		surface = "operator"
+		inferred = true
+	}
+	ids := make([]string, 0, len(out.Results))
+	for _, r := range out.Results {
+		ids = append(ids, r.MessageID)
+	}
+	it := telemetry.Interaction{
+		InteractionID: interactionID, Kind: kind,
+		TaskID: taskID, AgentSurface: surface, AgentInstanceID: instance,
+		Inferred: inferred, Query: query, BudgetRequested: budget,
+		PayloadChars: rank.BudgetChars(out.Payload), ResultCount: len(out.Results),
+		RetrievalMode: out.RetrievalMode, CreatedAt: d.now(), ResultIDs: ids,
+	}
+	if err := d.tel.Record(it); err != nil {
+		fmt.Fprintf(d.warn, "WARNING: telemetry: %v\n", err)
+	}
 }
 
 // finishRetrieval renders the budget-compliant payload, stores why_ranked
@@ -232,6 +274,7 @@ type ViewConfig struct {
 type DigestOptions struct {
 	AgentView   string `json:"agent_view"`
 	BudgetChars int    `json:"budget_chars"`
+	TaskID      string `json:"task_id,omitempty"`
 }
 
 // DigestOutput is the generated digest.
@@ -385,14 +428,20 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 	if err := d.proj.SaveExplanations(interactionID, string(rank.ProfileDigest), expl); err != nil {
 		return nil, err
 	}
-	return &DigestOutput{
+	dout := &DigestOutput{
 		InteractionID:    interactionID,
 		Path:             path,
 		Payload:          payload,
 		Included:         included,
 		OmittedMandatory: omitted,
 		RetrievalMode:    mode,
-	}, nil
+	}
+	so := &SearchOutput{Results: nil, Payload: payload, RetrievalMode: mode, InteractionID: interactionID}
+	for i := 0; i < included; i++ {
+		so.Results = append(so.Results, RankedResult{MessageID: scored[i].MessageID})
+	}
+	d.recordInteraction("digest", interactionID, cfg.InterestQuery, opts.BudgetChars, so, opts.TaskID, opts.AgentView, "")
+	return dout, nil
 }
 
 // renderDigestEntry: one digest item; EVERY line quoting cairn content is
@@ -517,6 +566,17 @@ func (d *Daemon) ReindexSemantic() (int, error) {
 		total += n
 	}
 }
+
+// Outcome binds a retrieval outcome to its interaction_id (rulings §10).
+func (d *Daemon) Outcome(interactionID, outcome, messageID string) error {
+	if d.tel == nil {
+		return fmt.Errorf("telemetry unavailable")
+	}
+	return d.tel.RecordOutcome(interactionID, outcome, messageID, d.now())
+}
+
+// Telemetry exposes the store (gates report).
+func (d *Daemon) Telemetry() *telemetry.Store { return d.tel }
 
 // SetEmbedderForTest swaps the embedder (enricher-death simulation).
 func (d *Daemon) SetEmbedderForTest(e embed.Embedder) { d.embedder = e }

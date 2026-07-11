@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/ggoosen/cairn/internal/config"
@@ -43,6 +44,10 @@ type Request struct {
 
 	// exports
 	Path string `json:"path,omitempty"`
+
+	// telemetry / reserve
+	Outcome string         `json:"outcome,omitempty"`
+	Search2 *SearchOptions `json:"search_opts,omitempty"`
 
 	// reads
 	Query            string `json:"query,omitempty"`
@@ -244,10 +249,14 @@ func (d *Daemon) dispatch(req Request) Response {
 		return Response{OK: true, EventID: id}
 
 	case "search":
-		out, err := d.Search(SearchOptions{
+		sopts := SearchOptions{
 			Query: req.Query, K: req.K, BudgetChars: req.BudgetChars,
 			IncludeRetracted: req.IncludeRetracted,
-		})
+		}
+		if req.Search2 != nil {
+			sopts = *req.Search2
+		}
+		out, err := d.Search(sopts)
 		if err != nil {
 			return fail(err)
 		}
@@ -266,6 +275,39 @@ func (d *Daemon) dispatch(req Request) Response {
 			return fail(err)
 		}
 		return Response{OK: true, Text: text}
+
+	case "outcome":
+		if err := d.Outcome(req.InteractionID, req.Outcome, req.MessageID); err != nil {
+			return fail(err)
+		}
+		return Response{OK: true}
+
+	case "gates":
+		var b strings.Builder
+		if err := d.GatesReport(&b); err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Text: b.String()}
+
+	case "reserve-release":
+		if err := d.ReleaseReserve(); err != nil {
+			return fail(err)
+		}
+		return Response{OK: true}
+
+	case "reserve-status":
+		present, size, granted := d.ReserveStatus()
+		return Response{OK: true, Status: map[string]any{"present": present, "size": size, "release_granted": granted}}
+
+	case "emergency-publish":
+		if req.Publish == nil {
+			return fail(errors.New("publish payload missing"))
+		}
+		res, err := d.EmergencyPublish(*req.Publish)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Publish: res}
 
 	case "reindex-semantic":
 		n, err := d.ReindexSemantic()
