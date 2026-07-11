@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ggoosen/cairn/internal/object"
@@ -23,10 +24,29 @@ type SearchResult struct {
 	Score      float64 `json:"score"`
 }
 
+// FTSQuery converts a raw user/agent query into a safe FTS5 MATCH
+// expression: each whitespace-separated term is double-quoted (embedded
+// quotes doubled), so FTS5 operator characters (- # @ : etc.) can never
+// produce syntax errors or column filters. Semantics: implicit AND of
+// phrase-terms, bm25-ranked — identical to bareword behavior for plain
+// words.
+func FTSQuery(raw string) string {
+	fields := strings.Fields(raw)
+	if len(fields) == 0 {
+		return `""`
+	}
+	quoted := make([]string, len(fields))
+	for i, f := range fields {
+		quoted[i] = `"` + strings.ReplaceAll(f, `"`, `""`) + `"`
+	}
+	return strings.Join(quoted, " ")
+}
+
 // SearchLexical runs an FTS5 MATCH over HEAD revisions. Retracted messages
 // are excluded by default and included only with includeRetracted
 // (capability-gated at the caller — spec §5.3).
 func (p *Projection) SearchLexical(query string, k int, includeRetracted bool) ([]SearchResult, error) {
+	query = FTSQuery(query)
 	rows, err := p.db.Query(`
 		SELECT m.message_id, r.revision_id, r.body_hash, m.text_class, m.declared_priority,
 		       m.created_at, m.retracted, bm25(fts_revisions) AS score

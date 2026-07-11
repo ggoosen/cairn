@@ -13,6 +13,7 @@ import (
 // LexicalTopK returns message IDs of HEAD-revision FTS matches in bm25
 // order (ties by message_id) — the lexical candidate list for RRF fusion.
 func (p *Projection) LexicalTopK(query string, k int, includeRetracted bool) ([]string, error) {
+	query = FTSQuery(query)
 	rows, err := p.db.Query(`
 		SELECT m.message_id
 		FROM fts_revisions
