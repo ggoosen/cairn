@@ -1,22 +1,19 @@
 package log_test
 
 import (
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"testing"
-
-	"lukechampine.com/blake3"
 
 	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/event"
 	"github.com/ggoosen/cairn/internal/fsx"
 	"github.com/ggoosen/cairn/internal/identity"
 	cairnlog "github.com/ggoosen/cairn/internal/log"
+	"github.com/ggoosen/cairn/internal/object"
 )
 
 // sendPipeline is the M1 slice of the write path (rulings §3): persist the
@@ -32,18 +29,12 @@ type pipelineOutcome struct {
 }
 
 func sendPipeline(fsys fsx.FS, dir string, lg *cairnlog.Log, c *chain, deviceDir string, body []byte) pipelineOutcome {
-	sum := blake3.Sum256(body)
-	hash := hex.EncodeToString(sum[:])
-	objDir := filepath.Join(dir, config.ObjectsDirName, hash[:2])
-	objPath := filepath.Join(objDir, hash[2:])
-	out := pipelineOutcome{objPath: objPath}
+	store := object.NewStore(fsys, dir)
+	hash := object.Hash(body)
+	out := pipelineOutcome{objPath: store.Path(hash)}
 
 	// 1. object first — an event must never reference a non-durable object
-	if err := fsys.MkdirAll(objDir, config.DirPerm); err != nil {
-		out.err = err
-		return out
-	}
-	if err := fsx.WriteFileAtomic(fsys, objPath, body, config.FilePerm); err != nil {
+	if _, err := store.Put(body); err != nil {
 		out.err = err
 		return out
 	}
@@ -135,13 +126,10 @@ func recoverAndCheck(t *testing.T, m *fsx.MemFS, c *chain, ackedBefore []string,
 		if count[out.eventID] != 1 {
 			t.Fatalf("%s: acked pipeline event present %d times", label, count[out.eventID])
 		}
-		body, err := m.ReadFile(out.objPath)
-		if err != nil {
-			t.Fatalf("%s: acked event's object missing: %v", label, err)
-		}
-		sum := blake3.Sum256(body)
-		if !strings.Contains(out.objPath, hex.EncodeToString(sum[:])[2:]) {
-			t.Fatalf("%s: object content does not match its address", label)
+		store := object.NewStore(m, "/p")
+		hash := filepath.Base(filepath.Dir(out.objPath)) + filepath.Base(out.objPath)
+		if _, err := store.Get(hash); err != nil {
+			t.Fatalf("%s: acked event's object missing or invalid: %v", label, err)
 		}
 	}
 
