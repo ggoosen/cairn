@@ -231,8 +231,11 @@ func TestIPCRoundTrip(t *testing.T) {
 	}
 
 	sresp, err := daemon.Call(loaded.DeviceDir, daemon.Request{Op: "search", Query: "ipc"})
-	if err != nil || len(sresp.Results) != 1 {
+	if err != nil || sresp.Search == nil || len(sresp.Search.Results) != 1 {
 		t.Fatalf("ipc search: %+v %v", sresp, err)
+	}
+	if sresp.Search.InteractionID == "" || sresp.Search.RetrievalMode == "" {
+		t.Fatalf("search metadata missing: %+v", sresp.Search)
 	}
 
 	presp, err := daemon.Call(loaded.DeviceDir, daemon.Request{Op: "peek", MessageID: resp.Publish.MessageID})

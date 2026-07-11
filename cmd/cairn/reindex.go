@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ggoosen/cairn/internal/config"
+	"github.com/ggoosen/cairn/internal/daemon"
 	"github.com/ggoosen/cairn/internal/fsx"
 	"github.com/ggoosen/cairn/internal/identity"
 	cairnlog "github.com/ggoosen/cairn/internal/log"
@@ -36,9 +37,11 @@ func newReindexCmd(dirFlag *string) *cobra.Command {
 				return err
 			}
 			if semantic {
-				if err := projection.ReindexSemantic(); err != nil {
-					return err
+				resp, err := call(dirFlag, daemon.Request{Op: "reindex-semantic"})
+				if err != nil {
+					return fmt.Errorf("reindex --semantic runs through the daemon: %w", err)
 				}
+				fmt.Fprintf(cmd.OutOrStdout(), "semantic reindex embedded %v revisions\n", resp.Status["embedded"])
 			}
 			if lexical {
 				fsys := fsx.OS{}

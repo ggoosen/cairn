@@ -17,7 +17,7 @@ func TestNormalizeLF(t *testing.T) {
 
 func TestDiff3CleanMerge(t *testing.T) {
 	base := []byte("line one\nline two\nline three\n")
-	current := []byte("line one CHANGED\nline two\nline three\n")  // head edited line 1
+	current := []byte("line one CHANGED\nline two\nline three\n") // head edited line 1
 	operator := []byte("line one\nline two\nline three EDITED\n") // operator edited line 3
 
 	res, err := Diff3(base, current, operator)

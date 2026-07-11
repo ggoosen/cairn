@@ -139,5 +139,21 @@ func (d *Daemon) Run(ctx context.Context, processOutbox func() error) error {
 			}
 		}
 	}()
+	// background enricher (rulings §6: embeddings on an in-process
+	// background thread; agents NEVER wait on it)
+	go func() {
+		ticker := time.NewTicker(config.EnrichInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if _, err := d.EnrichOnce(config.EnrichBatch); err != nil {
+					fmt.Fprintf(d.warn, "WARNING: enricher: %v\n", err)
+				}
+			}
+		}
+	}()
 	return d.Serve(ctx)
 }

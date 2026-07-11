@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ggoosen/cairn/internal/config"
+	"github.com/ggoosen/cairn/internal/embed"
 	"github.com/ggoosen/cairn/internal/event"
 	"github.com/ggoosen/cairn/internal/fsx"
 	"github.com/ggoosen/cairn/internal/identity"
@@ -32,12 +33,13 @@ import (
 // Options parameterizes daemon startup (fs/clock/db path injectable for the
 // fault tests).
 type Options struct {
-	Dir     string // portable dir (resolved)
-	DBPath  string // projection db ("" → DBPath(Dir))
-	FS      fsx.FS // "" → fsx.OS{}
-	Checker identity.VolumeChecker
-	Now     func() time.Time
-	Warn    io.Writer
+	Dir      string // portable dir (resolved)
+	DBPath   string // projection db ("" → DBPath(Dir))
+	FS       fsx.FS // "" → fsx.OS{}
+	Checker  identity.VolumeChecker
+	Now      func() time.Time
+	Warn     io.Writer
+	Embedder embed.Embedder // nil → embed.Detect(Dir); lexical_only if none
 }
 
 // Daemon is the single writer for one cairn.
@@ -49,6 +51,7 @@ type Daemon struct {
 	keyID   string
 
 	mu       sync.Mutex // serializes ALL mutations (single writer)
+	embedder embed.Embedder
 	lg       *cairnlog.Log
 	proj     *projection.Projection
 	store    *object.Store
@@ -101,6 +104,9 @@ func Start(opts Options) (*Daemon, error) {
 		return nil, fmt.Errorf("another daemon holds the write lock for this cairn: %w", err)
 	}
 
+	if opts.Embedder == nil {
+		opts.Embedder = embed.Detect(opts.Dir)
+	}
 	d := &Daemon{
 		fs:       opts.FS,
 		dir:      opts.Dir,
@@ -112,6 +118,7 @@ func Start(opts Options) (*Daemon, error) {
 		now:      opts.Now,
 		lockFile: lockFile,
 		warn:     opts.Warn,
+		embedder: opts.Embedder,
 	}
 
 	proj, err := projection.Open(opts.DBPath, projection.StoreBodyFetch(d.store))

@@ -269,25 +269,66 @@ func newSignalCmd(dirFlag *string) *cobra.Command {
 }
 
 func newSearchCmd(dirFlag *string) *cobra.Command {
-	var k int
+	var k, budget int
 	var includeRetracted bool
 	cmd := &cobra.Command{
 		Use:   "search <query>",
-		Short: "Lexical search over head revisions (fusion + budgets land in M6)",
+		Short: "Hybrid search (FTS + vector RRF fusion, P0 search profile, budget-capped)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resp, err := call(dirFlag, daemon.Request{
-				Op: "search", Query: args[0], K: k, IncludeRetracted: includeRetracted,
+				Op: "search", Query: args[0], K: k, BudgetChars: budget, IncludeRetracted: includeRetracted,
 			})
 			if err != nil {
 				return err
 			}
-			return printJSON(cmd, resp.Results)
+			return printJSON(cmd, resp.Search)
 		},
 	}
 	cmd.Flags().IntVar(&k, "k", 10, "max results")
+	cmd.Flags().IntVar(&budget, "budget", 0, "budget_chars over the COMPLETE payload (0 = unbudgeted)")
 	cmd.Flags().BoolVar(&includeRetracted, "include-retracted", false, "include retracted messages (capability-gated in P1)")
 	return cmd
+}
+
+func newDigestCmd(dirFlag *string) *cobra.Command {
+	var budget int
+	var view string
+	cmd := &cobra.Command{
+		Use:   "digest",
+		Short: "Generate the ranked, budget-capped digest for an agent view (writes views/<view>/digest.md)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resp, err := call(dirFlag, daemon.Request{Op: "digest", AgentView: view, BudgetChars: budget})
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(cmd.OutOrStdout(), resp.Digest.Payload)
+			if resp.Digest.OmittedMandatory > 0 {
+				fmt.Fprintf(cmd.ErrOrStderr(), "omitted_mandatory_count: %d\n", resp.Digest.OmittedMandatory)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&budget, "budget", 4000, "budget_chars over the COMPLETE digest")
+	cmd.Flags().StringVar(&view, "view", "operator", "agent view")
+	return cmd
+}
+
+func newWhyRankedCmd(dirFlag *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "why-ranked <interaction-id> <message-id>",
+		Short: "Print the exact stored ranking arithmetic for one result",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := call(dirFlag, daemon.Request{Op: "why-ranked", InteractionID: args[0], MessageID: args[1]})
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(cmd.OutOrStdout(), resp.Text)
+			return nil
+		},
+	}
 }
 
 func newPeekCmd(dirFlag *string) *cobra.Command {

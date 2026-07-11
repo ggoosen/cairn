@@ -82,11 +82,12 @@ func TestCLISendSearchPeekRetract(t *testing.T) {
 		t.Fatalf("retracted message still visible:\n%s", out)
 	}
 
-	// mutations without a daemon must fail (rulings §6), reads too (IPC-only)
-	// — covered by stopping the daemon in cleanup; here check stubs:
-	if _, err := runCLI(t, "digest", "--dir", dir); err == nil || !strings.Contains(err.Error(), "M6") {
-		t.Fatalf("digest stub: %v", err)
+	// digest is live in M6: budget-capped payload
+	dout, err := runCLI(t, "digest", "--dir", dir, "--budget", "2000")
+	if err != nil || !strings.Contains(dout, "# digest — operator") {
+		t.Fatalf("digest: %v\n%s", err, dout)
 	}
+	// outcome commands remain M7 stubs
 	if _, err := runCLI(t, "found", "--dir", dir); err == nil || !strings.Contains(err.Error(), "M7") {
 		t.Fatalf("found stub: %v", err)
 	}

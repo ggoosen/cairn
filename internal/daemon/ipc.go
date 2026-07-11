@@ -47,8 +47,10 @@ type Request struct {
 	// reads
 	Query            string `json:"query,omitempty"`
 	K                int    `json:"k,omitempty"`
+	BudgetChars      int    `json:"budget_chars,omitempty"`
 	IncludeRetracted bool   `json:"include_retracted,omitempty"`
-	AgentView        string `json:"agent_view,omitempty"` // fetch destination view
+	AgentView        string `json:"agent_view,omitempty"` // fetch/digest view
+	InteractionID    string `json:"interaction_id,omitempty"`
 }
 
 // Response is the IPC reply.
@@ -58,6 +60,9 @@ type Response struct {
 	Publish *PublishResult            `json:"publish,omitempty"`
 	EventID string                    `json:"event_id,omitempty"`
 	Results []projection.SearchResult `json:"results,omitempty"`
+	Search  *SearchOutput             `json:"search,omitempty"`
+	Digest  *DigestOutput             `json:"digest,omitempty"`
+	Text    string                    `json:"text,omitempty"`
 	Message *projection.MessageInfo   `json:"message,omitempty"`
 	Fetched *FetchResult              `json:"fetched,omitempty"`
 	Ingest  *IngestResult             `json:"ingest,omitempty"`
@@ -239,15 +244,35 @@ func (d *Daemon) dispatch(req Request) Response {
 		return Response{OK: true, EventID: id}
 
 	case "search":
-		k := req.K
-		if k == 0 {
-			k = 10
-		}
-		res, err := d.proj.SearchLexical(req.Query, k, req.IncludeRetracted)
+		out, err := d.Search(SearchOptions{
+			Query: req.Query, K: req.K, BudgetChars: req.BudgetChars,
+			IncludeRetracted: req.IncludeRetracted,
+		})
 		if err != nil {
 			return fail(err)
 		}
-		return Response{OK: true, Results: res}
+		return Response{OK: true, Search: out}
+
+	case "digest":
+		out, err := d.Digest(DigestOptions{AgentView: req.AgentView, BudgetChars: req.BudgetChars})
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Digest: out}
+
+	case "why-ranked":
+		text, err := d.WhyRanked(req.InteractionID, req.MessageID)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Text: text}
+
+	case "reindex-semantic":
+		n, err := d.ReindexSemantic()
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Status: map[string]any{"embedded": n}}
 
 	case "peek":
 		info, err := d.proj.MessageInfo(req.MessageID)

@@ -243,6 +243,11 @@ const (
 	// bounded well below this by MaxRecordBytes).
 	IPCMaxRequestBytes = 32 << 20
 
+	// EnrichInterval/EnrichBatch pace the background embedding enricher
+	// (rulings §6: async; a just-sent message is briefly lexical_only).
+	EnrichInterval = 2 * time.Second
+	EnrichBatch    = 64
+
 	// OutboxReadySuffix marks an atomically-renamed-in bundle directory;
 	// receipts and rejections use the fixed names below.
 	OutboxReadySuffix  = ".ready"
