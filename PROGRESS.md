@@ -8,7 +8,7 @@ when all BUILD-PLAN acceptance criteria pass.
 | Milestone | Status | Notes |
 |---|---|---|
 | M0 — Scaffold, config, identity, encryption check | **done** (2026-07-11) | all acceptance criteria pass; see below |
-| M1 — Event log core | not started | frame encode/decode + initial-segment write already exist (pulled forward, see deviations) |
+| M1 — Event log core | **done** (2026-07-11) | crash matrix rows 1–8 green; benchmark recorded |
 | M2 — Object store + text classes | not started | |
 | M3 — SQLite projection + FTS + reindex | not started | |
 | M4 — Daemon, CLI, outbox, receipts | not started | |
@@ -104,9 +104,99 @@ config, event, identity, log, cmd/cairn (26 tests total, incl. CLI-level
 acceptance tests). `go vet ./...` clean. Real-machine acceptance run
 recorded above.
 
+## M1 — Event log core
+
+**Status: DONE.** All acceptance criteria pass.
+
+Tasks completed (one commit each):
+- [x] **Fault-injecting fs wrapper** (`internal/fsx`): FS/File interface over
+      os calls; production `OS` impl; `MemFS` with a real durability model
+      (file data durable at fsync; namespace entries durable at parent dir
+      fsync; power-cycle drops unsynced state; SIGKILL keeps page cache),
+      crash-at-op-N / fail-at-op-N (ENOSPC, EIO, short write) injection,
+      `Clone()` for crash-point enumeration; `WriteFileAtomic` = the durable
+      publish primitive (temp → fsync → rename → dir-fsync) reused by seal
+      sidecars now, objects (M2) and receipts (M4) later.
+- [x] **Log core** (`internal/log`): durable `Append` (frame → write →
+      fdatasync → dir-fsync-on-create; caller acks only after return, chain
+      position validated); crash-safe seal via atomic sidecar
+      `seg_N.seal.json` {first_seq, last_seq, event_count, root_hash =
+      BLAKE3 over ordered raw event-id bytes} — the .seg file never mutates,
+      sidecar existence IS the sealed state; recovery (`Open`): scan in
+      order, verify every record (hash + signature + chain contiguity),
+      truncate ONLY a trailing invalid frame of the open segment, complete
+      an interrupted threshold seal, next_sequence derived from the log;
+      `Doctor` (VerifyOnly, never repairs); `ChainVerifier` in identity
+      learns keys from genesis/device.add, marks device.revoke.
+- [x] **Interior vs trailing distinction:** after a frame error, recovery
+      resyncs forward by magic; any later valid frame ⇒ interior corruption
+      ⇒ hard error (never silently drop acked events). Frame lengths capped
+      by `MaxRecordBytes` (16 MiB) so corrupt length fields error instead of
+      allocating.
+- [x] **Crash matrix (M1 slice, TESTING.md §1 rows 1–8 + row 11):** crash
+      before EVERY mutating fs op of the send pipeline (object atomic write →
+      append → ack → seq-cache update), × SIGKILL × power-sim; after-ack row
+      7 both modes; ENOSPC/EIO/short-write at every op with no-false-ack +
+      clean-recovery + successful-retry assertions; seal crash matrix (open
+      segment valid OR exactly one valid sealed segment; recovery completes
+      pending seals); multi-segment recovery + tampered seal header detection.
+- [x] **Seq-state reconcile** (`identity.ReconcileSeqState`): cache behind →
+      silent rebuild; cache ahead → log wins + warning; garbled/missing →
+      rebuilt (TESTING.md seq-cache rows).
+- [x] **`cairn doctor` CLI** with startup encryption check; CLI-level test:
+      clean report on fresh cairn, PROBLEM + nonzero exit on a bit-flipped
+      segment.
+
+### Acceptance criteria → evidence
+1. *Full M1 slice of the crash matrix green* — `TestCrashMatrixRows1to8`,
+   `TestCrashAfterAck`, `TestInjectedWriteFailures`, `TestSealCrashMatrix`
+   (~250 enumerated crash/fault scenarios), all green in CI.
+2. *10k-event append+recover benchmark recorded* — dev machine (M-series
+   mac, APFS, FileVault on), real fs, full durability ordering
+   (F_FULLFSYNC per append):
+   - append 10k events: **39.0 s total, 3.90 ms/event** (fsync-bound —
+     consistent with the <200 ms P95 ack gate; single append IS the
+     send-ack path)
+   - cold recovery of 10k events with full hash+signature verification:
+     **631 ms total, 63 µs/event**; exactly one sealed segment at the 10k
+     threshold, seal header verified.
+3. *Doctor detects a deliberately corrupted frame and a broken chain* —
+   `TestDoctorDetectsCorruptFrameWithoutRepairing` (and never mutates),
+   `TestBrokenChainDetected` (hash-valid frame, wrong previous_origin_
+   event_id → recovery rejects, doctor names the chain break), CLI-level
+   `TestDoctorCleanThenDetectsCorruption`.
+
+### Deviations
+- **`internal/fsx` added to the CLAUDE.md layout** — the TESTING.md-mandated
+  fault wrapper is cross-cutting (log, object store, outbox, views), so it
+  lives beside those packages rather than inside `internal/log`.
+- **Seal header representation:** rulings §3.7 specify the header fields but
+  not the encoding; implemented as an atomic JSON sidecar
+  (`seg_N.seal.json`) so the .seg file stays byte-immutable from creation
+  and sealing is a single atomic publish (crash-safe by construction).
+- **`WithSealThresholds` test hook** on log construction; canonical 64 MiB /
+  10k values remain the config defaults and are exercised for real by the
+  10k benchmark.
+- **`MaxRecordBytes` (16 MiB) added to constants** — frame-read sanity bound.
+- Two bugs found BY the harness during development (working as intended):
+  interior CRC corruption was initially treated as truncatable trailing
+  state (fixed with forward resync), and a stale seal-sidecar temp blocked
+  seal retry after crash (fixed in WriteFileAtomic).
+
+### Author rulings needed
+- None new in M1. (M0's root-key storage ruling still open.)
+
+### Test results (2026-07-11)
+`go test ./...` green across all packages (config, event, fsx, identity,
+log, cmd/cairn); `go vet` clean. Crash matrix ~250 scenarios green.
+Benchmark numbers above from a real-fs run of `TestAppendRecover10k`.
+
 ## Resume-cold notes
-- Next milestone: **M1 — Event log core**. Start with the fault-injecting
-  fs wrapper (TESTING.md harness requirement) — it is reused by every later
-  milestone. Then general append + recovery on top of the existing frame
-  code, crash tests written WITH the code (rows 1–8 × SIGKILL × power-sim).
-- `// RULING-NEEDED:` markers in code: one (root-key storage, see above).
+- Next milestone: **M2 — Object store + text classes**. Build on
+  `fsx.WriteFileAtomic` (already the object-write primitive in the crash
+  matrix). BLAKE3 addressing `objects/<first2>/<rest>`, never-overwrite
+  verify-on-collision, >1 MiB auto-downgrade policy (operator CLI override
+  only), daily ceilings, ephemeral TTL housekeeping, typed content_expired,
+  object-before-event ordering wired into the M1 append path (sendPipeline
+  in crash_test.go is the shape to productionize).
+- `// RULING-NEEDED:` markers in code: one (root-key storage, M0).
