@@ -109,6 +109,11 @@ func parseWall(s string) time.Time {
 // Run starts the background loops (outbox watcher + housekeeping) and the
 // IPC listener; blocks until ctx is done.
 func (d *Daemon) Run(ctx context.Context, processOutbox func() error) error {
+	if d.readOnly {
+		// R9: no outbox ingestion, housekeeping, or enrichment appends —
+		// reads only
+		return d.Serve(ctx)
+	}
 	go func() {
 		ticker := time.NewTicker(config.OutboxPollInterval)
 		defer ticker.Stop()
@@ -126,7 +131,7 @@ func (d *Daemon) Run(ctx context.Context, processOutbox func() error) error {
 		}
 	}()
 	go func() {
-		ticker := time.NewTicker(config.HousekeepInterval)
+		ticker := time.NewTicker(d.loaded.Portable.HousekeepInterval())
 		defer ticker.Stop()
 		for {
 			select {

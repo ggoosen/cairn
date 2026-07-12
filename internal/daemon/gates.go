@@ -74,7 +74,11 @@ func VerifyObjects(fsys fsx.FS, portableDir string, now time.Time) (problems, in
 			continue
 		}
 		created, err := time.Parse(time.RFC3339Nano, r.created)
-		expired := err == nil && r.class == object.ClassEphemeral && now.Sub(created) > config.EphemeralTTL
+		ttl := config.EphemeralTTLDefault
+		if pc, cerr := config.LoadPortable(portableDir); cerr == nil {
+			ttl = pc.EphemeralTTL()
+		}
+		expired := err == nil && r.class == object.ClassEphemeral && now.Sub(created) > ttl
 		if expired {
 			infos = append(infos, fmt.Sprintf("ephemeral object %s expired (TTL); event preserved", r.hash))
 		} else {

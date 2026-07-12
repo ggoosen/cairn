@@ -100,7 +100,7 @@ func (d *Daemon) Serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(socketPathFile(d.loaded.DeviceDir), []byte(sock), 0o600); err != nil {
+	if err := os.WriteFile(socketPathFile(d.sockDir), []byte(sock), 0o600); err != nil {
 		l.Close()
 		return err
 	}
@@ -320,6 +320,13 @@ func (d *Daemon) dispatch(req Request) Response {
 			return fail(err)
 		}
 		return Response{OK: true, Publish: res}
+
+	case "housekeep":
+		deleted, err := d.Housekeep()
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Status: map[string]any{"deleted": len(deleted)}}
 
 	case "reindex-semantic":
 		n, err := d.ReindexSemantic()

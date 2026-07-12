@@ -103,6 +103,9 @@ func (d *Daemon) IngestExport(path string) (*IngestResult, error) {
 // verifyHash: export ingest validates fm.body_hash against the base
 // revision (front-matter immutability); resolve already trusts its manifest.
 func (d *Daemon) ingestEdit(messageID, baseRevisionID, claimedBodyHash string, editedBody []byte, verifyHash bool) (*IngestResult, error) {
+	if err := d.writable(); err != nil {
+		return nil, err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.lg == nil {
@@ -373,6 +376,9 @@ func (d *Daemon) Revise(messageID, body string) (*IngestResult, error) {
 // TopicEnsure returns the topic id for a name, creating the topic if absent
 // (idempotent — repeated ingests must not fail on UNIQUE names).
 func (d *Daemon) TopicEnsure(name string) (topicID string, created bool, err error) {
+	if err := d.writable(); err != nil {
+		return "", false, err
+	}
 	if id, err := d.proj.TopicIDByName(name); err != nil {
 		return "", false, err
 	} else if id != "" {

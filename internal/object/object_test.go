@@ -229,7 +229,7 @@ func TestHousekeepingAndContentExpired(t *testing.T) {
 	_, s := newStore(t)
 	now := time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC)
 	fresh := now.Add(-time.Hour)
-	old := now.Add(-config.EphemeralTTL - time.Hour)
+	old := now.Add(-config.EphemeralTTLDefault - time.Hour)
 
 	expiredBody := []byte("expired scratchpad")
 	freshBody := []byte("fresh scratchpad")

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -53,11 +54,19 @@ func doctorMain(dirFlag *string) *cobra.Command {
 				return err
 			}
 			loaded, err := identity.Load(dir)
-			if err != nil {
+			switch {
+			case errors.Is(err, identity.ErrRestoredCopy):
+				// R9: doctor is a read-only operation — permitted on restores
+				if err := identity.EnsureEncrypted(dir, nil, cmd.ErrOrStderr()); err != nil {
+					return err
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), "note: restored copy (read-only); writes refused")
+			case err != nil:
 				return err
-			}
-			if err := loaded.StartupCheck(nil, cmd.ErrOrStderr()); err != nil {
-				return err
+			default:
+				if err := loaded.StartupCheck(nil, cmd.ErrOrStderr()); err != nil {
+					return err
+				}
 			}
 			// log summary first (frames/chains/seals per origin)
 			trust, err := identity.MeshTrust(fsx.OS{}, dir)

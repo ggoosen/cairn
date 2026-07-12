@@ -13,12 +13,17 @@ CAIRN="${3:-cairn}"
 mkdir -p "$RESTORE"
 rsync -a "$BACKUP/" "$RESTORE/"
 
-echo "1) restored portable data must be refused without device identity:"
-if "$CAIRN" identity show --dir "$RESTORE" 2>/dev/null; then
-  echo "DRILL FAILED: restored data was accepted without identity" >&2
+echo "1) restored portable data: reads allowed, WRITES refused (RULINGS.md R9):"
+if ! "$CAIRN" identity show --dir "$RESTORE" | grep -q "RESTORED COPY"; then
+  echo "DRILL FAILED: restore not detected (identity show shows a device identity)" >&2
   exit 1
 fi
-echo "   refused, as required."
+if "$CAIRN" identity export-root --out /tmp/should-not-exist.$$ --dir "$RESTORE" 2>/dev/null; then
+  rm -f "/tmp/should-not-exist.$$"
+  echo "DRILL FAILED: a key operation succeeded on restored data" >&2
+  exit 1
+fi
+echo "   read-only confirmed; writes refused, as required."
 
 echo "2) adopting creates a NEW origin (old history archived read-only):"
 "$CAIRN" init --adopt --dir "$RESTORE"

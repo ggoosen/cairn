@@ -36,11 +36,19 @@ func (e *ExpiredError) Error() string {
 // Store is the content-addressed object store under <portable>/objects.
 type Store struct {
 	fs  fsx.FS
-	dir string // <portable>/objects
+	dir string        // <portable>/objects
+	ttl time.Duration // ephemeral TTL (config-tunable, RULINGS.md R10)
 }
 
 func NewStore(fsys fsx.FS, portableDir string) *Store {
-	return &Store{fs: fsys, dir: filepath.Join(portableDir, config.ObjectsDirName)}
+	return &Store{fs: fsys, dir: filepath.Join(portableDir, config.ObjectsDirName), ttl: config.EphemeralTTLDefault}
+}
+
+// SetTTL overrides the ephemeral TTL from portable config.
+func (s *Store) SetTTL(ttl time.Duration) {
+	if ttl > 0 {
+		s.ttl = ttl
+	}
 }
 
 // Hash returns the BLAKE3 hex address of raw uncompressed bytes.
@@ -126,7 +134,7 @@ func (s *Store) Fetch(hash string, refs []Ref, now time.Time) ([]byte, error) {
 	if err == nil {
 		return data, nil
 	}
-	if errors.Is(err, ErrNotFound) && allEphemeralExpired(hash, refs, now) {
+	if errors.Is(err, ErrNotFound) && s.allEphemeralExpired(hash, refs, now) {
 		return nil, &ExpiredError{Hash: hash}
 	}
 	return nil, err
@@ -144,7 +152,7 @@ func (s *Store) HousekeepEphemeral(refs []Ref, now time.Time) ([]string, error) 
 	}
 	var deleted []string
 	for hash, hr := range byHash {
-		if !allEphemeralExpired(hash, hr, now) {
+		if !s.allEphemeralExpired(hash, hr, now) {
 			continue
 		}
 		if !s.Exists(hash) {
@@ -158,7 +166,7 @@ func (s *Store) HousekeepEphemeral(refs []Ref, now time.Time) ([]string, error) 
 	return deleted, nil
 }
 
-func allEphemeralExpired(hash string, refs []Ref, now time.Time) bool {
+func (s *Store) allEphemeralExpired(hash string, refs []Ref, now time.Time) bool {
 	found := false
 	for _, r := range refs {
 		if r.Hash != hash {
@@ -168,7 +176,7 @@ func allEphemeralExpired(hash string, refs []Ref, now time.Time) bool {
 		if r.TextClass != ClassEphemeral {
 			return false
 		}
-		if now.Sub(r.CreatedAt) <= config.EphemeralTTL {
+		if now.Sub(r.CreatedAt) <= s.ttl {
 			return false
 		}
 	}

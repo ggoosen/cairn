@@ -28,11 +28,11 @@ func call(dirFlag *string, req daemon.Request) (*daemon.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	loaded, err := identity.Load(dir)
+	clientDir, err := daemon.ClientDir(dir) // handles read-only restores (R9)
 	if err != nil {
 		return nil, err
 	}
-	return daemon.Call(loaded.DeviceDir, req)
+	return daemon.Call(clientDir, req)
 }
 
 func printJSON(cmd *cobra.Command, v any) error {
@@ -527,6 +527,22 @@ func newReserveCmd(dirFlag *string) *cobra.Command {
 		},
 	})
 	return cmd
+}
+
+func newHousekeepCmd(dirFlag *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "housekeep",
+		Short: "Run one ephemeral-TTL housekeeping sweep now",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resp, err := call(dirFlag, daemon.Request{Op: "housekeep"})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "removed %v expired ephemeral object(s)\n", resp.Status["deleted"])
+			return nil
+		},
+	}
 }
 
 func newSetupAgentCmd(dirFlag *string) *cobra.Command {

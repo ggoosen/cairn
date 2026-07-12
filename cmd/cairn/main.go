@@ -4,11 +4,37 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime/debug"
 
 	"github.com/spf13/cobra"
 )
 
-var version = "0.0.1-m0"
+// version derives from build info (RULINGS.md R11): P0 status + VCS rev.
+var version = func() string {
+	v := "p0"
+	if info, ok := debug.ReadBuildInfo(); ok {
+		rev, dirty := "", false
+		for _, s := range info.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				rev = s.Value
+			case "vcs.modified":
+				dirty = s.Value == "true"
+			}
+		}
+		if len(rev) >= 12 {
+			v += "-" + rev[:12]
+		} else {
+			v += "-dev"
+		}
+		if dirty {
+			v += "-dirty"
+		}
+	} else {
+		v += "-dev"
+	}
+	return v
+}()
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
@@ -56,5 +82,6 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newReserveCmd(&dir))
 	root.AddCommand(newSetupAgentCmd(&dir))
 	root.AddCommand(newIngestCmd(&dir))
+	root.AddCommand(newHousekeepCmd(&dir))
 	return root
 }

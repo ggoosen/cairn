@@ -73,9 +73,10 @@ const (
 	// canonical/eager (rulings §5).
 	AutoDowngradeBytes = 1 << 20
 
-	// EphemeralTTL: default retention for ephemeral-text objects; expiry
-	// yields a typed content_expired on fetch (spec §5.4, rulings §5).
-	EphemeralTTL = 7 * 24 * time.Hour
+	// EphemeralTTLDefault: default retention for ephemeral-text objects;
+	// expiry yields a typed content_expired on fetch (spec §5.4, rulings §5).
+	// Tunable via portable config ephemeral_ttl_hours (RULINGS.md R10).
+	EphemeralTTLDefault = 7 * 24 * time.Hour
 
 	// Daily canonical-byte and per-message ceilings (rulings §5:
 	// "configurable"). These are the defaults; overridable in portable config.
@@ -235,9 +236,10 @@ const (
 	// renamed-in bundles and .md drops.
 	OutboxPollInterval = 250 * time.Millisecond
 
-	// HousekeepInterval: ephemeral-TTL housekeeping cadence (basic in-process
-	// loop; the P2 prioritised maintenance subsystem is out of P0 scope).
-	HousekeepInterval = 1 * time.Hour
+	// HousekeepIntervalDefault: ephemeral-TTL housekeeping cadence (basic
+	// in-process loop; the P2 maintenance subsystem is out of P0 scope).
+	// Tunable via portable config housekeep_minutes (RULINGS.md R10).
+	HousekeepIntervalDefault = 1 * time.Hour
 
 	// IPCMaxRequestBytes bounds one unix-socket JSON request (bodies are
 	// bounded well below this by MaxRecordBytes).

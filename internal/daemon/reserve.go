@@ -76,6 +76,9 @@ func (d *Daemon) ReserveStatus() (present bool, sizeBytes int64, releaseGranted 
 // ReleaseReserve is the explicit interactive operator command: deletes the
 // reserve file (freeing 64 MiB) and grants exactly ONE emergency send.
 func (d *Daemon) ReleaseReserve() error {
+	if err := d.writable(); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if _, err := os.Stat(releaseMarkerPath(d.loaded.DeviceDir)); err == nil {

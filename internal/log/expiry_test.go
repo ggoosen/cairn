@@ -62,7 +62,7 @@ func TestExpiredEphemeralEventReplaysFine(t *testing.T) {
 
 	// TTL passes; housekeeping removes the object (refs come from the
 	// projection in M3+; supplied directly here)
-	now := publishedAt.Add(config.EphemeralTTL + 24*time.Hour)
+	now := publishedAt.Add(config.EphemeralTTLDefault + 24*time.Hour)
 	refs := []object.Ref{{Hash: hash, TextClass: object.ClassEphemeral, CreatedAt: publishedAt}}
 	deleted, err := store.HousekeepEphemeral(refs, now)
 	if err != nil || len(deleted) != 1 {

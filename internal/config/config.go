@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -20,6 +21,27 @@ type PortableConfig struct {
 	// Text-class ceilings (rulings §5); zero means "use the default constant".
 	DailyCanonicalBytes      int64 `toml:"daily_canonical_bytes,omitempty"`
 	PerMessageCanonicalBytes int64 `toml:"per_message_canonical_bytes,omitempty"`
+
+	// Ephemeral housekeeping tunables (RULINGS.md R10); zero → defaults
+	// (EphemeralTTL = 7d, HousekeepInterval = 1h).
+	EphemeralTTLHours int64 `toml:"ephemeral_ttl_hours,omitempty"`
+	HousekeepMinutes  int64 `toml:"housekeep_minutes,omitempty"`
+}
+
+// EphemeralTTL resolves the configured TTL (default from constants).
+func (c *PortableConfig) EphemeralTTL() time.Duration {
+	if c.EphemeralTTLHours > 0 {
+		return time.Duration(c.EphemeralTTLHours) * time.Hour
+	}
+	return EphemeralTTLDefault
+}
+
+// HousekeepInterval resolves the sweep cadence (default from constants).
+func (c *PortableConfig) HousekeepInterval() time.Duration {
+	if c.HousekeepMinutes > 0 {
+		return time.Duration(c.HousekeepMinutes) * time.Minute
+	}
+	return HousekeepIntervalDefault
 }
 
 // DeviceConfig lives in device-local state, never in the portable directory

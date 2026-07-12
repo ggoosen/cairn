@@ -216,6 +216,16 @@ func Initialize(opts InitOptions) (*InitResult, error) {
 	}, nil
 }
 
+// EnsureEncrypted is the exported encryption gate for flows without a
+// device config (read-only restore mode, RULINGS.md R9): no override
+// available — unknown/unencrypted fail closed.
+func EnsureEncrypted(dir string, checker VolumeChecker, out io.Writer) error {
+	if checker == nil {
+		checker = SystemVolumeChecker{}
+	}
+	return checkEncryption(dir, checker, false, out)
+}
+
 // checkEncryption enforces rulings §9: unknown/indeterminate FAILS CLOSED;
 // the override warns loudly whenever used.
 func checkEncryption(dir string, checker VolumeChecker, allow bool, out io.Writer) error {
@@ -243,6 +253,10 @@ type Loaded struct {
 	Cert      DeviceCert
 }
 
+// ErrRestoredCopy: portable data without device-local identity. WRITES are
+// refused (spec §3.2); read-only operations are permitted (RULINGS.md R9).
+var ErrRestoredCopy = errors.New("restored copy: no device-local identity")
+
 // Load opens an initialized cairn directory and its device-local state.
 // Portable data without matching device-local identity is the restore case:
 // this device must not write under the old origin (spec §3.2).
@@ -258,7 +272,7 @@ func Load(dir string) (*Loaded, error) {
 	device, err := config.LoadDevice(deviceDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("portable data found at %s but no device-local identity for cairn %s: this looks like a restored copy; this device cannot write under the old origin (adopt path lands in a later milestone)", dir, portable.CairnID)
+			return nil, fmt.Errorf("%w: portable data found at %s but no device-local identity for cairn %s — writes are refused; read-only commands (doctor, search, digest, fetch, identity show) still work, and `cairn init --adopt` creates a new origin identity here", ErrRestoredCopy, dir, portable.CairnID)
 		}
 		return nil, err
 	}

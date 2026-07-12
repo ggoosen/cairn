@@ -65,6 +65,34 @@ type Daemon struct {
 	lockFile *os.File
 	warn     io.Writer
 	tel      *telemetry.Store
+
+	readOnly bool   // portable-only restore: reads allowed, writes refused (R9)
+	sockDir  string // where daemon.sock.path is registered
+}
+
+// ErrReadOnly: the mesh is a portable-only restore (spec §3.2 / RULINGS.md
+// R9) — every event-appending or object-mutating operation is refused.
+var ErrReadOnly = errors.New("restored copy: writes are refused (no device identity); run `cairn init --adopt` to create a new origin identity, or use read-only commands")
+
+func (d *Daemon) writable() error {
+	if d.readOnly {
+		return ErrReadOnly
+	}
+	return nil
+}
+
+// ClientDir resolves where a CLI client finds the daemon's socket
+// registration: the device state dir normally, the derived dir for a
+// read-only restore daemon.
+func ClientDir(portableDir string) (string, error) {
+	loaded, err := identity.Load(portableDir)
+	if err == nil {
+		return loaded.DeviceDir, nil
+	}
+	if errors.Is(err, identity.ErrRestoredCopy) {
+		return filepath.Join(portableDir, config.DerivedDirName), nil
+	}
+	return "", err
 }
 
 // Start loads identity, acquires the single-writer lock, recovers the log
@@ -85,20 +113,42 @@ func Start(opts Options) (*Daemon, error) {
 		opts.DBPath = projection.DBPath(opts.Dir)
 	}
 
+	readOnly := false
 	loaded, err := identity.Load(opts.Dir)
-	if err != nil {
+	if errors.Is(err, identity.ErrRestoredCopy) {
+		// R9: read-only daemon over restored portable data
+		readOnly = true
+		portable, perr := config.LoadPortable(opts.Dir)
+		if perr != nil {
+			return nil, perr
+		}
+		loaded = &identity.Loaded{Dir: opts.Dir, Portable: portable}
+		if err := identity.EnsureEncrypted(opts.Dir, opts.Checker, opts.Warn); err != nil {
+			return nil, err
+		}
+		fmt.Fprintln(opts.Warn, "NOTICE: restored copy — serving READ-ONLY (search/digest/fetch); writes refused; `cairn init --adopt` creates a new origin")
+	} else if err != nil {
 		return nil, err
+	} else {
+		if err := loaded.StartupCheck(opts.Checker, opts.Warn); err != nil {
+			return nil, err
+		}
 	}
-	if err := loaded.StartupCheck(opts.Checker, opts.Warn); err != nil {
-		return nil, err
-	}
-	devPriv, err := identity.LoadKey(filepath.Join(loaded.DeviceDir, config.DeviceKeyName))
-	if err != nil {
-		return nil, fmt.Errorf("loading device key: %w", err)
+	var devPriv ed25519.PrivateKey
+	if !readOnly {
+		devPriv, err = identity.LoadKey(filepath.Join(loaded.DeviceDir, config.DeviceKeyName))
+		if err != nil {
+			return nil, fmt.Errorf("loading device key: %w", err)
+		}
 	}
 
-	// single-writer lock (device-local; flock released on process exit)
-	lockPath := filepath.Join(loaded.DeviceDir, config.DaemonLockName)
+	// single-writer lock (device-local; derived dir in read-only mode)
+	lockDir := loaded.DeviceDir
+	if readOnly {
+		lockDir = filepath.Join(opts.Dir, config.DerivedDirName)
+		os.MkdirAll(lockDir, 0o700)
+	}
+	lockPath := filepath.Join(lockDir, config.DaemonLockName)
 	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
@@ -116,13 +166,17 @@ func Start(opts Options) (*Daemon, error) {
 		dir:      opts.Dir,
 		loaded:   loaded,
 		devPriv:  devPriv,
-		keyID:    event.KeyID(devPriv.Public().(ed25519.PublicKey)),
 		store:    object.NewStore(opts.FS, opts.Dir),
 		verifier: identity.NewChainVerifier(),
 		now:      opts.Now,
 		lockFile: lockFile,
 		warn:     opts.Warn,
 		embedder: opts.Embedder,
+		readOnly: readOnly,
+		sockDir:  lockDir,
+	}
+	if devPriv != nil {
+		d.keyID = event.KeyID(devPriv.Public().(ed25519.PublicKey))
 	}
 
 	proj, err := projection.Open(opts.DBPath, projection.StoreBodyFetch(d.store))
@@ -158,8 +212,19 @@ func Start(opts Options) (*Daemon, error) {
 		d.Close()
 		return nil, err
 	}
-	if err := d.EnsureReserve(); err != nil {
-		fmt.Fprintf(d.warn, "WARNING: emergency reserve not preallocated: %v\n", err)
+	if !d.readOnly {
+		if err := d.EnsureReserve(); err != nil {
+			fmt.Fprintf(d.warn, "WARNING: emergency reserve not preallocated: %v\n", err)
+		}
+	}
+	d.store.SetTTL(loaded.Portable.EphemeralTTL())
+	if !d.readOnly {
+		// one housekeeping sweep at startup (RULINGS.md R10)
+		if deleted, err := d.Housekeep(); err != nil {
+			fmt.Fprintf(d.warn, "WARNING: startup housekeeping: %v\n", err)
+		} else if len(deleted) > 0 {
+			fmt.Fprintf(d.warn, "housekeeping: removed %d expired ephemeral object(s)\n", len(deleted))
+		}
 	}
 	return d, nil
 }
@@ -168,8 +233,6 @@ func Start(opts Options) (*Daemon, error) {
 // then opens/repairs the ACTIVE origin and replays every other origin
 // against the seeded key set, projecting as it goes (pass 2).
 func (d *Daemon) recover() error {
-	active := cairnlog.Origin{DeviceID: d.loaded.Device.DeviceID, Generation: d.loaded.Device.OriginGeneration}
-
 	trust, err := identity.MeshTrust(d.fs, d.dir)
 	if err != nil {
 		return err
@@ -181,6 +244,18 @@ func (d *Daemon) recover() error {
 	if err != nil {
 		return err
 	}
+
+	if d.readOnly {
+		// R9: project everything; no append handle, no seq reconcile
+		for _, o := range origins {
+			if _, err := cairnlog.Walk(d.fs, d.dir, o, trust.Verifier(), apply); err != nil {
+				return fmt.Errorf("replaying origin %s/%d: %w", o.DeviceID, o.Generation, err)
+			}
+		}
+		return nil
+	}
+
+	active := cairnlog.Origin{DeviceID: d.loaded.Device.DeviceID, Generation: d.loaded.Device.OriginGeneration}
 	for _, o := range origins {
 		if o == active {
 			continue
@@ -301,6 +376,9 @@ type PublishResult struct {
 // append (ACK) → synchronous projection/FTS. Reply is Publish with
 // ReplyToMessageID set (atomic publish variant, rulings §2).
 func (d *Daemon) Publish(req PublishRequest) (*PublishResult, error) {
+	if err := d.writable(); err != nil {
+		return nil, err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.lg == nil {
@@ -580,6 +658,9 @@ func (d *Daemon) resultByCorrelation(correlationID string) (*PublishResult, erro
 
 // SimpleEvent appends one non-publish mutation (retract, link, pin, signal).
 func (d *Daemon) SimpleEvent(eventType, objectType, objectID string, payload map[string]any, req PublishRequest) (string, error) {
+	if err := d.writable(); err != nil {
+		return "", err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.lg == nil {
@@ -598,6 +679,9 @@ func (d *Daemon) SimpleEvent(eventType, objectType, objectID string, payload map
 
 // Housekeep runs one ephemeral-TTL sweep (refs from the projection).
 func (d *Daemon) Housekeep() ([]string, error) {
+	if err := d.writable(); err != nil {
+		return nil, err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	refs, err := d.proj.ObjectRefs()

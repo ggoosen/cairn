@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/event"
+	"github.com/ggoosen/cairn/internal/fsx"
 	"github.com/ggoosen/cairn/internal/identity"
 )
 
@@ -119,6 +121,19 @@ func newIdentityShowCmd(dirFlag *string) *cobra.Command {
 				return err
 			}
 			loaded, err := identity.Load(dir)
+			if errors.Is(err, identity.ErrRestoredCopy) {
+				// R9: read-only identity view over restored data
+				trust, terr := identity.MeshTrust(fsx.OS{}, dir)
+				if terr != nil {
+					return terr
+				}
+				fmt.Fprintf(out, "cairn_id:        %s\n", trust.CairnID)
+				fmt.Fprintf(out, "portable dir:    %s\n", dir)
+				fmt.Fprintf(out, "genesis event:   %s (verified)\n", trust.GenesisEnv.EventID)
+				fmt.Fprintf(out, "devices:         %d admitted\n", len(trust.Devices()))
+				fmt.Fprintln(out, "RESTORED COPY:   no device identity — writes refused; `cairn init --adopt` creates a new origin")
+				return nil
+			}
 			if err != nil {
 				return err
 			}
