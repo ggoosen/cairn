@@ -327,3 +327,44 @@ cairn gates                # "blob durability targets (N7)" row
 A message whose attachment is still below target shows `[replication-pending]`
 in the digest. A blob is only ever counted as held by a node when that node
 has a complete, hash-verified copy — an interrupted transfer is never counted.
+
+## 14. Fork (equivocation) detection and repair (P1 N8)
+
+If a device's full state (key + log) is ever cloned and both copies then write
+different events, that is an equivocation — the same origin/sequence with two
+different, validly-signed events. cairn cannot prevent a full-disk clone, but
+it DETECTS the fork the moment the two logs meet during sync, and never merges
+or deletes either branch.
+
+On detection cairn automatically:
+- **freezes** that origin (it stops syncing; every OTHER origin keeps going),
+- **quarantines** the divergent branch under `.cairn/quarantine/` (kept forever),
+- logs loudly and fails the `cairn gates` "no unresolved forks" row.
+
+Inspect it:
+```bash
+cairn doctor fork                 # list all forks
+cairn doctor fork <origin-device> # common ancestor, both branches, the peer
+```
+
+Repair (offline — stop the daemon, restore the root key from offline storage):
+```bash
+cairn fork resolve <origin-device> --canonical local --root-key /path/to/root.key
+#   --canonical local  = keep YOUR branch; the other branch's messages are
+#                        reissued under a recovery origin (with provenance:
+#                        recovered_from_event_id + fork_resolution_id)
+#   --canonical remote = the other branch is authoritative instead
+```
+This records a root-signed `device.fork.resolve`, reissues the losing branch's
+content so nothing is lost, and marks the fork resolved. **Both branches are
+preserved** — the losing branch's original frames stay in `.cairn/quarantine`.
+
+Then complete the security follow-up (the cloned certificate must not keep
+writing):
+```bash
+# if the cloned device is a DIFFERENT device you own:
+cairn device revoke <origin-device> --root-key /path/to/root.key
+# if YOUR OWN device was cloned: run `cairn migrate` first (new identity),
+# then revoke the old (cloned) certificate as above.
+```
+Finally remove the restored root key and restart the daemon.

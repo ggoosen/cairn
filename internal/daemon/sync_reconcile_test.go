@@ -93,6 +93,7 @@ type n6Pair struct {
 	dirA, dirB       string
 	baseA, baseB     string
 	deviceA, deviceB string
+	rootKey          string // path to the restored offline root key (A's mesh root)
 }
 
 // setupN6Pair runs the offline enrolment ceremony (A init + root offline; B
@@ -157,6 +158,7 @@ func setupN6Pair(t *testing.T) n6Pair {
 	return n6Pair{
 		dirA: dirA, dirB: dirB, baseA: baseA, baseB: baseB,
 		deviceA: loadedA.Device.DeviceID, deviceB: loadedB.Device.DeviceID,
+		rootKey: rootRestored,
 	}
 }
 

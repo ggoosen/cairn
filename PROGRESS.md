@@ -1370,3 +1370,84 @@ field; projection schema v5 rebuild). `make vet` clean; `make verify` OK.
 
 Next: **N8 — live fork detection + network doctor** (OPERATOR CHECKPOINT
 milestone: the loop STOPS after N8 completes).
+
+## N8 — Live fork detection + network doctor — COMPLETE (OPERATOR CHECKPOINT)
+
+Status: all buildpack acceptance criteria pass (`make test` + `make vet` +
+`make verify` green). Durable-log internals untouched — detection only READS
+the log; freeze/quarantine write derived state; the repair ceremony appends
+through the public log API (like migrate/revoke). Authority: RULINGS R40.
+**This is an operator-checkpoint milestone — the loop STOPS after N8.**
+
+- **Detection** (`internal/daemon/reconcile.go`, `fork.go`): equivocation (same
+  origin+gen+seq, different event_id, both valid) via three signals — frontier
+  (same next_seq, different head → overlap-probe to the exact divergence),
+  ingest same-coordinate different-id, and ingest chain-divergence. Our own
+  active origin: any conflicting/beyond-head peer event is a clone → frozen.
+- **Freeze + quarantine** (R33): a typed forkError unwinds ONLY the forked
+  origin; every other origin keeps syncing. The divergent branch's raw frames
+  are preserved under `.cairn/quarantine/<origin>/` forever; a ForkRecord lands
+  in `.cairn/forks/`; detection logs LOUDLY. A frozen origin ingests nothing.
+- **Surface**: `cairn doctor fork [origin]` (common ancestor, per-branch events
+  + types, advertising peer, security-ops flag); deep doctor reports unresolved
+  forks as PROBLEMS / resolved ones as info; `cairn gates` "no unresolved forks
+  (N8)" row FAILs while frozen.
+- **Repair** (`cairn fork resolve`, offline): operator picks canonical; the
+  losing branch's message events are reissued under the recovery (active)
+  origin with recovered_from_event_id + fork_resolution_id; a ROOT-signed
+  `device.fork.resolve` (normative in build/schemas/p1-events.schema.json)
+  records the decision; both branches preserved (canonical in the log, losing
+  in quarantine). Cloned-cert revocation is the documented follow-up
+  (`// RULING-NEEDED:` in fork_resolve.go; DOGFOOD §14).
+
+### Acceptance criteria → evidence (`TestN8ForkDetectionAndRepair`)
+*Manufactured equivocation*: clone device B's state after a common prefix (seq
+1,2); B extends with branch A (seq 3), the clone B2 with branch B (seq 3) —
+both validly signed by B's key; A syncs both.
+- **Detected + frozen**: A detects the fork at the frontier, freezes B-origin,
+  quarantines branch B; A never ingests branch B into its log (still branch A
+  at seq 3), keeps its own branch; ForkRecord divergence seq 3 (common ancestor
+  2); loud log fired; deep doctor + gates report the fork.
+- **R33**: with B-origin frozen, A's OWN (non-forked) origin still replicates —
+  a post-fork A message reaches the clone via the same reconcile.
+- **Repaired, both branches preserved**: `ResolveFork` (canonical=local) reissues
+  branch B's content under A's recovery origin with provenance; after restart
+  A's log verifies, the fork is resolved (info, not problem), branch B's content
+  is recovered AND its original frame is still quarantined, branch A intact.
+
+### Deviations / notes
+- **Repair scope** (R40, `// RULING-NEEDED:`): branch decision + reissue +
+  device.fork.resolve are automated; cloned-cert revocation + physical-device
+  re-enrolment are the documented operator follow-up (a self-clone revoke is
+  refused by design — needs `cairn migrate` first).
+- **Reissue scope**: only message.publish/reply (content) are reissued;
+  structural events (links/pins/signals) stay in quarantine for manual
+  recovery; a clone-only-blob body is skipped with a note (frame preserved).
+- **Fork state** is real-fs derived (`.cairn/forks`, `.cairn/quarantine`) —
+  not part of the injected-fs durable path; uses atomic-overwrite for records
+  and write-once for quarantine frames (immutable evidence).
+
+### Author rulings needed
+- **Fork-repair ceremony scope** (R40, marked in fork_resolve.go): confirm the
+  automated-decision-vs-documented-revoke split. (Open: M0 root-key storage;
+  M5 resolve semantics; R38 bootstrap-trust retain-vs-delete.)
+
+### Test results (2026-07-13)
+`make test` — all packages green (daemon incl. TestN8ForkDetectionAndRepair,
+stable across -count=3, + full N1–N7 suite unchanged); `make vet` clean;
+`make verify` OK. `internal/log` untouched.
+
+Next: **N9 — hardening + crossed two-auditor network audit** — but FIRST the
+operator checkpoint below.
+
+### OPERATOR CHECKPOINT — N8 (before hardening)
+
+Per the buildpack sequencing, N8 is a checkpoint: review the fork-detection
+and repair machinery before N9 hardening. Points to review:
+1. The fork-repair ceremony scope (R40 / RULING-NEEDED): is the
+   automated-decision + documented-cloned-cert-revoke split acceptable, or
+   should `cairn fork resolve` also drive the revoke/migrate?
+2. Manufactured-equivocation drill is automated (TestN8ForkDetectionAndRepair);
+   consider running the REAL sandbox-clone drill on the tailnet before N9.
+3. The N5 two-machine ceremony leg (DOGFOOD §11) and the N7 durability leg are
+   still operator tasks that can ride alongside the review.

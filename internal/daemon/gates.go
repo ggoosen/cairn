@@ -148,6 +148,12 @@ func DeepDoctor(fsys fsx.FS, portableDir, dbPath string, now time.Time) (problem
 	}
 	problems = append(problems, durProblems...)
 	infos = append(infos, durInfos...)
+
+	// 6. live forks (N8): an unresolved equivocation is a FAILURE (the origin
+	// is frozen until the operator repairs it); a resolved one is informational.
+	forkProblems, forkInfos := ForkDoctor(portableDir)
+	problems = append(problems, forkProblems...)
+	infos = append(infos, forkInfos...)
 	return problems, infos, nil
 }
 
@@ -362,6 +368,7 @@ func (d *Daemon) GatesReport(w io.Writer) error {
 	fmt.Fprintf(w, "%-42s %-16s %s\n", "hard-budget compliance = 100%", "automated", budget)
 	fmt.Fprintf(w, "%-42s %-16s %s\n", "send-ack → lexical-visible P95 < 200ms", "automated", latency)
 	fmt.Fprintf(w, "%-42s %-16s %s\n", "blob durability targets (N7)", "automated", d.durabilityGate())
+	fmt.Fprintf(w, "%-42s %-16s %s\n", "no unresolved forks (N8)", "automated", d.forkGate())
 	fmt.Fprintf(w, "%-42s %-16s %s\n", "first-query Success@5 ≥ 70%", "human-measured", successAt5)
 	fmt.Fprintf(w, "%-42s %-16s %s\n", "manual-workaround rate ≤ 25%", "human-measured", workaround)
 	fmt.Fprintf(w, "%-42s %-16s %s\n", "median time-to-context < 60s", "human-measured", "diary protocol (DOGFOOD.md, M8)")
@@ -392,6 +399,25 @@ func (d *Daemon) durabilityGate() string {
 		return fmt.Sprintf("PASS (%d/%d blobs at target)", satisfied, len(blobs))
 	}
 	return fmt.Sprintf("PASS (%d satisfied, %d pending replication)", satisfied, pending)
+}
+
+// forkGate is the N8 gates row: any unresolved fork FAILs (the origin is
+// frozen until the operator repairs it — spec §6.4).
+func (d *Daemon) forkGate() string {
+	forks := d.Forks()
+	unresolved := 0
+	for _, f := range forks {
+		if !f.Resolved {
+			unresolved++
+		}
+	}
+	if unresolved == 0 {
+		if len(forks) == 0 {
+			return "PASS (no forks detected)"
+		}
+		return fmt.Sprintf("PASS (%d fork(s), all resolved)", len(forks))
+	}
+	return fmt.Sprintf("FAIL (%d unresolved fork(s) frozen — run `cairn doctor fork <origin>`)", unresolved)
 }
 
 // DoctorProjection inspects the derived projection (F1/F3). Parked events

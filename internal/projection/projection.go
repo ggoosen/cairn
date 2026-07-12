@@ -98,6 +98,48 @@ func (p *Projection) DBForTest() *sql.DB { return p.db }
 // IsSchemaVersionErr reports the typed schema-drift condition.
 func IsSchemaVersionErr(err error) bool { return errors.Is(err, ErrSchemaVersion) }
 
+// EventIDAt returns the event_id this node has at (origin, generation,
+// sequence), or "" if none. Used by N8 fork detection to compare a peer's
+// event at a coordinate against our own.
+func (p *Projection) EventIDAt(deviceID string, gen int, seq int64) (string, error) {
+	var id string
+	err := p.db.QueryRow(`SELECT event_id FROM events
+		WHERE origin_device_id=? AND origin_generation=? AND origin_sequence=?`,
+		deviceID, gen, seq).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}
+
+// BranchEvent is one event on an origin branch (N8 fork summaries).
+type BranchEvent struct {
+	Seq       int64  `json:"seq"`
+	EventID   string `json:"event_id"`
+	EventType string `json:"event_type"`
+}
+
+// EventsInRange lists this node's events for an origin over [from,to), in
+// sequence order (N8 branch summaries).
+func (p *Projection) EventsInRange(deviceID string, gen int, from, to int64) ([]BranchEvent, error) {
+	rows, err := p.db.Query(`SELECT origin_sequence, event_id, event_type FROM events
+		WHERE origin_device_id=? AND origin_generation=? AND origin_sequence>=? AND origin_sequence<?
+		ORDER BY origin_sequence`, deviceID, gen, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []BranchEvent
+	for rows.Next() {
+		var b BranchEvent
+		if err := rows.Scan(&b.Seq, &b.EventID, &b.EventType); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 // Checkpoint returns the last applied sequence for an origin (0 if none).
 func (p *Projection) Checkpoint(originDeviceID string, generation int) (int64, error) {
 	var seq int64

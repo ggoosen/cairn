@@ -40,6 +40,45 @@ func newDoctorCmd(dirFlag *string) *cobra.Command {
 			return fmt.Errorf("%d unresolved conflict(s)", len(dirs))
 		},
 	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "fork [origin-device-id]",
+		Short: "Show detected equivocations (N8): common ancestor, per-branch events, advertising peer",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dir, err := config.PortableDir(*dirFlag)
+			if err != nil {
+				return err
+			}
+			forks := daemon.ReadForkRecords(dir)
+			if len(args) == 1 {
+				for _, f := range forks {
+					if f.OriginDevice == args[0] {
+						fmt.Fprint(cmd.OutOrStdout(), daemon.FormatForkDetail(f))
+						if !f.Resolved {
+							return fmt.Errorf("origin %s is forked and frozen", args[0])
+						}
+						return nil
+					}
+				}
+				return fmt.Errorf("no fork recorded for origin %s", args[0])
+			}
+			if len(forks) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "no forks detected")
+				return nil
+			}
+			unresolved := 0
+			for _, f := range forks {
+				fmt.Fprint(cmd.OutOrStdout(), daemon.FormatForkDetail(f))
+				if !f.Resolved {
+					unresolved++
+				}
+			}
+			if unresolved > 0 {
+				return fmt.Errorf("%d unresolved fork(s)", unresolved)
+			}
+			return nil
+		},
+	})
 	return cmd
 }
 

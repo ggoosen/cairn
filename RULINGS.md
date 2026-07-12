@@ -479,3 +479,56 @@ the object store.
   (the object store's verify-on-collision refuses to overwrite a colliding
   address); repair requires removing the corrupt object first. Doctor flags
   it; automated repair is out of N7 scope.
+
+## R40 — N8 fork detection + repair implementation (interprets §6.4 / R33)
+
+Equivocation (same origin+generation+sequence, DIFFERENT event_id, both
+validly signed — a full-disk device clone that then wrote divergent events)
+is detected when two logs meet during reconciliation. Detection has three
+signals, all indicating the same condition:
+
+- **Frontier** (primary): both sides report the SAME next-sequence for an
+  origin but DIFFERENT chain heads → the branches diverged at or before the
+  frontier. The initiator fetches the peer's overlapping branch via the
+  ordinary get_range path, compares event ids seq-by-seq to find the exact
+  divergence (common ancestor), and quarantines the peer's divergent suffix.
+- **Ingest, same coordinate** (backstop): an incoming verified event at a
+  sequence we already hold whose event_id differs from ours.
+- **Ingest, chain divergence** (backstop): a contiguous incoming event whose
+  previous_origin_event_id does not match our chain head.
+
+On any signal cairn: **freezes** the origin (a typed forkError unwinds only
+that origin's reconcile; every OTHER origin keeps syncing — R33), **quarantines**
+the divergent branch's raw record frames under `.cairn/quarantine/<origin>/`
+(preserved forever — the losing branch is never silently deleted), records a
+ForkRecord under `.cairn/forks/`, and logs LOUDLY. A frozen origin ingests
+nothing until resolved; the durable log is never mutated by detection.
+
+- **Own active origin.** We are the sole legitimate writer of our own origin,
+  so ANY peer event that conflicts with what we hold, OR extends beyond our
+  head, is equivocation (a device clone) — frozen + quarantined, never
+  ingested. (This tightens the N6 conservative refusal into full N8 handling.)
+- **Surface.** `cairn doctor fork [origin]` shows the common ancestor,
+  per-branch events with types, the advertising peer, and whether security
+  operations (device.*/genesis) appear on either branch. Deep doctor reports
+  an unresolved fork as a PROBLEM and a resolved one informationally; the
+  `cairn gates` "no unresolved forks" row FAILs while any fork is frozen.
+- **Repair** (`cairn fork resolve`, OFFLINE like migrate/revoke): the operator
+  chooses the canonical branch; the LOSING branch's useful (message) events are
+  reissued under the operator's active origin — a recovery origin — each
+  carrying `recovered_from_event_id` + `fork_resolution_id`; a ROOT-signed
+  `device.fork.resolve` records the decision (normative in p1-events.schema);
+  the fork is marked resolved. Both branches are preserved (the canonical one
+  in the log, the losing one in quarantine).
+- **Conservative scoping (RULING-NEEDED in code).** The full §6.4 ceremony also
+  re-enrols the physical device under a new identity and revokes the cloned
+  certificate. cairn's `fork resolve` does the branch decision + reissue +
+  device.fork.resolve; revoking the cloned cert is the documented follow-up
+  (`cairn device revoke`, or `cairn migrate` first for a self-clone) rather
+  than automated inside resolve, because a self-clone revocation is refused by
+  design (RevokeDevice: "use migrate"). Marked for author confirmation.
+- **Reissue scope.** Only message.publish/reply events are reissued (the
+  "useful events" — content). Structural events (links, pins, signals) on the
+  losing branch are not auto-reissued; they remain in quarantine for manual
+  recovery. A losing message whose body is neither inline nor locally present
+  (a clone-only blob) is skipped with a note (its frame stays quarantined).

@@ -81,6 +81,8 @@ type Daemon struct {
 	syncKick          chan struct{} // N6: push-on-append nudges the anti-entropy sweep (R29)
 
 	durab *durabilityRegistry // N7: per-blob peer-holder registry (guarded by d.mu)
+
+	forks map[cairnlog.Origin]*ForkRecord // N8: detected equivocations (guarded by d.mu)
 }
 
 // syncIdentity returns this node's peer identity for dialing. Caller holds
@@ -223,6 +225,7 @@ func Start(opts Options) (*Daemon, error) {
 		logs:     map[cairnlog.Origin]*cairnlog.Log{},
 		syncKick: make(chan struct{}, 1),
 		durab:    loadDurability(opts.FS, opts.Dir),
+		forks:    loadForks(opts.Dir),
 	}
 	if devPriv != nil {
 		d.keyID = event.KeyID(devPriv.Public().(ed25519.PublicKey))

@@ -314,9 +314,18 @@ const (
 	// N7 blob durability (spec §6.3; buildpack N7). Class → replica target:
 	// ephemeral = origin only (1); normal = at least this many nodes;
 	// important / pinned = all non-revoked member nodes (computed at runtime).
-	DurabilityDefault    = "normal"
-	DurabilityNormalMin  = 2 // "normal ≥ 2 nodes (default)"
-	DurabilityRegistry   = "durability.json" // under .cairn/ (derived, cache-class)
+	DurabilityDefault   = "normal"
+	DurabilityNormalMin = 2                // "normal ≥ 2 nodes (default)"
+	DurabilityRegistry  = "durability.json" // under .cairn/ (derived, cache-class)
+
+	// N8 fork detection (spec §6.4; R33). Equivocation = same origin+gen+seq,
+	// different event_id, both validly signed. Detected when logs meet.
+	ForksDirName      = "forks"      // under .cairn/: one <device>_<gen>.json per fork
+	QuarantineDirName = "quarantine" // under .cairn/: preserved divergent branch frames
+	// ForkProbeWindow bounds how far back the divergence probe compares peer
+	// vs local event ids when a frontier fork is detected (0 = whole log).
+	// P1 logs are small; the full compare is affordable and exact.
+	ForkProbeWindow = 0
 
 	// Capability sessions (N2, RULINGS.md R23): opaque daemon-side handles,
 	// short-TTL, non-delegable, auto-revoked on exit/idle. TTL and idle

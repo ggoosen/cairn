@@ -250,6 +250,28 @@
           "$ref": "#/$defs/uuid"
         }
       }
+    },
+    "device.fork.resolve": {
+      "description": "N8 (spec \u00a76.4): ROOT-signed record of an operator's fork resolution, appended to the resolver's active origin. Names the forked origin, the chosen canonical branch, and both heads; the losing branch's useful events are reissued under a recovery origin (message.publish carrying recovered_from_event_id + fork_resolution_id) and the losing branch is preserved in quarantine, never deleted. Signature key id is the mesh root key (like device.revoke).",
+      "type": "object",
+      "required": ["forked_origin_device", "forked_origin_generation", "canonical", "canonical_head_event_id", "losing_head_event_id", "fork_resolution_id"],
+      "properties": {
+        "forked_origin_device": { "$ref": "#/$defs/uuid" },
+        "forked_origin_generation": { "type": "integer", "minimum": 1 },
+        "divergence_seq": { "type": "integer", "minimum": 1 },
+        "canonical": { "enum": ["local", "remote"] },
+        "canonical_head_event_id": { "$ref": "#/$defs/hash" },
+        "losing_head_event_id": { "$ref": "#/$defs/hash" },
+        "fork_resolution_id": { "$ref": "#/$defs/uuid" }
+      }
+    },
+    "message.publish-fork-recovery-extension": {
+      "description": "N8: a message.publish reissued from a fork's losing branch MAY carry recovered_from_event_id (the losing event) + fork_resolution_id, preserving provenance of the recovered content.",
+      "type": "object",
+      "properties": {
+        "recovered_from_event_id": { "$ref": "#/$defs/hash" },
+        "fork_resolution_id": { "$ref": "#/$defs/uuid" }
+      }
     }
   }
 }

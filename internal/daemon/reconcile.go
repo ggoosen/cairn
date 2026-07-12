@@ -285,7 +285,7 @@ func (d *Daemon) readRange(o cairnlog.Origin, from, to int64, includeEphemeral b
 // (durability ordering: objects → event → index). It returns how many were
 // newly appended. Caller holds d.mu. Records for OUR active origin are refused
 // (equivocation is N8, never silently ingested).
-func (d *Daemon) ingestRecords(recs [][]byte, bodies map[string][]byte) (int, error) {
+func (d *Daemon) ingestRecords(recs [][]byte, bodies map[string][]byte, peerHint string) (int, error) {
 	if len(recs) == 0 {
 		return 0, nil
 	}
@@ -297,12 +297,25 @@ func (d *Daemon) ingestRecords(recs [][]byte, bodies map[string][]byte) (int, er
 			return appended, fmt.Errorf("rejecting unverifiable replicated record (hash/sig): %w", err)
 		}
 		o := cairnlog.Origin{DeviceID: env.OriginDeviceID, Generation: env.OriginGeneration}
+		if d.isFrozen(o) {
+			continue // R33: a frozen origin ingests nothing until resolved
+		}
 		if o == d.activeOrigin() {
-			if env.OriginSequence < d.lg.NextSeq() {
-				continue // a copy of our own event — idempotent no-op
+			// We are the SOLE legitimate writer of our active origin. A peer
+			// event that conflicts with what we hold (different id at a seq we
+			// have) OR extends beyond our head is equivocation — a device clone
+			// wrote it (N8). Freeze + quarantine; never ingest.
+			mineID, qerr := d.proj.EventIDAt(o.DeviceID, o.Generation, env.OriginSequence)
+			if qerr != nil {
+				return appended, qerr
 			}
-			return appended, fmt.Errorf("peer presented event at seq %d for OUR active origin %s/%d — possible fork (N8); refusing",
-				env.OriginSequence, o.DeviceID, o.Generation)
+			if env.OriginSequence < d.lg.NextSeq() && mineID == env.EventID {
+				continue // an exact copy of our own event — idempotent no-op
+			}
+			if err := d.recordForkFromIngest(o, env, rec, d.lg.NextSeq(), d.lg.LastEventID(), peerHint); err != nil {
+				return appended, err
+			}
+			return appended, &forkError{fmt.Sprintf("equivocation on OUR active origin %s/%d at seq %d (device clone)", o.DeviceID, o.Generation, env.OriginSequence)}
 		}
 		lg, err := d.foreignLog(o)
 		if err != nil {
@@ -310,7 +323,19 @@ func (d *Daemon) ingestRecords(recs [][]byte, bodies map[string][]byte) (int, er
 		}
 		next := lg.NextSeq()
 		if env.OriginSequence < next {
-			continue // already have it (at-least-once → idempotent)
+			// we already have this sequence — is it the SAME event?
+			mineID, qerr := d.proj.EventIDAt(o.DeviceID, o.Generation, env.OriginSequence)
+			if qerr != nil {
+				return appended, qerr
+			}
+			if mineID == env.EventID {
+				continue // identical (at-least-once → idempotent)
+			}
+			// same coordinate, different id, both valid → equivocation (N8)
+			if err := d.recordForkFromIngest(o, env, rec, next, lg.LastEventID(), peerHint); err != nil {
+				return appended, err
+			}
+			return appended, &forkError{fmt.Sprintf("equivocation on origin %s/%d at seq %d", o.DeviceID, o.Generation, env.OriginSequence)}
 		}
 		if env.OriginSequence > next {
 			// a gap: the caller must deliver contiguously from our frontier.
@@ -326,6 +351,15 @@ func (d *Daemon) ingestRecords(recs [][]byte, bodies map[string][]byte) (int, er
 			}
 		}
 		if err := lg.Append(rec, env); err != nil {
+			// A contiguous event whose previous_origin_event_id does not match
+			// our chain head chains to a DIFFERENT history at seq-1 →
+			// equivocation the frontier hid (N8 backstop).
+			if env.PreviousOriginEventID != lg.LastEventID() {
+				if ferr := d.recordForkFromIngest(o, env, rec, next, lg.LastEventID(), peerHint); ferr != nil {
+					return appended, ferr
+				}
+				return appended, &forkError{fmt.Sprintf("equivocation on origin %s/%d at seq %d (chain diverges from our head)", o.DeviceID, o.Generation, env.OriginSequence)}
+			}
 			return appended, fmt.Errorf("appending replicated event %s: %w", env.EventID, err)
 		}
 		d.applyProjection(env, rec)
@@ -372,12 +406,22 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 			}
 		case "push_records":
 			d.mu.Lock()
-			n, err := d.ingestRecords(req.Records, req.Bodies)
+			n, err := d.ingestRecords(req.Records, req.Bodies, peerDevice)
 			var fr []originFrontier
 			if err == nil {
 				fr, _ = d.frontiersLocked()
 			}
 			d.mu.Unlock()
+			if fe := asForkError(err); fe != nil {
+				// N8: a peer pushed a forked branch. We froze + quarantined it;
+				// tell the peer this origin is forked (its push is refused) but
+				// the connection continues for other origins (R33).
+				fmt.Fprintf(d.warn, "sync: FORK detected on push from %s: %v\n", peerDevice, err)
+				if werr := writeSync(conn, syncMsg{Type: "ack", Frontier: nil, Err: "origin frozen: " + fe.Error()}); werr != nil {
+					return
+				}
+				continue
+			}
 			if err != nil {
 				fmt.Fprintf(d.warn, "sync: ingest from %s failed: %v\n", peerDevice, err)
 				writeSync(conn, syncMsg{Type: "error", Err: err.Error()})
@@ -543,17 +587,45 @@ func (d *Daemon) SyncWith(addr string) (int, error) {
 
 	ingested := 0
 	for _, o := range origins {
+		// N8/R33: a frozen (forked) origin is skipped entirely; every OTHER
+		// origin continues to sync.
+		d.mu.Lock()
+		frozen := d.isFrozen(o)
+		d.mu.Unlock()
+		if frozen {
+			continue
+		}
+		mf, mok := myFr[o]
+		pf, pok := peerFr[o]
+		// N8 fork detection (frontier): both sides reached the SAME next
+		// sequence but on DIFFERENT chain heads → the chains diverged =
+		// equivocation. Investigate (find the divergence, quarantine the
+		// remote branch), freeze, and move on (R33).
+		if mok && pok && mf.NextSeq == pf.NextSeq && mf.LastEventID != "" && pf.LastEventID != "" && mf.LastEventID != pf.LastEventID {
+			if err := d.investigateFrontierFork(pc, o, mf, pf); err != nil {
+				fmt.Fprintf(d.warn, "sync: FORK suspected on origin %s/%d but investigation failed: %v\n", o.DeviceID, o.Generation, err)
+			}
+			continue
+		}
 		myNext := int64(config.FirstSequence)
-		if f, ok := myFr[o]; ok {
-			myNext = f.NextSeq
+		if mok {
+			myNext = mf.NextSeq
 		}
 		peerNext := int64(config.FirstSequence)
-		if f, ok := peerFr[o]; ok {
-			peerNext = f.NextSeq
+		if pok {
+			peerNext = pf.NextSeq
 		}
 		// PULL: we trail the peer on this origin.
 		if myNext < peerNext {
 			n, err := d.pullOrigin(pc, o, myNext, peerNext)
+			if forked := asForkError(err); forked != nil {
+				// N8 backstop: the pulled branch chains to a different history
+				// than ours (equivocation at a length the frontier hid). The
+				// origin is now frozen; continue with other origins (R33).
+				fmt.Fprintf(d.warn, "sync: FORK detected while pulling origin %s/%d: %v\n", o.DeviceID, o.Generation, forked)
+				ingested += n
+				continue
+			}
 			if err != nil {
 				return ingested, err
 			}
@@ -613,7 +685,7 @@ func (d *Daemon) pullOrigin(pc *peer.Conn, o cairnlog.Origin, from, to int64) (i
 			break // peer has nothing more for this window
 		}
 		d.mu.Lock()
-		n, err := d.ingestRecords(resp.Records, resp.Bodies)
+		n, err := d.ingestRecords(resp.Records, resp.Bodies, pc.PeerDevice)
 		var advanced int64 = -1
 		if err == nil {
 			if lg, ok := d.logs[o]; ok {
@@ -904,6 +976,179 @@ func (d *Daemon) SetSyncBulkThresholdForTest(n int) {
 	d.mu.Lock()
 	d.syncBulkThreshold = n
 	d.mu.Unlock()
+}
+
+// --- N8 fork detection ------------------------------------------------------
+
+// forkError signals that an equivocation was detected (and the origin frozen)
+// during ingest. The reconcile loop catches it per-origin so other origins
+// keep syncing (R33).
+type forkError struct{ msg string }
+
+func (e *forkError) Error() string { return e.msg }
+
+func asForkError(err error) *forkError {
+	if err == nil {
+		return nil
+	}
+	var fe *forkError
+	if errors.As(err, &fe) {
+		return fe
+	}
+	return nil
+}
+
+// investigateFrontierFork handles a frontier-level fork signal (same next
+// sequence, different chain head): fetch the peer's overlapping branch, find
+// the first divergent sequence, quarantine the peer's divergent suffix, and
+// record + freeze the fork. Caller must NOT hold d.mu.
+func (d *Daemon) investigateFrontierFork(pc *peer.Conn, o cairnlog.Origin, mine, peer originFrontier) error {
+	// fetch the peer's records over the whole overlap [FirstSequence, N)
+	from := int64(config.FirstSequence)
+	if config.ForkProbeWindow > 0 && peer.NextSeq-int64(config.ForkProbeWindow) > from {
+		from = peer.NextSeq - int64(config.ForkProbeWindow)
+	}
+	peerRecs, err := d.fetchPeerRange(pc, o, from, peer.NextSeq)
+	if err != nil {
+		return err
+	}
+	// find the first sequence where the peer's event id differs from ours
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	divSeq := int64(-1)
+	for _, pr := range peerRecs {
+		mineID, err := d.proj.EventIDAt(o.DeviceID, o.Generation, pr.seq)
+		if err != nil {
+			return err
+		}
+		if mineID == "" || mineID != pr.env.EventID {
+			divSeq = pr.seq
+			break
+		}
+	}
+	if divSeq < 0 {
+		// heads differ but no divergence found in the window — divergence is
+		// older than the probe window; record a coarse fork at the window edge.
+		divSeq = from
+	}
+	return d.recordForkLocked(o, divSeq, mine, peer, pc.PeerDevice, peerRecs)
+}
+
+// peerRecord is one verified record fetched from a peer during fork probing.
+type peerRecord struct {
+	seq int64
+	env *event.Envelope
+	rec []byte
+}
+
+// fetchPeerRange requests [from,to) of an origin from the peer and returns the
+// verified records (used for fork investigation; the peer serves them via the
+// ordinary get_range path). Caller must NOT hold d.mu.
+func (d *Daemon) fetchPeerRange(pc *peer.Conn, o cairnlog.Origin, from, to int64) ([]peerRecord, error) {
+	d.mu.Lock()
+	verify := d.trust.Verifier()
+	d.mu.Unlock()
+	ref := refOf(o)
+	var out []peerRecord
+	next := from
+	for next < to {
+		hi := next + int64(config.SyncRangeBatch)
+		if hi > to {
+			hi = to
+		}
+		if err := writeSync(pc, syncMsg{Type: "get_range", Origin: &ref, FromSeq: next, ToSeq: hi}); err != nil {
+			return nil, err
+		}
+		resp, err := readSync(pc.R)
+		if err != nil {
+			return nil, err
+		}
+		if resp.Type == "error" {
+			return nil, fmt.Errorf("peer error: %s", resp.Err)
+		}
+		if resp.Type != "records" {
+			return nil, fmt.Errorf("expected records, got %q", resp.Type)
+		}
+		if len(resp.Records) == 0 {
+			break
+		}
+		for _, rec := range resp.Records {
+			env, verr := verify(rec)
+			if verr != nil {
+				// a peer branch that does NOT verify is corruption, not
+				// equivocation (both branches must be validly signed).
+				return nil, fmt.Errorf("peer branch record at ~seq %d does not verify (corruption, not equivocation): %w", next, verr)
+			}
+			out = append(out, peerRecord{seq: env.OriginSequence, env: env, rec: rec})
+		}
+		next = out[len(out)-1].seq + 1
+	}
+	return out, nil
+}
+
+// recordForkLocked builds, quarantines, persists, and freezes a fork. Caller
+// holds d.mu. Idempotent: an existing unresolved fork for the origin is left
+// as-is (the first detection wins; re-detection does not churn the record).
+func (d *Daemon) recordForkLocked(o cairnlog.Origin, divSeq int64, mine, peer originFrontier, peerDevice string, peerRecs []peerRecord) error {
+	if f, ok := d.forks[o]; ok && !f.Resolved {
+		return nil // already frozen
+	}
+	// quarantine the peer's divergent suffix [divSeq, peer.NextSeq) forever
+	var remoteBranch []ForkBranchEvent
+	security := false
+	for _, pr := range peerRecs {
+		if pr.seq < divSeq {
+			continue
+		}
+		if err := quarantineFrame(d.dir, o, pr.seq, pr.env.EventID, pr.rec); err != nil {
+			return fmt.Errorf("quarantining forked frame: %w", err)
+		}
+		remoteBranch = append(remoteBranch, ForkBranchEvent{Seq: pr.seq, EventID: pr.env.EventID, EventType: pr.env.EventType})
+		if isSecurityType(pr.env.EventType) {
+			security = true
+		}
+	}
+	// my divergent suffix summary (my branch [divSeq, mine.NextSeq))
+	localBranch, err := d.proj.EventsInRange(o.DeviceID, o.Generation, divSeq, mine.NextSeq)
+	if err != nil {
+		return err
+	}
+	lb := make([]ForkBranchEvent, 0, len(localBranch))
+	for _, e := range localBranch {
+		lb = append(lb, ForkBranchEvent{Seq: e.Seq, EventID: e.EventID, EventType: e.EventType})
+		if isSecurityType(e.EventType) {
+			security = true
+		}
+	}
+	f := &ForkRecord{
+		OriginDevice:  o.DeviceID,
+		OriginGen:     o.Generation,
+		DivergenceSeq: divSeq,
+		LocalHead:     mine.LastEventID,
+		LocalHeadSeq:  mine.NextSeq - 1,
+		RemoteHead:    peer.LastEventID,
+		RemoteHeadSeq: peer.NextSeq - 1,
+		DetectedPeer:  peerDevice,
+		DetectedAt:    d.now().UTC().Format(config.WallTimeFormat),
+		SecurityOps:   security,
+		RemoteBranch:  remoteBranch,
+		LocalBranch:   lb,
+	}
+	d.forks[o] = f
+	if err := saveForkRecord(d.dir, f); err != nil {
+		return err
+	}
+	fmt.Fprintf(d.warn, "FORK DETECTED: origin %s/%d equivocates — common ancestor seq %d; local head %s (seq %d), remote head %s (seq %d) advertised by %s%s. Ingest FROZEN for this origin (others unaffected). Run `cairn doctor fork %s` and repair per DOGFOOD §14. The losing branch is quarantined, never deleted.\n",
+		o.DeviceID, o.Generation, divSeq-1, short(f.LocalHead), f.LocalHeadSeq, short(f.RemoteHead), f.RemoteHeadSeq, peerDevice,
+		map[bool]string{true: " [SECURITY OPS ON A BRANCH]", false: ""}[security], o.DeviceID)
+	return nil
+}
+
+func short(id string) string {
+	if len(id) > 12 {
+		return id[:12] + "…"
+	}
+	return id
 }
 
 // parseSegSeq extracts the first sequence from a "seg_00000001.seg" name.
