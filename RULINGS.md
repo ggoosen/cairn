@@ -1,11 +1,14 @@
 # RULINGS.md — Binding Post-P0 Rulings
 
 **Process rule (FIX-F5):** design-conversation rulings are implemented ONLY
-after they land in this file. Precedence:
-`docs/rulings-v0.3.1.md` > `docs/spec-v0.3.md` > **this file** > CLAUDE.md >
-builder judgment. This file supplements the v0.3.1 rulings for everything
-decided after them; where it conflicts with v0.3.1 it records an explicit
-adjudication, not a silent override.
+after they land in this file.
+
+**Precedence (corrected per FIX-F8.4, Codex AUDIT2-004):**
+**RULINGS.md** > `docs/rulings-v0.3.1.md` > `docs/spec-v0.3.md` >
+`build/TESTING.md` > CLAUDE.md > builder judgment. Newest rulings AMEND
+older documents where they explicitly conflict — that is this file's
+purpose. Every override of an older document is recorded here as an
+explicit adjudication, never made silently.
 
 Provenance: retroactive capture of the design-conversation rulings that
 never reached the repo (the F5 process failure found by both audits), plus
@@ -152,3 +155,48 @@ and reflects P0 status — never a hardcoded milestone string.
 - **Adopt:** `cairn init --adopt` archives the old history read-only at
   `events-preadopt-<old-cairn-id>/` (never deleted), retains objects,
   drops stale derived state, and creates a new origin identity.
+
+## R13 — TTL duration strings (FIX-F8.1; amends R10)
+
+`ephemeral_ttl` and `housekeep_interval` accept duration strings — Go
+durations plus a `d` suffix ("30s", "90m", "7d", "1d12h") — and are the
+preferred form. The legacy integer keys (`ephemeral_ttl_hours`,
+`housekeep_minutes`) remain valid for backward compatibility; setting both
+forms for one knob, or an unparseable string, is a load-time config error
+with a clear message. Sub-hour TTLs are legitimate (agent scratchpads) and
+required for expiry auditability; the suite carries a 30-second end-to-end
+expiry drill.
+
+## R14 — Golden corpus reproducibility (FIX-F8.2)
+
+The golden retrieval corpus ships as checked-in fixtures
+(`testdata/corpus/{messages,queries}.json`), embedded into the binary with
+a drift test. `cairn bench golden` loads them into a THROWAWAY mesh
+(isolated device state; never the operator's) through the real daemon
+paths and reports Success@5 and lexical-only top-10 against the P0 gates,
+with per-query miss detail. The published claim must be reproducible from
+the shipped binary without reading test code. The M6 acceptance test
+consumes the same fixtures (single source of truth). This runner is the
+P2 ranking-calibration harness.
+
+## R15 — Park-time loudness (FIX-F8.3; makes R4.3 concrete)
+
+"Logged loudly" means AT PARK TIME: the daemon emits event_id, event_type,
+origin/generation/sequence, the projection error, and the
+`run cairn doctor` pointer to its warning stream the moment an event is
+parked — in addition to (not instead of) doctor/reindex/gates reporting.
+
+## R16 — Audit-brief wording on score drift (Codex AUDIT2-003, adjudicated)
+
+Reindex/restart guarantees IDENTICAL result identity and ordering under a
+fixed clock (proven byte-identical in the F2 regression). Raw scores drift
+with wall-clock time because freshness legitimately decays — this is
+correct behavior, not a defect. Audit briefs must phrase the invariant as
+"identical result identity and ordering; scores may drift by freshness
+decay."
+
+## R17 — Doctor names a referencing revision (FIX-F8.5)
+
+Missing/corrupt-object doctor lines additionally name one referencing
+revision_id and message_id, so the operator never has to reverse a
+body_hash by hand.
