@@ -11,7 +11,8 @@ Prereqs: Go 1.23+, git, a FileVault-encrypted Mac (or `--allow-unencrypted`).
 
 ```bash
 git clone https://github.com/ggoosen/cairn && cd cairn
-make build                                   # bin/cairn (CGO + sqlite_fts5)
+make build      # bin/cairn — ALWAYS build via make (or -tags sqlite_fts5);
+                # a plain `go build ./...` fails at compile time by design
 export PATH="$PWD/bin:$PATH"
 cairn init                                   # ~/cairn + device identity + genesis
 cairn daemon &                               # the resident single writer

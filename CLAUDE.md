@@ -74,7 +74,9 @@ review. Your job is implementation, not redesign.
 - Run `go test -tags sqlite_fts5 ./...` and `go vet -tags sqlite_fts5 ./...`
   (or `make test vet`) before every commit. Keep the build green at all
   times. The `sqlite_fts5` tag is mandatory from M3 on — mattn/go-sqlite3
-  compiles FTS5 only behind it (anticipated in the library table below).
+  compiles FTS5 only behind it. A plain untagged build FAILS AT COMPILE
+  TIME by design (FIX-F4 guard); `make verify` asserts both that failure
+  and the tagged suite.
 - All tunable constants live in ONE commented config module
   (`internal/config/constants.go`) — ranking weights, half-lives, seal
   thresholds, limits. No magic numbers in code.
