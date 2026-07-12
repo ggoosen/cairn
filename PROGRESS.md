@@ -1056,3 +1056,74 @@ Deviations / notes:
 Commit: 0f62484 (+ docs commit).
 Next: **N4 — deterministic derivatives + receiver summary check** (F9
 bench --embedder real must ride along by N4 per the buildpack).
+
+## N4 — Deterministic derivatives + receiver summary check — COMPLETE
+
+Status: all acceptance criteria pass (full suite -count=1 green; the one
+failure seen mid-milestone was the PREVIOUSLY RECORDED TestF3 flake, now
+root-caused and fixed — see below). F9 completed in this milestone as
+required ("do not let it slip past N4"). Durable-log internals untouched.
+Not an operator-checkpoint milestone.
+
+- internal/derive: sandboxed deterministic extraction per spec §8.3 —
+  text-layer PDFs, sanitised HTML, docx text, plain text. MIME sniffed
+  from content; 16MiB input / 200-page / 10s / 1MiB output caps; panics
+  contained; no network by construction (extractors are pure functions
+  over bytes — recorded as the conservative in-process reading of
+  "sandboxed"; OS-level syscall sandboxing is flagged for the N9
+  hardening review, not silently claimed).
+- New deps (recorded): github.com/ledongthuc/pdf (rsc.io/pdf drops space
+  glyphs — probed empirically, unusable for search text),
+  golang.org/x/net (HTML tokenizer).
+- Events derivative.publish/fail/invalidate; projection schema v4
+  (derivatives, message_summaries, fts_derivatives). Derivative text is
+  FTS-indexed at APPLY time via the object store (replay-deterministic),
+  and lexical candidates UNION derivative hits mapped back to owning
+  messages. sender_summary added to message.publish (optional, untrusted).
+- Enricher: DeriveOnce + SummaryCheckOnce on the background cadence
+  (spec §8.1 — agents never wait; §8.2 — no embedder just delays checks).
+  Failed extractions are derivative.fail events: recorded once, the
+  queue drains monotonically, no retry loops.
+- Receiver summary check (spec §8.4): cosine(sender summary, body) below
+  SummaryAgreeCosineMin (0.5, config-revisable judgment constant) ⇒
+  disagree flag + LOCAL extractive-lead summary with method provenance
+  ("extractive-lead-v1/<model>") + loud daemon warning + [summary-disputed]
+  digest marker. Bodies are ALWAYS excerpted in digests (never sender
+  summaries), per spec — the check adds the visible marker.
+- CLI: send --attach/--summary; derivative list|invalidate|summary.
+  Capabilities: derivative reads read-tier; invalidate admin.
+- F9: `cairn bench golden --embedder real` — runs the pinned
+  sentence-transformers model via the embed venv; REFUSES to substitute
+  the dev embedder (a fake "real" score is worse than none). Operator
+  runs it after provisioning the venv (DOGFOOD.md §2).
+- **Flake root-caused and fixed**: SocketPath used cairnID[:13] — a
+  UUIDv7 MILLISECOND prefix — so two meshes initialized in the same ms
+  (parallel test packages, or scripted setup in production) collided on
+  the unix socket path and one daemon startup removed the other daemon's
+  live socket. Now the full cairn id. This explains the
+  TestF3DoctorFailsOnMissingObject failures recorded during F-work.
+
+Acceptance evidence:
+- PDF attachment searchable via derivative with FULL provenance: phrase
+  exists only inside the PDF; unsearchable before derivation, exactly one
+  hit after; provenance chain verified end-to-end (attachment blob_hash →
+  derivative record with extractor identity → text_hash → text object
+  content). Invalidate drops it from search; the next pass regenerates.
+  (TestN4PDFSearchableViaDerivativeWithProvenance)
+- Misleading sender summary flagged and locally re-summarised: divergent
+  claim → checked+disagree+local extractive summary with provenance;
+  honest claim unflagged; digest marks exactly the disputed entry.
+  (TestN4MisleadingSummaryFlaggedAndLocallySummarised)
+- Fail path recorded once, queue drains (TestN4FailPathRecordedOnce)
+- Replay through reindex: derivative FTS rebuilt from events+objects
+  (still searchable), no re-derivation invented, sender summary replayed
+  with enrichment-class check state reset then re-verified, zero parked.
+  (TestN4ReplayThroughReindex)
+- Extractor unit matrix: pdf/html/docx/plain, sanitization (script/style
+  never leak), determinism, corrupt-input containment, sniff-not-filename.
+- CLI plumbing: send --attach/--summary round-trip; F9 flag behavior.
+
+Commit: ed9de25 (+ docs commit).
+Next: **N5 — transport + membership (Tailscale)** — OPERATOR CHECKPOINT
+milestone: requires the physical root-key ceremony; the next iteration
+prepares the enrolment flow and STOPS for the operator.

@@ -216,3 +216,19 @@ similarity thresholds to tune; caps default to 10 matches/24h and 20/day
 Without `--durable` the command just updates the view's LOCAL view.json
 (no events). Requires the real embedder (§2) for genuine semantic
 matching — the dev embedder only matches shared words.
+
+## 10. Attachments, derivatives, and sender summaries (P1 N4)
+
+```sh
+cairn send "audit attached" --attach report.pdf --summary "Q3 fire safety audit"
+cairn derivative list <message-id>      # extractor provenance per attachment
+cairn derivative summary <message-id>   # sender claim + receiver verdict
+```
+
+Attachments (PDF/HTML/docx/text, ≤16MiB) become searchable within seconds
+via sandboxed deterministic extraction — search hits carry full provenance
+back to the source blob. A sender `--summary` is an untrusted claim: the
+receiver embeds it against the body, and a divergent claim gets a
+`[summary-disputed]` marker in digests plus a locally computed extractive
+summary (needs the real embedder, §2). For the F9 retrieval benchmark on
+the real model: `cairn bench golden --embedder real`.
