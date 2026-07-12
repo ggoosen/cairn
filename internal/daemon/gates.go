@@ -29,7 +29,8 @@ func VerifyObjects(fsys fsx.FS, portableDir string, now time.Time) (problems, in
 		return nil, nil, err
 	}
 	type ref struct {
-		hash, class, created string
+		hash, class, created  string
+		revisionID, messageID string // FIX-F8.5: named in problem lines
 	}
 	trust, err := identity.MeshTrust(fsys, portableDir)
 	if err != nil {
@@ -42,21 +43,25 @@ func VerifyObjects(fsys fsx.FS, portableDir string, now time.Time) (problems, in
 				switch env.EventType {
 				case "message.publish", "message.reply":
 					var pl struct {
-						BodyHash  string `json:"body_hash"`
-						TextClass string `json:"text_class"`
+						BodyHash   string `json:"body_hash"`
+						TextClass  string `json:"text_class"`
+						RevisionID string `json:"revision_id"`
+						MessageID  string `json:"message_id"`
 					}
 					if json.Unmarshal(env.Payload, &pl) == nil && pl.BodyHash != "" {
-						refs = append(refs, ref{pl.BodyHash, pl.TextClass, env.WallTime})
+						refs = append(refs, ref{pl.BodyHash, pl.TextClass, env.WallTime, pl.RevisionID, pl.MessageID})
 					}
 				case "message.revise_body":
 					var pl struct {
+						MessageID string `json:"message_id"`
 						Revisions []struct {
-							BodyHash string `json:"body_hash"`
+							BodyHash   string `json:"body_hash"`
+							RevisionID string `json:"revision_id"`
 						} `json:"revisions"`
 					}
 					if json.Unmarshal(env.Payload, &pl) == nil {
 						for _, r := range pl.Revisions {
-							refs = append(refs, ref{r.BodyHash, "", env.WallTime})
+							refs = append(refs, ref{r.BodyHash, "", env.WallTime, r.RevisionID, pl.MessageID})
 						}
 					}
 				}
@@ -67,9 +72,10 @@ func VerifyObjects(fsys fsx.FS, portableDir string, now time.Time) (problems, in
 		}
 	}
 	for _, r := range refs {
+		where := fmt.Sprintf("revision %s of message %s", r.revisionID, r.messageID)
 		if store.Exists(r.hash) {
 			if _, err := store.Get(r.hash); err != nil {
-				problems = append(problems, fmt.Sprintf("object %s fails content verification: %v", r.hash, err))
+				problems = append(problems, fmt.Sprintf("object %s (referenced by %s) fails content verification: %v", r.hash, where, err))
 			}
 			continue
 		}
@@ -80,9 +86,9 @@ func VerifyObjects(fsys fsx.FS, portableDir string, now time.Time) (problems, in
 		}
 		expired := err == nil && r.class == object.ClassEphemeral && now.Sub(created) > ttl
 		if expired {
-			infos = append(infos, fmt.Sprintf("ephemeral object %s expired (TTL); event preserved", r.hash))
+			infos = append(infos, fmt.Sprintf("ephemeral object %s (%s) expired (TTL); event preserved", r.hash, where))
 		} else {
-			problems = append(problems, fmt.Sprintf("referenced object %s missing (class %q) — not explainable by ephemeral expiry", r.hash, r.class))
+			problems = append(problems, fmt.Sprintf("referenced object %s missing (class %q, referenced by %s) — not explainable by ephemeral expiry", r.hash, r.class, where))
 		}
 	}
 	return problems, infos, nil

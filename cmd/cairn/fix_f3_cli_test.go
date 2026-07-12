@@ -58,6 +58,10 @@ func TestF3DoctorFailsOnMissingObject(t *testing.T) {
 	if !strings.Contains(out, pub.BodyHash) {
 		t.Fatalf("problem does not name the object:\n%s", out)
 	}
+	// FIX-F8.5: the line also names the referencing revision and message
+	if !strings.Contains(out, pub.RevisionID) || !strings.Contains(out, pub.MessageID) {
+		t.Fatalf("problem does not name the referencing revision/message:\n%s", out)
+	}
 }
 
 func TestF3DoctorFailsOnParkedEvent(t *testing.T) {
