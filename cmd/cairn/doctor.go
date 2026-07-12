@@ -58,7 +58,11 @@ func doctorMain(dirFlag *string) *cobra.Command {
 			if err := loaded.StartupCheck(nil, cmd.ErrOrStderr()); err != nil {
 				return err
 			}
-			report, err := cairnlog.Doctor(fsx.OS{}, dir, identity.NewChainVerifier().Verify)
+			trust, err := identity.MeshTrust(fsx.OS{}, dir)
+			if err != nil {
+				return fmt.Errorf("mesh trust unresolved: %w", err)
+			}
+			report, err := cairnlog.Doctor(fsx.OS{}, dir, trust.Verifier())
 			if err != nil {
 				return err
 			}

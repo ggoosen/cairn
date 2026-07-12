@@ -10,7 +10,6 @@ import (
 	"github.com/ggoosen/cairn/internal/daemon"
 	"github.com/ggoosen/cairn/internal/fsx"
 	"github.com/ggoosen/cairn/internal/identity"
-	cairnlog "github.com/ggoosen/cairn/internal/log"
 	"github.com/ggoosen/cairn/internal/object"
 	"github.com/ggoosen/cairn/internal/projection"
 )
@@ -46,9 +45,9 @@ func newReindexCmd(dirFlag *string) *cobra.Command {
 			if lexical {
 				fsys := fsx.OS{}
 				store := object.NewStore(fsys, dir)
+				// nil verifier → two-pass mesh-trust replay (FIX-F2)
 				report, err := projection.ReindexLexical(fsys, dir, projection.DBPath(dir),
-					func() cairnlog.VerifyFunc { return identity.NewChainVerifier().Verify },
-					projection.StoreBodyFetch(store))
+					nil, projection.StoreBodyFetch(store))
 				if err != nil {
 					return err
 				}

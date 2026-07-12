@@ -30,49 +30,39 @@ func VerifyObjects(fsys fsx.FS, portableDir string, now time.Time) ([]string, er
 	type ref struct {
 		hash, class, created string
 	}
-	verifier := identity.NewChainVerifier()
-	var refs []ref
-	pending := map[cairnlog.Origin]bool{}
-	for _, o := range origins {
-		pending[o] = true
+	trust, err := identity.MeshTrust(fsys, portableDir)
+	if err != nil {
+		return nil, err
 	}
-	for len(pending) > 0 { // fixpoint over key dependencies (multi-origin)
-		progressed := false
-		for o := range pending {
-			_, err := cairnlog.Walk(fsys, portableDir, o, verifier.Verify,
-				func(env *event.Envelope, _ []byte) error {
-					switch env.EventType {
-					case "message.publish", "message.reply":
-						var pl struct {
-							BodyHash  string `json:"body_hash"`
-							TextClass string `json:"text_class"`
-						}
-						if json.Unmarshal(env.Payload, &pl) == nil && pl.BodyHash != "" {
-							refs = append(refs, ref{pl.BodyHash, pl.TextClass, env.WallTime})
-						}
-					case "message.revise_body":
-						var pl struct {
-							Revisions []struct {
-								BodyHash string `json:"body_hash"`
-							} `json:"revisions"`
-						}
-						if json.Unmarshal(env.Payload, &pl) == nil {
-							for _, r := range pl.Revisions {
-								refs = append(refs, ref{r.BodyHash, "", env.WallTime})
-							}
+	var refs []ref
+	for _, o := range origins {
+		_, err := cairnlog.Walk(fsys, portableDir, o, trust.Verifier(),
+			func(env *event.Envelope, _ []byte) error {
+				switch env.EventType {
+				case "message.publish", "message.reply":
+					var pl struct {
+						BodyHash  string `json:"body_hash"`
+						TextClass string `json:"text_class"`
+					}
+					if json.Unmarshal(env.Payload, &pl) == nil && pl.BodyHash != "" {
+						refs = append(refs, ref{pl.BodyHash, pl.TextClass, env.WallTime})
+					}
+				case "message.revise_body":
+					var pl struct {
+						Revisions []struct {
+							BodyHash string `json:"body_hash"`
+						} `json:"revisions"`
+					}
+					if json.Unmarshal(env.Payload, &pl) == nil {
+						for _, r := range pl.Revisions {
+							refs = append(refs, ref{r.BodyHash, "", env.WallTime})
 						}
 					}
-					return nil
-				})
-			if err == nil {
-				delete(pending, o)
-				progressed = true
-			} else if !isKeyOrderError(err) {
-				return nil, err
-			}
-		}
-		if !progressed {
-			return nil, fmt.Errorf("could not establish key chain for object verification")
+				}
+				return nil
+			})
+		if err != nil {
+			return nil, err
 		}
 	}
 	for _, r := range refs {
@@ -98,11 +88,17 @@ func (d *Daemon) ProjectionDrift() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	trust := d.trust
+	if trust == nil {
+		if trust, err = identity.MeshTrust(d.fs, d.dir); err != nil {
+			return nil, err
+		}
+	}
 	var drift []string
 	for _, o := range origins {
-		report, err := cairnlog.Walk(d.fs, d.dir, o, identity.NewChainVerifier().Verify, nil)
+		report, err := cairnlog.Walk(d.fs, d.dir, o, trust.Verifier(), nil)
 		if err != nil {
-			// multi-origin key order: fall back to a shared-verifier pass
+			drift = append(drift, fmt.Sprintf("origin %s/%d unverifiable: %v", o.DeviceID, o.Generation, err))
 			continue
 		}
 		ck, err := d.proj.Checkpoint(o.DeviceID, o.Generation)
@@ -127,7 +123,7 @@ func (d *Daemon) GatesReport(w io.Writer) error {
 	}
 
 	// zero-loss proxy: doctor clean now (the full crash matrix runs in CI)
-	doc, err := cairnlog.Doctor(d.fs, d.dir, identity.NewChainVerifier().Verify)
+	doc, err := cairnlog.Doctor(d.fs, d.dir, d.trust.Verifier())
 	if err != nil {
 		return err
 	}
@@ -238,10 +234,15 @@ func DoctorProjection(portableDir, dbPath string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	trust, err := identity.MeshTrust(fsx.OS{}, portableDir)
+	if err != nil {
+		return append(problems, fmt.Sprintf("mesh trust unresolved: %v", err)), nil
+	}
 	for _, o := range origins {
-		report, err := cairnlog.Walk(fsx.OS{}, portableDir, o, identity.NewChainVerifier().Verify, nil)
+		report, err := cairnlog.Walk(fsx.OS{}, portableDir, o, trust.Verifier(), nil)
 		if err != nil {
-			continue // trust resolution reported elsewhere (F2/F3)
+			problems = append(problems, fmt.Sprintf("origin %s/%d unverifiable: %v", o.DeviceID, o.Generation, err))
+			continue
 		}
 		ck, err := p.Checkpoint(o.DeviceID, o.Generation)
 		if err != nil {

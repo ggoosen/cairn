@@ -282,26 +282,28 @@ func (l *Loaded) StartupCheck(checker VolumeChecker, out io.Writer) error {
 	return checkEncryption(l.Dir, checker, l.Device.AllowUnencrypted, out)
 }
 
-// GenesisRecord reads and fully verifies the genesis event from the log.
+// GenesisRecord verifies MESH-LEVEL trust (FIX-F2 ruling 2): genesis is
+// mesh-wide, not per-origin — post-migrate the current device's cert lives
+// in an earlier origin's log. Returns the verified genesis and asserts the
+// current device is an admitted, unrevoked member.
 func (l *Loaded) GenesisRecord() (*event.Envelope, *GenesisPayload, error) {
-	segPath := filepath.Join(
-		cairnlog.SegmentDir(l.Dir, l.Device.DeviceID, l.Device.OriginGeneration),
-		cairnlog.SegmentName(config.FirstSequence))
-	records, err := cairnlog.ReadSegment(fsx.OS{}, segPath)
+	trust, err := MeshTrust(fsx.OS{}, l.Dir)
 	if err != nil {
-		return nil, nil, fmt.Errorf("reading genesis segment: %w", err)
+		return nil, nil, err
 	}
-	if len(records) == 0 {
-		return nil, nil, errors.New("genesis segment is empty")
+	if trust.GenesisEnv == nil {
+		return nil, nil, errors.New("no genesis event found in any origin")
 	}
-	env, pl, err := VerifyGenesis(records[0])
-	if err != nil {
-		return nil, nil, fmt.Errorf("genesis verification failed: %w", err)
+	if trust.CairnID != l.Portable.CairnID {
+		return nil, nil, fmt.Errorf("genesis cairn_id %s != portable config %s", trust.CairnID, l.Portable.CairnID)
 	}
-	if env.CairnID != l.Portable.CairnID {
-		return nil, nil, fmt.Errorf("genesis cairn_id %s != portable config %s", env.CairnID, l.Portable.CairnID)
+	if !trust.Member(l.Device.DeviceID) {
+		return nil, nil, fmt.Errorf("current device %s is not an admitted mesh member", l.Device.DeviceID)
 	}
-	return env, pl, nil
+	if trust.Revoked(l.Device.DeviceID) {
+		return nil, nil, fmt.Errorf("current device %s is REVOKED (writes refused; complete the migrate ceremony)", l.Device.DeviceID)
+	}
+	return trust.GenesisEnv, trust.GenesisPayload, nil
 }
 
 // Adopt handles restored portable data WITHOUT device-local identity

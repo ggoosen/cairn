@@ -54,6 +54,7 @@ type Daemon struct {
 
 	mu       sync.Mutex // serializes ALL mutations (single writer)
 	embedder embed.Embedder
+	trust    *identity.Trust
 	lg       *cairnlog.Log
 	proj     *projection.Projection
 	store    *object.Store
@@ -163,73 +164,43 @@ func Start(opts Options) (*Daemon, error) {
 	return d, nil
 }
 
-// recover opens/repairs the ACTIVE origin (with projection catch-up wired
-// into the scan) and replays every other origin read-only. Origins whose
-// keys are admitted by another origin's chain are retried until fixpoint.
+// recover establishes mesh-level trust (FIX-F2 pass 1 over all origins),
+// then opens/repairs the ACTIVE origin and replays every other origin
+// against the seeded key set, projecting as it goes (pass 2).
 func (d *Daemon) recover() error {
 	active := cairnlog.Origin{DeviceID: d.loaded.Device.DeviceID, Generation: d.loaded.Device.OriginGeneration}
+
+	trust, err := identity.MeshTrust(d.fs, d.dir)
+	if err != nil {
+		return err
+	}
+	d.trust = trust
+	apply := func(env *event.Envelope, rec []byte) error { return d.proj.Apply(env, rec) }
 
 	origins, err := cairnlog.Origins(d.fs, d.dir)
 	if err != nil {
 		return err
 	}
-	pending := map[cairnlog.Origin]bool{}
 	for _, o := range origins {
-		if o != active {
-			pending[o] = true
+		if o == active {
+			continue
+		}
+		if _, err := cairnlog.Walk(d.fs, d.dir, o, trust.Verifier(), apply); err != nil {
+			return fmt.Errorf("replaying origin %s/%d: %w", o.DeviceID, o.Generation, err)
 		}
 	}
-
-	apply := func(env *event.Envelope, rec []byte) error { return d.proj.Apply(env, rec) }
-
-	// active origin first when it holds genesis; otherwise fixpoint below
-	openActive := func() error {
-		lg, report, err := cairnlog.Open(d.fs, d.dir, active, d.verifier.Verify, apply)
-		if err != nil {
-			return err
-		}
-		d.lg = lg
-		if _, err := identity.ReconcileSeqState(d.fs, d.loaded.DeviceDir, active.DeviceID, active.Generation, report.NextSeq, d.warn); err != nil {
-			return err
-		}
-		return nil
+	lg, report, err := cairnlog.Open(d.fs, d.dir, active, trust.Verifier(), apply)
+	if err != nil {
+		return err
 	}
-
-	tryOrigin := func(o cairnlog.Origin) error {
-		_, err := cairnlog.Walk(d.fs, d.dir, o, d.verifier.Verify, apply)
+	d.lg = lg
+	if _, err := identity.ReconcileSeqState(d.fs, d.loaded.DeviceDir, active.DeviceID, active.Generation, report.NextSeq, d.warn); err != nil {
 		return err
 	}
 
-	// Fixpoint over {active + pending}: key-dependency order is unknowable
-	// up front (migrate creates origins admitted by earlier ones).
-	activeDone := false
-	remaining := len(pending) + 1
-	for remaining > 0 {
-		progressed := false
-		if !activeDone {
-			if err := openActive(); err == nil {
-				activeDone, progressed = true, true
-				remaining--
-			} else if !isKeyOrderError(err) {
-				return err
-			}
-		}
-		for o := range pending {
-			if err := tryOrigin(o); err == nil {
-				delete(pending, o)
-				progressed = true
-				remaining--
-			} else if !isKeyOrderError(err) {
-				return fmt.Errorf("replaying origin %s/%d: %w", o.DeviceID, o.Generation, err)
-			}
-		}
-		if !progressed {
-			return fmt.Errorf("could not establish key chain for %d origin(s) (unresolved dependency or corruption)", remaining)
-		}
-	}
-
 	// A revoked device must never write (row 15: old origin read-only).
-	if d.verifier.Revoked(active.DeviceID) {
+	// Revocation gates WRITES only; historical events remain valid (F2 r.3).
+	if trust.Revoked(active.DeviceID) {
 		return fmt.Errorf("device %s is revoked; this origin is read-only (complete the migrate ceremony or use the new device identity)", active.DeviceID)
 	}
 	return nil

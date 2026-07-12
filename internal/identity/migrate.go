@@ -147,9 +147,15 @@ func Migrate(opts MigrateOptions) (*MigrateResult, error) {
 	}
 
 	// --- steps 2+3: append add + revoke to the OLD origin --------------------
-	verifier := NewChainVerifier()
+	// FIX-F2: the current device's cert may live in an EARLIER origin's log
+	// (repeated migrations), so verification uses mesh-level trust, never a
+	// fresh per-origin chain.
+	trust, err := MeshTrust(opts.FS, opts.Dir)
+	if err != nil {
+		return nil, err
+	}
 	lg, _, err := cairnlog.Open(opts.FS, opts.Dir, cairnlog.Origin{DeviceID: oldDeviceID, Generation: oldGen},
-		verifier.Verify, nil)
+		trust.Verifier(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("opening old origin: %w", err)
 	}
@@ -158,8 +164,7 @@ func Migrate(opts MigrateOptions) (*MigrateResult, error) {
 	// resume detection: scan applied events for our staged cert / revoke
 	addDone, revokeDone := "", ""
 	{
-		v2 := NewChainVerifier()
-		_, err := cairnlog.Walk(opts.FS, opts.Dir, cairnlog.Origin{DeviceID: oldDeviceID, Generation: oldGen}, v2.Verify,
+		_, err := cairnlog.Walk(opts.FS, opts.Dir, cairnlog.Origin{DeviceID: oldDeviceID, Generation: oldGen}, trust.Verifier(),
 			func(env *event.Envelope, _ []byte) error {
 				switch env.EventType {
 				case "device.add":

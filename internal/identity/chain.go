@@ -16,17 +16,45 @@ import (
 // device.revoke marks a key (revocation enforcement of the old origin's
 // read-only state lands with `cairn migrate` in M4).
 type ChainVerifier struct {
-	cairnID string
-	rootPub ed25519.PublicKey
-	keys    map[string]ed25519.PublicKey // signing_key_id → pubkey
-	revoked map[string]bool              // device_id → revoked
+	cairnID    string
+	rootPub    ed25519.PublicKey
+	keys       map[string]ed25519.PublicKey // signing_key_id → pubkey
+	devicePubs map[string]ed25519.PublicKey // device_id → pubkey
+	revoked    map[string]bool              // device_id → revoked
+
+	genesisEnv     *event.Envelope
+	genesisPayload *GenesisPayload
 }
 
 func NewChainVerifier() *ChainVerifier {
 	return &ChainVerifier{
-		keys:    map[string]ed25519.PublicKey{},
-		revoked: map[string]bool{},
+		keys:       map[string]ed25519.PublicKey{},
+		devicePubs: map[string]ed25519.PublicKey{},
+		revoked:    map[string]bool{},
 	}
+}
+
+// Trust snapshots the verifier's learned mesh state (FIX-F2 pass 1 result).
+func (v *ChainVerifier) Trust() *Trust {
+	t := &Trust{
+		CairnID:        v.cairnID,
+		RootPub:        v.rootPub,
+		GenesisEnv:     v.genesisEnv,
+		GenesisPayload: v.genesisPayload,
+		keys:           map[string]ed25519.PublicKey{},
+		devices:        map[string]ed25519.PublicKey{},
+		revoked:        map[string]bool{},
+	}
+	for k, pub := range v.keys {
+		t.keys[k] = pub
+	}
+	for id, pub := range v.devicePubs {
+		t.devices[id] = pub
+	}
+	for id := range v.revoked {
+		t.revoked[id] = true
+	}
+	return t
 }
 
 // Verify implements log.VerifyFunc.
@@ -40,12 +68,17 @@ func (v *ChainVerifier) Verify(recordBytes []byte) (*event.Envelope, error) {
 	}
 
 	if peek.EventType == "cairn.genesis" {
-		if v.rootPub != nil {
-			return nil, fmt.Errorf("second genesis event encountered")
-		}
 		env, pl, err := VerifyGenesis(recordBytes)
 		if err != nil {
 			return nil, err
+		}
+		if v.rootPub != nil {
+			// a SEEDED verifier (pass 2) legitimately re-sees THE genesis;
+			// a different genesis is a foreign mesh and always an error
+			if pl.CairnID != v.cairnID {
+				return nil, fmt.Errorf("second genesis event encountered (foreign cairn %s)", pl.CairnID)
+			}
+			return env, nil
 		}
 		rootPub, err := base64.StdEncoding.DecodeString(pl.RootPubkey)
 		if err != nil {
@@ -58,8 +91,10 @@ func (v *ChainVerifier) Verify(recordBytes []byte) (*event.Envelope, error) {
 		v.cairnID = pl.CairnID
 		v.rootPub = ed25519.PublicKey(rootPub)
 		v.keys[event.KeyID(devicePub)] = devicePub
+		v.devicePubs[pl.InitialDeviceCert.DeviceID] = devicePub
 		// the root key signs device.revoke envelopes directly (rulings §2/§4)
 		v.keys[event.KeyID(v.rootPub)] = v.rootPub
+		v.genesisEnv, v.genesisPayload = env, pl
 		return env, nil
 	}
 
@@ -97,6 +132,7 @@ func (v *ChainVerifier) Verify(recordBytes []byte) (*event.Envelope, error) {
 			return nil, err
 		}
 		v.keys[event.KeyID(pub)] = pub
+		v.devicePubs[pl.Cert.DeviceID] = pub
 	case "device.revoke":
 		var pl struct {
 			DeviceID string `json:"device_id"`

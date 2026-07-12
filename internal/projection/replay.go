@@ -41,7 +41,15 @@ func StoreBodyFetch(store *object.Store) BodyFetch {
 // verifier per call (key learning starts from genesis).
 func Replay(p *Projection, fsys fsx.FS, portableDir string, verifyFor func() cairnlog.VerifyFunc) error {
 	if verifyFor == nil {
-		verifyFor = func() cairnlog.VerifyFunc { return identity.NewChainVerifier().Verify }
+		// FIX-F2 ruling 1: two-pass replay. Pass 1 establishes the mesh-wide
+		// membership/key set across ALL origins (the security log is one
+		// stream class); pass 2 verifies each origin against that set — so a
+		// device admitted in another origin's log (migration) verifies.
+		trust, err := identity.MeshTrust(fsys, portableDir)
+		if err != nil {
+			return err
+		}
+		verifyFor = func() cairnlog.VerifyFunc { return trust.Verifier() }
 	}
 	origins, err := cairnlog.Origins(fsys, portableDir)
 	if err != nil {
