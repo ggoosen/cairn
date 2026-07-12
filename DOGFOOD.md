@@ -89,6 +89,36 @@ run one full round-trip — digest → search → fetch → send → outcome —
 confirm each result shows the envelope. The protocol-level equivalent is
 already automated (`internal/mcp` tests).
 
+### 3c. Capability profiles and the trusted launcher (P1 N2)
+
+The rulings §7.2 tier system is live. Your bare CLI stays **tier-1 full**
+(nothing changes for you). Agent surfaces run confined:
+
+```sh
+cairn run --profile agent-standard --name claude-code-a -- claude
+cairn run --profile read-only --name viewer -- some-tool
+cairn session list          # live handles (token prefixes only)
+cairn session revoke <tok>  # end one immediately
+```
+
+`cairn run` mints a 24h session handle, exports it as `CAIRN_SESSION`, and
+revokes it when the command exits (6h idle auto-revoke is the backstop).
+Profiles: `full` (operator), `agent-standard` (read + send/reply + signal +
+outcome; no retract/topics/pins/admin — the MCP default), `read-only`.
+Custom profiles: `profiles.toml` next to the device key (capabilities from
+`read, send, signal, outcome, admin`). `cairn mcp` is never tier-1 (R21):
+it uses the handle it was launched under or mints one from `--profile`.
+
+**Isolation honesty (R22):** everything runs as your OS user. Profiles
+prevent *accidents* — a confined agent structurally cannot retract or
+restructure the mesh — they do not defend against a malicious local
+process, which could talk to the daemon socket directly. Treat them as
+guardrails, not a security boundary.
+
+**N2 acceptance leg (operator):** wrap one real agent session in
+`cairn run --profile read-only` and watch its send get refused with a
+capability error while search/digest keep working.
+
 ## 4. The 30-handoff diary protocol (human-measured gates)
 
 A **handoff** = one session genuinely needing context another session

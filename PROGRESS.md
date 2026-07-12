@@ -925,3 +925,59 @@ Deviations / notes:
 Commits: 0a9fd4a (R18–R34), 2ca7b07 (N1 implementation), + docs.
 Next: **N2 — capability enforcement + trusted launcher**. Operator
 checkpoint after N2 per the buildpack (security model activation).
+
+## N2 — Capability enforcement + trusted launcher — COMPLETE
+
+Status: all acceptance criteria pass. **Operator checkpoint is HERE** (the
+buildpack: "read PROGRESS.md before continuing" — the security model just
+activated). Durable-log internals untouched.
+
+- rulings §7.2 tier system activated at the ONE dispatch boundary every
+  client shares (unix-socket IPC), so every capability refusal is
+  structurally pre-ack — no event construction, no append, no receipt.
+- Session handles (R23): opaque random tokens → daemon-side records
+  {name, profile, parent, TTL, idle}; persisted device-local
+  (sessions.json, cache-class); NON-DELEGABLE — session-create/revoke/list
+  under a session are refused; a handle acts AS its leaf principal (client
+  actor overridden; operator_override + auto_create_topics stripped).
+- Profiles: builtins full / agent-standard (read+send+signal+outcome) /
+  read-only, plus strict device-local profiles.toml (unknown capability,
+  unknown key, or builtin redefinition ⇒ daemon startup fails loudly).
+- `cairn run --profile <p> --name <n> -- <cmd>` (trusted launcher):
+  session-create bound to the launcher pid → CAIRN_SESSION exported →
+  child's every CLI verb confined (the `call` helper attaches the env
+  handle) → revoke on exit; child exit code propagates. `cairn session
+  list|revoke` for visibility (token prefixes only).
+- `cairn mcp` never tier-1 (R21): uses its CAIRN_SESSION or mints one from
+  --profile (default agent-standard; "full" refused), revokes on exit.
+- Telemetry rows carry the principal hierarchy ("operator>claude-a"):
+  new `principal` column with an additive ALTER migration for existing
+  local DBs; value is dispatch-resolved, client-supplied values ignored.
+- Constants (buildpack judgment, config-revisable): SessionTTLDefault 24h,
+  SessionIdleTimeout 6h, SessionTokenBytes 32.
+- R22 isolation honesty documented (DOGFOOD.md §3c + session.go/run.go
+  header comments): same-user = accident prevention, not malice prevention.
+
+Acceptance evidence (all green; full suite -count=1 clean):
+- read-only send refused pre-ack with a capability error AND next_seq
+  proven unchanged; retract/topic-ensure/signal/housekeep equally refused;
+  search/digest still work (TestN2ReadOnlySendRefusedPreAck)
+- handle expiry ends access: idle (>6h) revokes within TTL; continuous
+  keepalive still dies at the 24h TTL; unknown/revoked tokens are
+  capability errors (TestN2ExpiryAndIdleEndAccess, injected clock)
+- telemetry principal hierarchy on search AND digest rows; tier-1 rows
+  record plain "operator" (TestN2NonDelegable…TelemetryPrincipal)
+- actor spoof attempt (Actor:"operator", OperatorOverride:true) lands as
+  the session principal with the override stripped
+- profiles.toml: custom read+send profile works (send yes, signal no);
+  three malformed variants fail startup (TestN2ProfilesTOML)
+- CLI: cairn run exports + revokes-on-exit (token dead afterwards), exit
+  code propagates, nested cairn run refused (non-delegable); session
+  list/revoke round-trip without leaking full tokens; MCP --profile full
+  refused, agent-standard send works with the minted session revoked on
+  exit, read-only MCP send is an isError capability refusal
+- tier-1 preservation: the ENTIRE pre-N2 suite passes unchanged (handle-
+  less CLI still full)
+
+Commits: 91f987a (implementation), + docs commit.
+Next: **N3 — durable semantic subscriptions** (after operator checkpoint).
