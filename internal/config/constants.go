@@ -245,6 +245,16 @@ const (
 	// bounded well below this by MaxRecordBytes).
 	IPCMaxRequestBytes = 32 << 20
 
+	// MCP retrieval budget defaults (RULINGS.md R19): budgets over the
+	// COMPLETE retrieval payload, accounted identically to the CLI. Tunable
+	// per call via tool arguments; these are the no-argument defaults.
+	MCPDigestBudgetDefault = 1500
+	MCPSearchBudgetDefault = 2000
+
+	// MCPMaxLineBytes bounds one stdio JSON-RPC message (N1). Matches the
+	// IPC bound: the MCP layer never carries more than one IPC payload.
+	MCPMaxLineBytes = 32 << 20
+
 	// EnrichInterval/EnrichBatch pace the background embedding enricher
 	// (rulings §6: async; a just-sent message is briefly lexical_only).
 	EnrichInterval = 2 * time.Second
