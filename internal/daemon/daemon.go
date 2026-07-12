@@ -28,6 +28,7 @@ import (
 	"github.com/ggoosen/cairn/internal/identity"
 	cairnlog "github.com/ggoosen/cairn/internal/log"
 	"github.com/ggoosen/cairn/internal/object"
+	"github.com/ggoosen/cairn/internal/peer"
 	"github.com/ggoosen/cairn/internal/projection"
 	"github.com/ggoosen/cairn/internal/telemetry"
 )
@@ -69,7 +70,18 @@ type Daemon struct {
 	readOnly bool   // portable-only restore: reads allowed, writes refused (R9)
 	sockDir  string // where daemon.sock.path is registered
 
-	sessions *sessions // N2 capability handles (guarded by mu via dispatch)
+	sessions *sessions    // N2 capability handles (guarded by mu via dispatch)
+	syncSrv  *peer.Server // N5 sync listener (nil unless configured)
+}
+
+// SyncAddr returns the bound sync listener address ("" if not listening).
+func (d *Daemon) SyncAddr() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.syncSrv == nil {
+		return ""
+	}
+	return d.syncSrv.Addr()
 }
 
 // ErrReadOnly: the mesh is a portable-only restore (spec §3.2 / RULINGS.md

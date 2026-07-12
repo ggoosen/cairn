@@ -90,5 +90,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newSubscribeCmd(&dir))
 	root.AddCommand(newSubscriptionCmd(&dir))
 	root.AddCommand(newDerivativeCmd(&dir))
+	root.AddCommand(newDeviceCmd(&dir))
+	root.AddCommand(newSyncCmd(&dir))
 	return root
 }

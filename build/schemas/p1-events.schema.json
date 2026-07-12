@@ -241,6 +241,15 @@
           "type": "string"
         }
       }
+    },
+    "device.add-p1-extension": {
+      "description": "N5: device.add MAY carry enrolment_request_id (R28 single-use marker). The base payload shape is p0-events \u00a7device.add.",
+      "type": "object",
+      "properties": {
+        "enrolment_request_id": {
+          "$ref": "#/$defs/uuid"
+        }
+      }
     }
   }
 }

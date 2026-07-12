@@ -11,6 +11,7 @@ import (
 	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/fsx"
 	"github.com/ggoosen/cairn/internal/object"
+	"github.com/ggoosen/cairn/internal/peer"
 )
 
 // FetchResult materializes a deliberate fetch (spec §7.3): manifest and body
@@ -144,6 +145,29 @@ func (d *Daemon) Run(ctx context.Context, processOutbox func() error) error {
 			}
 		}
 	}()
+	// N5: sync listener (tailnet-only, mutual app-layer auth — R27).
+	// Trust is the recover-time mesh snapshot; membership changes happen
+	// via OFFLINE ceremonies (approve/revoke), so a daemon restart follows.
+	if addr := d.loaded.Device.SyncListen; addr != "" && !d.readOnly {
+		srv, err := peer.NewServer(addr, peer.Identity{
+			CairnID:  d.loaded.Portable.CairnID,
+			DeviceID: d.loaded.Device.DeviceID,
+			Priv:     d.devPriv,
+		}, d.trust, d.warn)
+		if err != nil {
+			return fmt.Errorf("sync listener: %w", err)
+		}
+		fmt.Fprintf(d.warn, "sync: listening on %s (tailnet-only; membership = root-chained certs)\n", srv.Addr())
+		d.mu.Lock()
+		d.syncSrv = srv
+		d.mu.Unlock()
+		go srv.Serve()
+		go func() {
+			<-ctx.Done()
+			srv.Close()
+		}()
+	}
+
 	// background enricher (rulings §6: embeddings on an in-process
 	// background thread; agents NEVER wait on it)
 	go func() {

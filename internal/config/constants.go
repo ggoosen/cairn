@@ -284,6 +284,13 @@ const (
 	// SummaryExtractLen bounds the local extractive summary (lead text).
 	SummaryExtractLen = 400
 
+	// N5 transport + membership (R27/R28).
+	EnrollRequestTTL = 1 * time.Hour // R28: enrolment requests expire
+	SyncHelloTimeout = 10 * time.Second
+	// SyncHelloDomain domain-separates handshake signatures from event
+	// signatures (never sign raw peer-supplied bytes).
+	SyncHelloDomain = "cairn-sync-hello-v1"
+
 	// Capability sessions (N2, RULINGS.md R23): opaque daemon-side handles,
 	// short-TTL, non-delegable, auto-revoked on exit/idle. TTL and idle
 	// window are buildpack-judgment constants, revisable from dogfood data.

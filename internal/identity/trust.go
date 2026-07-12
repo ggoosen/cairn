@@ -113,6 +113,13 @@ func (t *Trust) Member(deviceID string) bool {
 // Revoked reports whether a device.revoke exists for the device.
 func (t *Trust) Revoked(deviceID string) bool { return t.revoked[deviceID] }
 
+// DevicePub returns the registered public key for an ADMITTED device (N5
+// handshake lookups). ok=false for unknown devices.
+func (t *Trust) DevicePub(deviceID string) (ed25519.PublicKey, bool) {
+	pub, ok := t.devices[deviceID]
+	return pub, ok
+}
+
 // Devices lists admitted device ids, sorted.
 func (t *Trust) Devices() []string {
 	out := make([]string, 0, len(t.devices))

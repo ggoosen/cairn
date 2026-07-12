@@ -107,6 +107,10 @@ type DeviceConfig struct {
 	// AllowUnencrypted persists the --allow-unencrypted operator override.
 	// Device-local by ruling §9; surfaced with a warning on every startup.
 	AllowUnencrypted bool `toml:"allow_unencrypted"`
+
+	// SyncListen (N5): tailnet host:port for the sync listener. Device-local
+	// by design (networking is per-device). Empty = no listener.
+	SyncListen string `toml:"sync_listen,omitempty"`
 }
 
 // PortableDir resolves the portable cairn directory: explicit flag value,
@@ -129,6 +133,15 @@ func PortableDir(flagValue string) (string, error) {
 // macOS ~/Library/Application Support/cairn/<cairn_id>/device,
 // otherwise $XDG_DATA_HOME (default ~/.local/share)/cairn/<cairn_id>/device.
 // Overridable via $CAIRN_DEVICE_STATE_DIR (primarily for tests).
+// DeviceStateBase returns the device-local root (all cairns).
+func DeviceStateBase() (string, error) {
+	d, err := DeviceStateDir("x")
+	if err != nil {
+		return "", err
+	}
+	return filepath.Dir(filepath.Dir(d)), nil
+}
+
 func DeviceStateDir(cairnID string) (string, error) {
 	if env := os.Getenv("CAIRN_DEVICE_STATE_DIR"); env != "" {
 		return filepath.Join(env, cairnID, "device"), nil
