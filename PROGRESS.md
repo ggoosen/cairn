@@ -814,6 +814,37 @@ Re-audit scope readiness: plain-command Phase 0 now fails instructively;
 F1/F2 live-drill scenarios are automated; deepened doctor covers
 missing-object/parked/post-migrate; durability paths untouched.
 
+## F8 punch list (docs/cairn-f8-punchlist.md) — COMPLETE
+
+Round-2 re-audit: Claude PASS, Codex conditional pass; the adjudicated
+residue is fully executed (FIX-F8.1…F8.5, `make test` green before each
+commit).
+
+- **F8.1** — `ephemeral_ttl` / `housekeep_interval` accept duration strings
+  with a `d` suffix ("30s", "90m", "7d", "1d12h"); legacy integer keys stay
+  valid; both-forms or unparseable strings are load-time errors. Regression:
+  end-to-end 30-second expiry drill (alive at 29s, housekept at 31s, typed
+  content_expired, event intact). RULINGS.md R13.
+- **F8.2** — golden corpus shipped as `testdata/corpus/` fixtures (184
+  messages / 30 queries), embedded with a drift test; `cairn bench golden`
+  reproduces the 0.97 / 0.63 claim from the binary in a throwaway mesh
+  (isolated device state) with per-query miss detail; the M6 test consumes
+  the same fixtures. Doubles as the P2 calibration harness. R14.
+- **F8.3** — the daemon logs LOUDLY at park time (event id, type,
+  origin/seq, error, doctor pointer), asserted in the F1 parking
+  regression. R15.
+- **F8.4** — RULINGS.md precedence corrected (RULINGS.md > rulings-v0.3.1 >
+  spec-v0.3 > TESTING.md; newest amends oldest explicitly); R13–R17 added,
+  including the R16 score-drift wording adjudication.
+- **F8.5** — missing/corrupt-object doctor lines name a referencing
+  revision_id + message_id. R17.
+
+Observed-once flake (recorded): `TestF3DoctorFailsOnMissingObject` failed
+in one run where two full `make test` suites executed back-to-back on the
+same machine; 11 consecutive isolated and full-package reruns are green.
+Treated as load-induced timing; will re-diagnose if it recurs under normal
+single-suite runs.
+
 ## Resume-cold notes
 - **Every milestone in BUILD-PLAN.md (M0–M9) is complete.** What remains is
   operator work and future phases: the 30-handoff evaluation (DOGFOOD.md),
