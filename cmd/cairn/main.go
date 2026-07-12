@@ -83,5 +83,6 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newSetupAgentCmd(&dir))
 	root.AddCommand(newIngestCmd(&dir))
 	root.AddCommand(newHousekeepCmd(&dir))
+	root.AddCommand(newBenchCmd(&dir))
 	return root
 }

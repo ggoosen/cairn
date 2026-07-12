@@ -1,0 +1,183 @@
+[
+  {
+    "query": "authentication token rotation bug",
+    "relevant": [
+      "zebra-auth-fix"
+    ]
+  },
+  {
+    "query": "refresh handler nonce fix",
+    "relevant": [
+      "zebra-auth-fix"
+    ]
+  },
+  {
+    "query": "rate limiting sliding window",
+    "relevant": [
+      "zebra-rate"
+    ]
+  },
+  {
+    "query": "ninety seconds per caller",
+    "relevant": [
+      "zebra-rate"
+    ]
+  },
+  {
+    "query": "proration credits invoice",
+    "relevant": [
+      "billing-proration"
+    ]
+  },
+  {
+    "query": "when do proration credits apply",
+    "relevant": [
+      "billing-proration"
+    ]
+  },
+  {
+    "query": "australian gst tax calculation",
+    "relevant": [
+      "billing-tax"
+    ]
+  },
+  {
+    "query": "canary rollout abort error budget",
+    "relevant": [
+      "deploy-canary"
+    ]
+  },
+  {
+    "query": "error budget burn two percent",
+    "relevant": [
+      "deploy-canary"
+    ]
+  },
+  {
+    "query": "dns outage terraform private zone",
+    "relevant": [
+      "deploy-dns"
+    ]
+  },
+  {
+    "query": "autoscaler cleanup destroyed zone",
+    "relevant": [
+      "deploy-dns"
+    ]
+  },
+  {
+    "query": "tokenizer unicode grapheme truncation",
+    "relevant": [
+      "ml-tokenizer"
+    ]
+  },
+  {
+    "query": "corrupted embedding checkpoints",
+    "relevant": [
+      "ml-tokenizer"
+    ]
+  },
+  {
+    "query": "training gpu capacity",
+    "relevant": [
+      "ml-gpu"
+    ]
+  },
+  {
+    "query": "gradient checkpoint sharding",
+    "relevant": [
+      "ml-gpu"
+    ]
+  },
+  {
+    "query": "zebra authentication middleware",
+    "relevant": [
+      "zebra-auth-fix",
+      "zebra-rate"
+    ]
+  },
+  {
+    "query": "invoice finalization subscription",
+    "relevant": [
+      "billing-proration"
+    ]
+  },
+  {
+    "query": "kubernetes canary error",
+    "relevant": [
+      "deploy-canary"
+    ]
+  },
+  {
+    "query": "grapheme clusters corrupt",
+    "relevant": [
+      "ml-tokenizer"
+    ]
+  },
+  {
+    "query": "token rotation refresh",
+    "relevant": [
+      "zebra-auth-fix"
+    ]
+  },
+  {
+    "query": "sliding window caller identity",
+    "relevant": [
+      "zebra-rate"
+    ]
+  },
+  {
+    "query": "gst inclusive ledger",
+    "relevant": [
+      "billing-tax"
+    ]
+  },
+  {
+    "query": "terraform destroying zone",
+    "relevant": [
+      "deploy-dns"
+    ]
+  },
+  {
+    "query": "four gpus training",
+    "relevant": [
+      "ml-gpu"
+    ]
+  },
+  {
+    "query": "proration at subscription change",
+    "relevant": [
+      "billing-proration"
+    ]
+  },
+  {
+    "query": "burn exceeds two percent",
+    "relevant": [
+      "deploy-canary"
+    ]
+  },
+  {
+    "query": "unicode tokenizer finding",
+    "relevant": [
+      "ml-tokenizer"
+    ]
+  },
+  {
+    "query": "tax australian customers",
+    "relevant": [
+      "billing-tax"
+    ]
+  },
+  {
+    "query": "nonce double submit",
+    "relevant": [
+      "zebra-auth-fix"
+    ]
+  },
+  {
+    "query": "rollout aborts automatically",
+    "relevant": [
+      "deploy-canary"
+    ]
+  }
+]

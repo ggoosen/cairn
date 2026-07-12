@@ -115,3 +115,20 @@ func TestF3DoctorCleanPostMigrate(t *testing.T) {
 		t.Fatalf("identity show post-migrate: %v\n%s", err, out)
 	}
 }
+
+// F8.2: `cairn bench golden` reproduces the retrieval claim from the binary.
+func TestF8BenchGoldenCLI(t *testing.T) {
+	if testing.Short() {
+		t.Skip("bench loads 184 messages")
+	}
+	t.Setenv("CAIRN_FAKE_VOLUME_STATUS", "encrypted")
+	out, err := runCLI(t, "bench", "golden")
+	if err != nil {
+		t.Fatalf("bench golden: %v\n%s", err, out)
+	}
+	for _, want := range []string{"Success@5", "lexical-only top-10", "PASS"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("report missing %q:\n%s", want, out)
+		}
+	}
+}

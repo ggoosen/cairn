@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ggoosen/cairn/internal/bench"
 	"github.com/ggoosen/cairn/internal/daemon"
 	"github.com/ggoosen/cairn/internal/embed"
 	"github.com/ggoosen/cairn/internal/rank"
@@ -18,81 +19,12 @@ import (
 // sets. Deterministic (generated in code). CI numbers use the deterministic
 // dev embedder; real-model numbers are recorded during M8 dogfood.
 
-type corpusQuery struct {
-	query    string
-	relevant []string // message keys
-}
-
-type corpusMsg struct {
-	key  string
-	body string
-}
-
-func goldenCorpus() ([]corpusMsg, []corpusQuery) {
-	projects := []struct {
-		name  string
-		vocab []string
-	}{
-		{"zebra-api", []string{"endpoint", "authentication", "token", "handler", "middleware"}},
-		{"billing", []string{"invoice", "subscription", "proration", "refund", "ledger"}},
-		{"deploy-infra", []string{"kubernetes", "rollout", "canary", "terraform", "autoscaler"}},
-		{"ml-pipeline", []string{"embedding", "training", "checkpoint", "tokenizer", "inference"}},
-	}
-	var msgs []corpusMsg
-	for _, p := range projects {
-		for i := 0; i < 44; i++ {
-			w := p.vocab[i%len(p.vocab)]
-			msgs = append(msgs, corpusMsg{
-				key: fmt.Sprintf("%s-%d", p.name, i),
-				body: fmt.Sprintf("%s note %d: routine %s maintenance detail for the %s project, nothing unusual.",
-					p.name, i, w, p.name),
-			})
-		}
-	}
-	// distinctive anchor documents the queries target
-	anchors := []corpusMsg{
-		{"zebra-auth-fix", "zebra-api decision: the authentication token rotation bug was fixed by double-submitting the refresh handler nonce."},
-		{"zebra-rate", "zebra-api conclusion: rate limiting uses a sliding window of ninety seconds per caller identity."},
-		{"billing-proration", "billing decision: proration credits apply at invoice finalization, never at subscription change time."},
-		{"billing-tax", "billing note: tax calculation for australian customers uses the gst inclusive ledger path."},
-		{"deploy-canary", "deploy-infra runbook: canary rollout aborts automatically when error budget burn exceeds two percent."},
-		{"deploy-dns", "deploy-infra postmortem: the dns outage came from terraform destroying the private zone during autoscaler cleanup."},
-		{"ml-tokenizer", "ml-pipeline finding: the tokenizer truncates unicode grapheme clusters, corrupting embedding checkpoints."},
-		{"ml-gpu", "ml-pipeline capacity: training jobs need four gpus with gradient checkpoint sharding enabled."},
-	}
-	msgs = append(msgs, anchors...)
-
-	queries := []corpusQuery{
-		{"authentication token rotation bug", []string{"zebra-auth-fix"}},
-		{"refresh handler nonce fix", []string{"zebra-auth-fix"}},
-		{"rate limiting sliding window", []string{"zebra-rate"}},
-		{"ninety seconds per caller", []string{"zebra-rate"}},
-		{"proration credits invoice", []string{"billing-proration"}},
-		{"when do proration credits apply", []string{"billing-proration"}},
-		{"australian gst tax calculation", []string{"billing-tax"}},
-		{"canary rollout abort error budget", []string{"deploy-canary"}},
-		{"error budget burn two percent", []string{"deploy-canary"}},
-		{"dns outage terraform private zone", []string{"deploy-dns"}},
-		{"autoscaler cleanup destroyed zone", []string{"deploy-dns"}},
-		{"tokenizer unicode grapheme truncation", []string{"ml-tokenizer"}},
-		{"corrupted embedding checkpoints", []string{"ml-tokenizer"}},
-		{"training gpu capacity", []string{"ml-gpu"}},
-		{"gradient checkpoint sharding", []string{"ml-gpu"}},
-		{"zebra authentication middleware", []string{"zebra-auth-fix", "zebra-rate"}},
-		{"invoice finalization subscription", []string{"billing-proration"}},
-		{"kubernetes canary error", []string{"deploy-canary"}},
-		{"grapheme clusters corrupt", []string{"ml-tokenizer"}},
-		{"token rotation refresh", []string{"zebra-auth-fix"}},
-		{"sliding window caller identity", []string{"zebra-rate"}},
-		{"gst inclusive ledger", []string{"billing-tax"}},
-		{"terraform destroying zone", []string{"deploy-dns"}},
-		{"four gpus training", []string{"ml-gpu"}},
-		{"proration at subscription change", []string{"billing-proration"}},
-		{"burn exceeds two percent", []string{"deploy-canary"}},
-		{"unicode tokenizer finding", []string{"ml-tokenizer"}},
-		{"tax australian customers", []string{"billing-tax"}},
-		{"nonce double submit", []string{"zebra-auth-fix"}},
-		{"rollout aborts automatically", []string{"deploy-canary"}},
+// goldenCorpus loads the SHARED fixtures (internal/bench, drift-pinned to
+// testdata/corpus/) so the test and `cairn bench golden` cannot diverge.
+func goldenCorpus() ([]bench.Message, []bench.Query) {
+	msgs, queries, err := bench.Corpus()
+	if err != nil {
+		panic(err)
 	}
 	return msgs, queries
 }
@@ -110,11 +42,11 @@ func buildCorpusDaemon(t *testing.T) (*daemon.Daemon, map[string]string) {
 	msgs, _ := goldenCorpus()
 	keyToID := map[string]string{}
 	for _, m := range msgs {
-		res, err := d.Publish(daemon.PublishRequest{Actor: "operator", Body: m.body})
+		res, err := d.Publish(daemon.PublishRequest{Actor: "operator", Body: m.Body})
 		if err != nil {
 			t.Fatal(err)
 		}
-		keyToID[m.key] = res.MessageID
+		keyToID[m.Key] = res.MessageID
 	}
 	for {
 		n, err := d.EnrichOnce(64)
@@ -137,14 +69,14 @@ func TestGoldenCorpusSuccessAt5(t *testing.T) {
 
 	hit := 0
 	for _, q := range queries {
-		out, err := d.Search(daemon.SearchOptions{Query: q.query, K: 5})
+		out, err := d.Search(daemon.SearchOptions{Query: q.Query, K: 5})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if out.RetrievalMode != "full" {
 			t.Fatalf("corpus search not in full mode: %s", out.RetrievalMode)
 		}
-		if inTop(out.Results, keyToID, q.relevant) {
+		if inTop(out.Results, keyToID, q.Relevant) {
 			hit++
 		}
 	}
@@ -158,14 +90,14 @@ func TestGoldenCorpusSuccessAt5(t *testing.T) {
 	d.SetEmbedderForTest(nil)
 	hit = 0
 	for _, q := range queries {
-		out, err := d.Search(daemon.SearchOptions{Query: q.query, K: 10})
+		out, err := d.Search(daemon.SearchOptions{Query: q.Query, K: 10})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if out.RetrievalMode != "lexical_only" {
 			t.Fatalf("expected lexical_only, got %s", out.RetrievalMode)
 		}
-		if inTop(out.Results, keyToID, q.relevant) {
+		if inTop(out.Results, keyToID, q.Relevant) {
 			hit++
 		}
 	}
