@@ -62,10 +62,10 @@ type Daemon struct {
 	logs          map[cairnlog.Origin]*cairnlog.Log
 	bootstrapMode bool // joined node running on grant-chain trust until genesis replicates (R37)
 	proj          *projection.Projection
-	store    *object.Store
-	usage    *object.UsageTracker
-	verifier *identity.ChainVerifier
-	now      func() time.Time
+	store         *object.Store
+	usage         *object.UsageTracker
+	verifier      *identity.ChainVerifier
+	now           func() time.Time
 
 	lockFile *os.File
 	warn     io.Writer
@@ -79,6 +79,8 @@ type Daemon struct {
 
 	syncBulkThreshold int           // N6: overrides config.SyncBulkCatchupThreshold in tests
 	syncKick          chan struct{} // N6: push-on-append nudges the anti-entropy sweep (R29)
+
+	durab *durabilityRegistry // N7: per-blob peer-holder registry (guarded by d.mu)
 }
 
 // syncIdentity returns this node's peer identity for dialing. Caller holds
@@ -220,6 +222,7 @@ func Start(opts Options) (*Daemon, error) {
 		sockDir:  lockDir,
 		logs:     map[cairnlog.Origin]*cairnlog.Log{},
 		syncKick: make(chan struct{}, 1),
+		durab:    loadDurability(opts.FS, opts.Dir),
 	}
 	if devPriv != nil {
 		d.keyID = event.KeyID(devPriv.Public().(ed25519.PublicKey))
@@ -462,6 +465,10 @@ type PublishRequest struct {
 	// searchable) and the sender's UNTRUSTED summary claim (spec §8.4).
 	Attachments   []AttachmentIn `json:"attachments,omitempty"`
 	SenderSummary string         `json:"sender_summary,omitempty"`
+
+	// N7: blob durability class for this message's attachments (spec §6.3).
+	// ephemeral | normal (default) | important | pinned. Empty → normal.
+	Durability string `json:"durability,omitempty"`
 }
 
 // AttachmentIn carries one attachment's bytes into Publish (base64 over
@@ -490,6 +497,20 @@ type PublishResult struct {
 	TextClass       string   `json:"text_class"`
 	Downgraded      bool     `json:"downgraded,omitempty"`
 	DowngradeReason string   `json:"downgrade_reason,omitempty"`
+
+	// N7: blob replication acknowledgement (spec §6.3). Present only when the
+	// message carries attachments. accepted_locally is always true (the send
+	// path never blocks on replication); Pending is true until durability is
+	// satisfied by enough peers.
+	Replication *ReplicationState `json:"replication,omitempty"`
+}
+
+// ReplicationState is the durability acknowledgement for a message's blobs.
+type ReplicationState struct {
+	Durability string `json:"durability"` // class
+	Target     int    `json:"target"`     // required replica nodes
+	Have       int    `json:"have"`       // nodes known to hold it (self + peers)
+	Pending    bool   `json:"pending"`    // Have < Target
 }
 
 // Publish runs the full send path: policy → object → event(s) → durable
@@ -518,6 +539,12 @@ func (d *Daemon) Publish(req PublishRequest) (*PublishResult, error) {
 	}
 	if req.DeclaredPriority < 0 || req.DeclaredPriority > config.DeclaredPriorityMax {
 		return nil, fmt.Errorf("declared_priority %d out of range [0,%d]", req.DeclaredPriority, config.DeclaredPriorityMax)
+	}
+	if req.Durability == "" {
+		req.Durability = config.DurabilityDefault
+	}
+	if !validDurability(req.Durability) {
+		return nil, fmt.Errorf("invalid durability %q (want ephemeral|normal|important|pinned)", req.Durability)
 	}
 
 	// idempotency: caller-supplied correlation id already applied?
@@ -626,6 +653,8 @@ func (d *Daemon) Publish(req PublishRequest) (*PublishResult, error) {
 	}
 	if len(attachments) > 0 {
 		payload["attachments"] = attachments
+		// N7: the durability class applies to this message's attachment blobs.
+		payload["durability"] = req.Durability
 	}
 	if req.SenderSummary != "" {
 		payload["sender_summary"] = req.SenderSummary
@@ -717,8 +746,27 @@ func (d *Daemon) Publish(req PublishRequest) (*PublishResult, error) {
 	if d.tel != nil {
 		d.tel.RecordLatency("ack_to_lexical_visible", time.Since(ackAt), d.now())
 	}
+
+	// N7: blob replication acknowledgement (spec §6.3). accepted_locally is
+	// implicit (we returned durably). This is the ACK-TIME snapshot: the
+	// sender holds every blob it just created (have=1), pending until peers
+	// replicate it. It is DETERMINISTIC (target derives from the durability
+	// class), so a regenerated receipt is byte-identical (M4 idempotency); the
+	// LIVE replica state (2/2 etc.) is queried via `cairn sync status`, gates,
+	// and deep doctor. The send NEVER blocks on replication.
+	if len(attachments) > 0 {
+		res.Replication = ackReplication(req.Durability, d.memberCount())
+	}
+
 	d.kickSync() // R29: push-on-append nudges the sweep toward connected peers
 	return res, nil
+}
+
+// ackReplication is the deterministic ack-time replication snapshot: the
+// origin holds the blob (have=1), pending if the class needs more nodes.
+func ackReplication(class string, memberCount int) *ReplicationState {
+	target := durabilityTarget(class, memberCount)
+	return &ReplicationState{Durability: class, Target: target, Have: 1, Pending: target > 1}
 }
 
 // kickSync signals the anti-entropy sweep to run now (push-on-append, R29).
@@ -731,6 +779,15 @@ func (d *Daemon) kickSync() {
 	case d.syncKick <- struct{}{}:
 	default:
 	}
+}
+
+// validDurability reports whether c is a known N7 durability class.
+func validDurability(c string) bool {
+	switch c {
+	case "ephemeral", "normal", "important", "pinned":
+		return true
+	}
+	return false
 }
 
 // topicNamePattern is the schema's topic-name rule.
@@ -807,15 +864,26 @@ func (d *Daemon) resultByCorrelation(correlationID string) (*PublishResult, erro
 		res.EventIDs = append(res.EventIDs, e.EventID)
 		if e.EventType == "message.publish" || e.EventType == "message.reply" {
 			var pl struct {
-				MessageID  string `json:"message_id"`
-				RevisionID string `json:"revision_id"`
-				BodyHash   string `json:"body_hash"`
-				TextClass  string `json:"text_class"`
+				MessageID   string           `json:"message_id"`
+				RevisionID  string           `json:"revision_id"`
+				BodyHash    string           `json:"body_hash"`
+				TextClass   string           `json:"text_class"`
+				Durability  string           `json:"durability"`
+				Attachments []map[string]any `json:"attachments"`
 			}
 			if err := json.Unmarshal(e.Payload, &pl); err != nil {
 				return nil, err
 			}
 			res.MessageID, res.RevisionID, res.BodyHash, res.TextClass = pl.MessageID, pl.RevisionID, pl.BodyHash, pl.TextClass
+			// N7: reproduce the deterministic ack-time replication snapshot so
+			// the regenerated receipt is byte-identical (M4 idempotency).
+			if len(pl.Attachments) > 0 {
+				class := pl.Durability
+				if class == "" {
+					class = config.DurabilityDefault
+				}
+				res.Replication = ackReplication(class, d.memberCount())
+			}
 		}
 	}
 	return res, nil

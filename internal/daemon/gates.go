@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -138,6 +139,98 @@ func DeepDoctor(fsys fsx.FS, portableDir, dbPath string, now time.Time) (problem
 	}
 	problems = append(problems, projProblems...)
 	infos = append(infos, projInfos...)
+
+	// 5. blob durability (N7, R32): verify present attachment blobs are valid
+	// and report each blob's replica state (satisfied vs pending).
+	durProblems, durInfos, err := DurabilityDoctor(fsys, portableDir, dbPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	problems = append(problems, durProblems...)
+	infos = append(infos, durInfos...)
+	return problems, infos, nil
+}
+
+// nonRevokedMembers counts admitted, unrevoked mesh devices (all operator
+// nodes) — the durability target for `important`/`pinned`.
+func nonRevokedMembers(trust *identity.Trust) int {
+	n := 0
+	for _, id := range trust.Devices() {
+		if !trust.Revoked(id) {
+			n++
+		}
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+// DurabilityDoctor (R32) reads the attachment blobs from the projection, the
+// peer-holder registry from disk, and the object store, and reports each
+// blob's replica state: durability targets MET for non-pending blobs are
+// verified (a present local copy must hash correctly); pending blobs are
+// reported informationally. A present-but-corrupt attachment blob is a
+// problem. A MISSING attachment blob is NOT a problem — blobs replicate lazily
+// and no single node need hold every one.
+func DurabilityDoctor(fsys fsx.FS, portableDir, dbPath string) (problems, infos []string, err error) {
+	if _, statErr := os.Stat(dbPath); statErr != nil {
+		return nil, nil, nil // no projection yet; durability unknowable
+	}
+	p, perr := projection.Open(dbPath, nil)
+	if perr != nil {
+		// an incompatible/older projection is rebuildable — skip, don't fail
+		return nil, nil, nil
+	}
+	defer p.Close()
+	blobs, berr := p.AttachmentBlobs()
+	if berr != nil {
+		return nil, nil, berr
+	}
+	if len(blobs) == 0 {
+		return nil, nil, nil
+	}
+	reg := loadDurability(fsys, portableDir)
+	members := 1
+	if trust, terr := identity.MeshTrust(fsys, portableDir); terr == nil {
+		members = nonRevokedMembers(trust)
+	}
+	store := object.NewStore(fsys, portableDir)
+
+	strongest := map[string]string{}
+	for _, b := range blobs {
+		if cur, ok := strongest[b.ObjectHash]; !ok || durabilityTarget(b.Durability, members) > durabilityTarget(cur, members) {
+			strongest[b.ObjectHash] = b.Durability
+		}
+	}
+	hashes := make([]string, 0, len(strongest))
+	for h := range strongest {
+		hashes = append(hashes, h)
+	}
+	sort.Strings(hashes)
+	for _, h := range hashes {
+		class := strongest[h]
+		if class == "ephemeral" {
+			continue // origin-only; not a replication target
+		}
+		target := durabilityTarget(class, members)
+		selfHolds := store.Exists(h)
+		if selfHolds {
+			if _, gerr := store.Get(h); gerr != nil {
+				problems = append(problems, fmt.Sprintf("attachment blob %s (durability %s) present but fails content verification: %v", h, class, gerr))
+				selfHolds = false
+			}
+		}
+		have := reg.peerCount(h)
+		if selfHolds {
+			have++
+		}
+		if have >= target {
+			infos = append(infos, fmt.Sprintf("blob %s durability %s SATISFIED (%d/%d nodes)", h, class, have, target))
+		} else {
+			infos = append(infos, fmt.Sprintf("blob %s durability %s pending (%d/%d nodes) — awaiting peers", h, class, have, target))
+		}
+	}
 	return problems, infos, nil
 }
 
@@ -268,10 +361,37 @@ func (d *Daemon) GatesReport(w io.Writer) error {
 	fmt.Fprintf(w, "%-42s %-16s %s\n", "provenance on fetched results = 100%", "automated", provenance)
 	fmt.Fprintf(w, "%-42s %-16s %s\n", "hard-budget compliance = 100%", "automated", budget)
 	fmt.Fprintf(w, "%-42s %-16s %s\n", "send-ack → lexical-visible P95 < 200ms", "automated", latency)
+	fmt.Fprintf(w, "%-42s %-16s %s\n", "blob durability targets (N7)", "automated", d.durabilityGate())
 	fmt.Fprintf(w, "%-42s %-16s %s\n", "first-query Success@5 ≥ 70%", "human-measured", successAt5)
 	fmt.Fprintf(w, "%-42s %-16s %s\n", "manual-workaround rate ≤ 25%", "human-measured", workaround)
 	fmt.Fprintf(w, "%-42s %-16s %s\n", "median time-to-context < 60s", "human-measured", "diary protocol (DOGFOOD.md, M8)")
 	return nil
+}
+
+// durabilityGate summarizes blob durability for the gates report (N7). A blob
+// below its target is "pending" (informational — satisfied asynchronously when
+// a peer appears), never a release blocker; a present-but-corrupt blob is a
+// FAIL (surfaced via deep doctor).
+func (d *Daemon) durabilityGate() string {
+	blobs, err := d.DurabilityStatus()
+	if err != nil {
+		return "n/a (" + err.Error() + ")"
+	}
+	if len(blobs) == 0 {
+		return "PASS (no durable blobs yet)"
+	}
+	satisfied, pending := 0, 0
+	for _, b := range blobs {
+		if b.Satisfied {
+			satisfied++
+		} else {
+			pending++
+		}
+	}
+	if pending == 0 {
+		return fmt.Sprintf("PASS (%d/%d blobs at target)", satisfied, len(blobs))
+	}
+	return fmt.Sprintf("PASS (%d satisfied, %d pending replication)", satisfied, pending)
 }
 
 // DoctorProjection inspects the derived projection (F1/F3). Parked events

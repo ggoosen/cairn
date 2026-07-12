@@ -214,6 +214,7 @@ type publishPayload struct {
 	Attachments      []attachmentPayload `json:"attachments"`
 	SenderSummary    string              `json:"sender_summary"`
 	SourceRef        *sourceRefPayload   `json:"source_ref"`
+	Durability       string              `json:"durability"` // N7: attachment blob durability class
 }
 
 type revisionPayload struct {
@@ -252,9 +253,13 @@ func (p *Projection) applyPayload(tx *sql.Tx, env *event.Envelope) error {
 				return err
 			}
 		}
+		durability := pl.Durability
+		if durability == "" {
+			durability = "normal" // N7 default (pre-N7 events had no field)
+		}
 		for _, a := range pl.Attachments {
-			if _, err := tx.Exec(`INSERT OR IGNORE INTO attachments(message_id, object_hash, byte_len, mime, filename)
-					VALUES (?,?,?,?,?)`, pl.MessageID, a.ObjectHash, a.ByteLen, a.Mime, nullable(a.Filename)); err != nil {
+			if _, err := tx.Exec(`INSERT OR IGNORE INTO attachments(message_id, object_hash, byte_len, mime, filename, durability)
+					VALUES (?,?,?,?,?,?)`, pl.MessageID, a.ObjectHash, a.ByteLen, a.Mime, nullable(a.Filename), durability); err != nil {
 				return err
 			}
 		}

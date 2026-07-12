@@ -417,9 +417,12 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 	if err != nil {
 		return nil, err
 	}
+	// N7 (spec §6.3): messages whose attachment blobs are below their
+	// durability target carry a [replication-pending] marker.
+	pendingRepl := d.pendingBlobMessages()
 	header := fmt.Sprintf("# digest — %s\ninteraction: %s\nmode: %s\n\n", opts.AgentView, interactionID, mode)
 	render := func(i int) string {
-		return d.renderDigestEntry(i+1, scored[i], rows[scored[i].MessageID], disputed[scored[i].MessageID])
+		return d.renderDigestEntry(i+1, scored[i], rows[scored[i].MessageID], disputed[scored[i].MessageID], pendingRepl[scored[i].MessageID])
 	}
 	included, payload := rank.TakeWithinBudget(len(scored), opts.BudgetChars,
 		rank.BudgetRender{Header: header, Marker: "…truncated…\n"}, render)
@@ -490,7 +493,7 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 
 // renderDigestEntry: one digest item; EVERY line quoting cairn content is
 // prefixed with config.QuotePrefix (per-line prefixing cannot be escaped).
-func (d *Daemon) renderDigestEntry(pos int, s rank.Scored, row projection.RankRow, summaryDisputed bool) string {
+func (d *Daemon) renderDigestEntry(pos int, s rank.Scored, row projection.RankRow, summaryDisputed, replicationPending bool) string {
 	var b strings.Builder
 	tag := ""
 	if s.Mandatory != "" {
@@ -501,6 +504,11 @@ func (d *Daemon) renderDigestEntry(pos int, s rank.Scored, row projection.RankRo
 		// below is the receiver's own (bodies are always excerpted, never
 		// sender summaries — spec §8.4)
 		tag += " [summary-disputed]"
+	}
+	if replicationPending {
+		// N7: this message's attachment blobs are not yet at their durability
+		// target — satisfied asynchronously as peers replicate.
+		tag += " [replication-pending]"
 	}
 	fmt.Fprintf(&b, "%d. %s%s score=%s\n", pos, s.MessageID, tag, rank.Dec(s.Score))
 	body, err := d.store.Get(row.BodyHash)

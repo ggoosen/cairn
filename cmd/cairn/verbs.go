@@ -168,6 +168,7 @@ func newSendCmd(dirFlag *string) *cobra.Command {
 	cmd.Flags().StringSliceVar(&req.Recipients, "to", nil, "explicit recipient agent view(s)")
 	cmd.Flags().StringSliceVar(&attach, "attach", nil, "attach file(s); content-addressed, made searchable via deterministic derivatives (N4)")
 	cmd.Flags().StringVar(&req.SenderSummary, "summary", "", "sender summary (an UNTRUSTED claim; the receiver verifies it against the body)")
+	cmd.Flags().StringVar(&req.Durability, "durability", "", "attachment blob durability: ephemeral|normal(default)|important|pinned (N7)")
 	return cmd
 }
 

@@ -424,3 +424,58 @@ single reconcile fully converges both nodes.
   origin replicates; it resolves across subsequent sweeps (fixpoint), exactly
   as MeshTrust converges across origins. Not exercised by the two-node
   acceptance (both devices are mutually known before sync).
+
+## R39 — N7 blob replication + durability implementation (interprets §6.3 / R31/R32)
+
+Blob (attachment) replication runs as a THIRD reconciliation phase after the
+N6 event/text phase, over the same authenticated connection (blob_inv →
+get_object / put_object → object / put_ack). It reuses the durable-log
+internals not at all; blobs are content-addressed objects handled entirely by
+the object store.
+
+- **Durability class → replica target.** ephemeral = origin only (1, never
+  replicated); normal = `DurabilityNormalMin` (2, default); important /
+  pinned = all non-revoked member nodes (all operator nodes), computed at
+  runtime. The class is a per-message field on message.publish applying to
+  that message's attachment blobs; it is projected onto the attachments table
+  (schema v5) so both nodes agree on targets after the event phase.
+- **Full-node replication, not lazy-only.** P1 full nodes replicate every
+  non-ephemeral target blob bidirectionally during reconcile: a node fetches
+  every target blob it lacks that a peer advertises and pushes every target
+  blob the peer lacks. This meets or exceeds every target ≤ member count and
+  matches "full node = complete corpus" (§6.1). True lazy on-demand fetch is a
+  thin-node (P3) concern; N7's proactive replication is what satisfies
+  "durability 2/2 when B connects".
+- **R31 verify-before-serve/store.** Every transferred blob is content-address
+  verified before it is stored (`store.Put` recomputes the hash and refuses a
+  colliding address; the receiver additionally asserts got == expected) and
+  before it is served (`store.Get` re-verifies). A hash mismatch is rejected,
+  never stored or advertised — so an interrupted or corrupted transfer never
+  counts toward durability. Cache-then-advertise: a node that fetches a blob
+  becomes a holder (its object store IS the advertisement; the serving peer
+  records it as a holder on the same dial).
+- **Holder registry (local, non-replicated).** Peer holdership is runtime
+  knowledge (spec §4.5: not events, not replicated), persisted to
+  `.cairn/durability.json` (derived/cache-class, rebuilt by re-advertisement
+  if lost). SELF holdership is ALWAYS recomputed from the object store, never
+  trusted from the file — a deleted or corrupt local blob is never miscounted.
+  The registry uses an atomic-OVERWRITE write (temp → rename-over), distinct
+  from `fsx.WriteFileAtomic`, which is the write-ONCE primitive for immutable
+  objects/receipts and refuses to replace an existing file.
+- **Ack-time replication is deterministic (receipt idempotency).** The send's
+  `replication` acknowledgement is the ACK-TIME snapshot — the origin holds
+  the blob (have=1), pending if the class needs more nodes — derived purely
+  from the durability class, so a regenerated receipt is byte-identical (M4).
+  The LIVE replica state (2/2 etc.) is surfaced separately by `cairn sync
+  status`, the gates durability row, the digest `[replication-pending]`
+  marker, and deep doctor.
+- **R32 deep doctor.** For each non-ephemeral attachment blob: a present local
+  copy is content-verified (a corrupt present copy is a PROBLEM); the replica
+  state is reported — SATISFIED (target met) or pending (informational,
+  awaiting peers). A MISSING attachment blob is NOT a problem (blobs replicate
+  and no single node need hold every one), distinct from a missing message
+  BODY object (which IS a problem — bodies are the searchable corpus).
+- **Known limitation (flagged for N9).** A corrupt local blob blocks re-fetch
+  (the object store's verify-on-collision refuses to overwrite a colliding
+  address); repair requires removing the corrupt object first. Doctor flags
+  it; automated repair is out of N7 scope.

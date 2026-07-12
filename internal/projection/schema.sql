@@ -110,6 +110,7 @@ CREATE TABLE attachments (
   byte_len INTEGER NOT NULL,
   mime TEXT NOT NULL,
   filename TEXT,
+  durability TEXT NOT NULL DEFAULT 'normal',
   PRIMARY KEY (message_id, object_hash)
 );
 

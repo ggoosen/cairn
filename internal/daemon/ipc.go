@@ -531,7 +531,11 @@ func (d *Daemon) dispatch(req Request) Response {
 		d.mu.Lock()
 		peers := append([]string(nil), d.loaded.Device.SyncPeers...)
 		d.mu.Unlock()
-		return Response{OK: true, Status: map[string]any{"frontiers": frs, "peers": peers, "bootstrap": d.bootstrapMode}}
+		st := map[string]any{"frontiers": frs, "peers": peers, "bootstrap": d.bootstrapMode}
+		if dur, derr := d.DurabilityStatus(); derr == nil && len(dur) > 0 {
+			st["blobs"] = dur
+		}
+		return Response{OK: true, Status: st}
 
 	case "peek":
 		info, err := d.proj.MessageInfo(req.MessageID)

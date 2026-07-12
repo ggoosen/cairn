@@ -80,6 +80,12 @@ type syncMsg struct {
 	Bodies   map[string][]byte `json:"bodies,omitempty"` // body_hash → text bytes
 	Bulk     bool              `json:"bulk,omitempty"`   // R30 bulk catch-up marker
 	Err      string            `json:"err,omitempty"`
+
+	// N7 blob replication
+	Hashes  []string `json:"hashes,omitempty"`  // blob_inv: blobs the sender holds
+	Hash    string   `json:"hash,omitempty"`    // get_object / put_object / object
+	Data    []byte   `json:"data,omitempty"`    // object / put_object bytes
+	Missing bool     `json:"missing,omitempty"` // object: the sender lacks it
 }
 
 func writeSync(w io.Writer, m syncMsg) error {
@@ -383,6 +389,77 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 			if err := writeSync(conn, syncMsg{Type: "ack", Frontier: fr}); err != nil {
 				return
 			}
+		case "blob_inv":
+			// the initiator advertised the blobs it holds — record it as a
+			// holder of each, then reply with our own inventory.
+			d.mu.Lock()
+			for _, h := range req.Hashes {
+				d.durab.addPeerHolder(h, peerDevice)
+			}
+			targets, err := d.targetBlobs()
+			var held []string
+			if err == nil {
+				for h := range targets {
+					if d.store.Exists(h) {
+						held = append(held, h)
+					}
+				}
+			}
+			d.mu.Unlock()
+			if err != nil {
+				writeSync(conn, syncMsg{Type: "error", Err: err.Error()})
+				return
+			}
+			d.durab.save(d.fs, d.dir)
+			sort.Strings(held)
+			if err := writeSync(conn, syncMsg{Type: "blob_inv", Hashes: held}); err != nil {
+				return
+			}
+		case "get_object":
+			// serve a blob, verifying the bytes hash to the address BEFORE
+			// serving (R31). The initiator is fetching it → it will hold it.
+			d.mu.Lock()
+			data, gerr := d.store.Get(req.Hash) // Get re-verifies content-address
+			if gerr == nil {
+				d.durab.addPeerHolder(req.Hash, peerDevice)
+			}
+			d.mu.Unlock()
+			if gerr != nil {
+				if err := writeSync(conn, syncMsg{Type: "object", Hash: req.Hash, Missing: true}); err != nil {
+					return
+				}
+				continue
+			}
+			d.durab.save(d.fs, d.dir)
+			if err := writeSync(conn, syncMsg{Type: "object", Hash: req.Hash, Data: data}); err != nil {
+				return
+			}
+		case "put_object":
+			// verify (content-address) before storing (R31); the initiator
+			// holds it (it pushed it).
+			if len(req.Data) > config.SyncMaxObjectBytes {
+				writeSync(conn, syncMsg{Type: "error", Err: "blob exceeds transfer cap"})
+				return
+			}
+			d.mu.Lock()
+			got, perr := d.store.Put(req.Data)
+			if perr == nil && got == req.Hash {
+				d.durab.addPeerHolder(req.Hash, peerDevice)
+			}
+			d.mu.Unlock()
+			if perr != nil {
+				writeSync(conn, syncMsg{Type: "error", Err: perr.Error()})
+				return
+			}
+			if got != req.Hash {
+				fmt.Fprintf(d.warn, "sync: rejected pushed blob from %s: hashes to %s, claimed %s\n", peerDevice, got, req.Hash)
+				writeSync(conn, syncMsg{Type: "error", Err: "pushed blob hash mismatch"})
+				return
+			}
+			d.durab.save(d.fs, d.dir)
+			if err := writeSync(conn, syncMsg{Type: "put_ack", Hash: req.Hash}); err != nil {
+				return
+			}
 		case "done":
 			return
 		default:
@@ -488,6 +565,12 @@ func (d *Daemon) SyncWith(addr string) (int, error) {
 				return ingested, err
 			}
 		}
+	}
+	// N7: blob replication runs AFTER events converge (both sides now know
+	// every attachment's durability class). Best-effort — a blob failure does
+	// not undo the event convergence.
+	if err := d.blobPhase(pc); err != nil {
+		fmt.Fprintf(d.warn, "sync: blob phase with %s incomplete: %v\n", pc.PeerDevice, err)
 	}
 	writeSync(pc, syncMsg{Type: "done"})
 	return ingested, nil
@@ -652,6 +735,167 @@ func (d *Daemon) bulkThreshold() int {
 		return d.syncBulkThreshold
 	}
 	return config.SyncBulkCatchupThreshold
+}
+
+// --- N7 blob replication ----------------------------------------------------
+
+// targetBlobs returns the set of attachment blob hashes with a NON-ephemeral
+// durability class (ephemeral blobs are origin-only, never replicated). A blob
+// referenced by more than one message is a target if ANY reference is
+// non-ephemeral. Caller holds d.mu.
+func (d *Daemon) targetBlobs() (map[string]bool, error) {
+	blobs, err := d.proj.AttachmentBlobs()
+	if err != nil {
+		return nil, err
+	}
+	targets := map[string]bool{}
+	for _, b := range blobs {
+		if b.Durability != "ephemeral" {
+			targets[b.ObjectHash] = true
+		}
+	}
+	return targets, nil
+}
+
+// blobPhase reconciles attachment blobs after the event/text phase: exchange
+// inventories, then (as a full node) fetch every target blob it lacks and push
+// every target blob the peer lacks. Every transfer is hash-verified before it
+// is stored or served (R31); a node that fetches a blob advertises it
+// (cache-then-advertise) by recording itself as a holder. Best-effort: blob
+// errors are logged, not fatal (events already converged).
+func (d *Daemon) blobPhase(pc *peer.Conn) error {
+	d.mu.Lock()
+	targets, err := d.targetBlobs()
+	if err != nil {
+		d.mu.Unlock()
+		return err
+	}
+	held := []string{}
+	for h := range targets {
+		if d.store.Exists(h) {
+			held = append(held, h)
+		}
+	}
+	d.mu.Unlock()
+	sort.Strings(held)
+
+	// 1. exchange inventories
+	if err := writeSync(pc, syncMsg{Type: "blob_inv", Hashes: held}); err != nil {
+		return err
+	}
+	resp, err := readSync(pc.R)
+	if err != nil {
+		return fmt.Errorf("peer closed before blob inventory: %w", err)
+	}
+	if resp.Type == "error" {
+		return fmt.Errorf("peer error on blob inventory: %s", resp.Err)
+	}
+	if resp.Type != "blob_inv" {
+		return fmt.Errorf("expected blob_inv, got %q", resp.Type)
+	}
+	peerHas := map[string]bool{}
+	for _, h := range resp.Hashes {
+		peerHas[h] = true
+	}
+	// record the peer as a holder of everything it advertised
+	d.mu.Lock()
+	for _, h := range resp.Hashes {
+		d.durab.addPeerHolder(h, pc.PeerDevice)
+	}
+	heldSet := map[string]bool{}
+	for _, h := range held {
+		heldSet[h] = true
+	}
+	d.mu.Unlock()
+
+	// 2. PULL: fetch every target blob I lack that the peer advertises
+	for h := range targets {
+		if heldSet[h] || !peerHas[h] {
+			continue
+		}
+		if err := d.fetchBlob(pc, h); err != nil {
+			fmt.Fprintf(d.warn, "sync: fetching blob %s from %s failed: %v\n", h, pc.PeerDevice, err)
+			continue
+		}
+	}
+
+	// 3. PUSH: send every target blob the peer lacks that I hold
+	for _, h := range held {
+		if peerHas[h] {
+			continue
+		}
+		if err := d.pushBlob(pc, h); err != nil {
+			fmt.Fprintf(d.warn, "sync: pushing blob %s to %s failed: %v\n", h, pc.PeerDevice, err)
+			continue
+		}
+	}
+	return d.durab.save(d.fs, d.dir)
+}
+
+// fetchBlob pulls one blob by hash, verifies it (R31 — content-address match),
+// and stores it. On success this node holds the blob (cache-then-advertise:
+// the object store IS the local advertisement; the peer recorded us as a
+// holder when it served the get_object).
+func (d *Daemon) fetchBlob(pc *peer.Conn, hash string) error {
+	if err := writeSync(pc, syncMsg{Type: "get_object", Hash: hash}); err != nil {
+		return err
+	}
+	resp, err := readSync(pc.R)
+	if err != nil {
+		return err
+	}
+	if resp.Type == "error" {
+		return fmt.Errorf("peer error: %s", resp.Err)
+	}
+	if resp.Type != "object" || resp.Hash != hash {
+		return fmt.Errorf("expected object %s, got %q/%s", hash, resp.Type, resp.Hash)
+	}
+	if resp.Missing {
+		return fmt.Errorf("peer no longer holds %s", hash)
+	}
+	if len(resp.Data) > config.SyncMaxObjectBytes {
+		return fmt.Errorf("blob %s exceeds transfer cap", hash)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	// store.Put is content-addressed: it computes the hash and refuses a
+	// collision with different bytes — verify-before-serve (R31).
+	got, err := d.store.Put(resp.Data)
+	if err != nil {
+		return err
+	}
+	if got != hash {
+		return fmt.Errorf("received blob hashes to %s, expected %s (rejected)", got, hash)
+	}
+	return nil
+}
+
+// pushBlob sends one blob to the peer; the peer verifies + stores it and acks.
+func (d *Daemon) pushBlob(pc *peer.Conn, hash string) error {
+	d.mu.Lock()
+	data, err := d.store.Get(hash)
+	d.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if err := writeSync(pc, syncMsg{Type: "put_object", Hash: hash, Data: data}); err != nil {
+		return err
+	}
+	resp, err := readSync(pc.R)
+	if err != nil {
+		return err
+	}
+	if resp.Type == "error" {
+		return fmt.Errorf("peer refused blob: %s", resp.Err)
+	}
+	if resp.Type != "put_ack" || resp.Hash != hash {
+		return fmt.Errorf("expected put_ack %s, got %q/%s", hash, resp.Type, resp.Hash)
+	}
+	// the peer now holds it — advertise (cache-then-advertise for the peer)
+	d.mu.Lock()
+	d.durab.addPeerHolder(hash, pc.PeerDevice)
+	d.mu.Unlock()
+	return nil
 }
 
 // SetSyncBulkThresholdForTest lowers the R30 bulk-catch-up threshold so the

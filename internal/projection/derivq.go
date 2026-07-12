@@ -99,6 +99,37 @@ func (p *Projection) AttachmentsNeedingDerivative(limit int) ([]AttachmentBlob, 
 	return out, rows.Err()
 }
 
+// DurableBlob is one attachment blob with its N7 durability class.
+type DurableBlob struct {
+	ObjectHash string
+	MessageID  string
+	Durability string
+	ByteLen    int64
+}
+
+// AttachmentBlobs lists every distinct attachment blob with its durability
+// class (N7 replication + doctor). One row per (blob, class); a blob shared by
+// two messages with different classes yields the STRONGER class is left to the
+// caller — here each (message, blob) pair is returned.
+func (p *Projection) AttachmentBlobs() ([]DurableBlob, error) {
+	rows, err := p.db.Query(`
+		SELECT object_hash, message_id, durability, byte_len
+		FROM attachments ORDER BY object_hash, message_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DurableBlob
+	for rows.Next() {
+		var b DurableBlob
+		if err := rows.Scan(&b.ObjectHash, &b.MessageID, &b.Durability, &b.ByteLen); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 // DerivativeMessageHits searches derivative text and maps hits back to the
 // owning messages (attachment join). Provenance flows: message → attachment
 // blob_hash → derivative (extractor+version) → text_hash.

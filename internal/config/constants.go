@@ -160,7 +160,7 @@ const (
 // ---------------------------------------------------------------------------
 
 const (
-	ProjectionSchemaVersion = 4 // v4: derivatives+summaries (N4); v3: subscriptions (N3); v2: parked_events
+	ProjectionSchemaVersion = 5 // v5: attachment durability class (N7); v4: derivatives+summaries (N4); v3: subscriptions (N3); v2: parked_events
 
 	// FTSTokenize: unicode61 with tokenchars `_ - # @` (rulings §6).
 	FTSTokenize = "unicode61 tokenchars '_-#@'"
@@ -310,6 +310,13 @@ const (
 	// SyncMaxObjectBytes caps a single replicated body/blob transfer (frame
 	// sanity bound; mirrors the 16 MiB record cap).
 	SyncMaxObjectBytes = 16 << 20
+
+	// N7 blob durability (spec §6.3; buildpack N7). Class → replica target:
+	// ephemeral = origin only (1); normal = at least this many nodes;
+	// important / pinned = all non-revoked member nodes (computed at runtime).
+	DurabilityDefault    = "normal"
+	DurabilityNormalMin  = 2 // "normal ≥ 2 nodes (default)"
+	DurabilityRegistry   = "durability.json" // under .cairn/ (derived, cache-class)
 
 	// Capability sessions (N2, RULINGS.md R23): opaque daemon-side handles,
 	// short-TTL, non-delegable, auto-revoked on exit/idle. TTL and idle

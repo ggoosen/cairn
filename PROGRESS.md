@@ -1294,3 +1294,79 @@ N1–N5 suite unchanged); `make vet` clean; `make verify` OK (untagged
 compile-guard + tagged suite).
 
 Next: **N7 — blob replication + durability acknowledgement.**
+
+## N7 — Blob replication + durability acknowledgement — COMPLETE
+
+Status: all buildpack acceptance criteria pass (`make test` + `make vet` +
+`make verify` green). Durable-log internals untouched — blobs are
+content-addressed objects, replicated over the N6 authenticated connection as
+a third phase. Authority: RULINGS R39 appended (interprets §6.3 / R31 / R32).
+Not an operator-checkpoint milestone (N8 is next).
+
+- **Durability class** (spec §6.3): message-level `durability` on
+  message.publish (ephemeral | normal (default) | important | pinned),
+  applied to attachment blobs; projected onto the attachments table
+  (projection schema **v5**; existing derived DBs auto-rebuild on open).
+  `cairn send --durability`.
+- **Blob replication** (`internal/daemon/reconcile.go` blob phase): after the
+  event/text phase, exchange blob inventories, then fetch every non-ephemeral
+  target blob the node lacks that a peer advertises and push every one the
+  peer lacks. R31: every transfer is content-address verified before store
+  (store.Put + got==hash) and before serve (store.Get); cache-then-advertise.
+- **Durability registry** (`internal/daemon/durability.go`): per-blob peer
+  holders in `.cairn/durability.json` (derived/cache-class, atomic-overwrite;
+  rebuilt by re-advertisement). Self holdership is always recomputed from the
+  object store — a deleted/corrupt blob is never miscounted. Target per class:
+  ephemeral 1, normal 2, important/pinned = non-revoked member count.
+- **Durability acknowledgement** (spec §6.3): send returns accepted_locally
+  with a DETERMINISTIC ack-time `replication` {class, target, have=1, pending}
+  in the PublishResult/receipt (byte-identical on regeneration — M4 preserved,
+  verified: outbox suite green). Live state surfaced by `cairn sync status`
+  (per-blob have/target/satisfied), the gates durability row, the digest
+  `[replication-pending]` marker, and deep doctor.
+- **R32 deep doctor**: verifies present attachment blobs (corrupt present copy
+  = problem); reports each non-ephemeral blob SATISFIED or pending. A MISSING
+  attachment blob is NOT a problem (lazily replicated) — distinct from a
+  missing body object.
+
+### Acceptance criteria → evidence (`TestN7BlobDurability`)
+1. *Attachment sent on A reaches durability 2/2 when B connects* — A's send
+   acks pending 1/2; A's live status shows 1/2 unsatisfied (only A holds);
+   after B reconciles, BOTH A and B report 2/2 satisfied; deep doctor on both
+   is clean and reports SATISFIED.
+2. *Fetch on B verifies and re-advertises* — B fetches the A-origin blob, the
+   bytes verify against the content address, B holds it and both registries
+   record B as a holder (re-advertise propagated on the same dial).
+3. *Doctor matches reality through kill-9 mid-blob-transfer* — the interrupted
+   state (event synced, blob absent — the atomic store leaves nothing partial)
+   is reported accurately as pending and NOT as a problem; deep doctor never
+   reports a false satisfied; re-sync re-fetches and converges to 2/2.
+
+### Deviations / notes
+- **Full-node proactive replication, not lazy-only** (R39): P1 full nodes hold
+  the complete corpus, so all non-ephemeral target blobs replicate to all full
+  nodes bidirectionally during reconcile. This meets/exceeds every target;
+  true lazy on-demand fetch is a thin-node (P3) concern.
+- **important/pinned target = member count**: pinned is "per policy"; the
+  conservative reading is all non-revoked member nodes (same as important).
+  Config-revisable via the durability constants.
+- **Registry atomic-overwrite** added (`atomicOverwrite`) — a mutable
+  derived-file write distinct from `fsx.WriteFileAtomic` (write-once for
+  immutable objects/receipts, which refuses to replace). This was found by the
+  acceptance test: the write-once primitive errored on the second save, so the
+  peer-holder update never reached disk.
+- **Corrupt-blob repair** blocked by the object store's verify-on-collision
+  (refuses to overwrite a colliding address); doctor flags it, automated
+  repair is out of N7 scope (flagged for N9).
+
+### Author rulings needed
+- None new. (Open: M0 root-key storage; M5 resolve semantics; R38
+  bootstrap-trust retain-vs-delete.)
+
+### Test results (2026-07-13)
+`make test` — all packages green (daemon incl. TestN7BlobDurability + the full
+N1–N6 suite; outbox receipt idempotency intact under the new replication
+field; projection schema v5 rebuild). `make vet` clean; `make verify` OK.
+
+Next: **N8 — live fork detection + network doctor** (OPERATOR CHECKPOINT
+milestone: the loop STOPS after N8 completes).

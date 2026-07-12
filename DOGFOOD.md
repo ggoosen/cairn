@@ -295,3 +295,35 @@ falls far behind is caught up by streaming whole segments. Convergence is
 crash-safe and idempotent — a re-run of `sync now` after any interruption
 simply re-fetches what is missing. Reindex on any node
 (`cairn reindex --lexical`) reproduces identical canonical search results.
+
+## 13. Blob durability (P1 N7)
+
+Attachments (sent with `cairn send --attach`) are content-addressed blobs
+replicated across the mesh with a durability class:
+
+```bash
+cairn send "quarterly numbers" --attach report.pdf --durability normal
+```
+
+| class      | replica target                         |
+|------------|----------------------------------------|
+| ephemeral  | origin only (never replicated)         |
+| normal     | ≥ 2 nodes (default)                    |
+| important  | all your machines (operator nodes)     |
+| pinned     | all your machines (per policy)         |
+
+The send never blocks on replication: it acks `accepted_locally` immediately,
+and the receipt/`cairn send` output carries `replication` (e.g. `pending`,
+target 2, have 1). Replication is satisfied asynchronously by the sync sweep —
+when another node reconciles, it fetches the blob (verifying the hash),
+becomes a holder, and both nodes see the target met.
+
+Check live durability any time:
+```bash
+cairn sync status          # includes each blob's have/target/satisfied
+cairn doctor               # (deep) verifies present blobs + reports pending ones
+cairn gates                # "blob durability targets (N7)" row
+```
+A message whose attachment is still below target shows `[replication-pending]`
+in the digest. A blob is only ever counted as held by a node when that node
+has a complete, hash-verified copy — an interrupted transfer is never counted.
