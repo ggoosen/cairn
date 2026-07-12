@@ -232,3 +232,35 @@ receiver embeds it against the body, and a divergent claim gets a
 `[summary-disputed]` marker in digests plus a locally computed extractive
 summary (needs the real embedder, §2). For the F9 retrieval benchmark on
 the real model: `cairn bench golden --embedder real`.
+
+## 11. Two-node enrolment ceremony (P1 N5 — operator runbook)
+
+The mesh grows by ROOT-SIGNED enrolment; Tailscale is transport, never
+authorization (R27). The root key touches disk only during this ceremony.
+
+```sh
+# NEW machine (e.g. the WSL2 box):
+cairn device enroll --name windows-wsl --out req.json     # key stays here
+
+# THIS machine (signing): stop the daemon, restore the root key
+launchctl unload ~/Library/LaunchAgents/com.cairn.daemon.plist  # or Ctrl-C
+cp /Volumes/OfflineUSB/cairn-root.key /tmp/root.key
+cairn device approve req.json --root-key /tmp/root.key --grant grant.json
+rm -P /tmp/root.key                                        # REMOVE the key
+# enable the listener (device-local config next to the device key):
+#   sync_listen = "100.x.y.z:9700"     ← your tailnet IP (never 0.0.0.0)
+launchctl load ~/Library/LaunchAgents/com.cairn.daemon.plist
+
+# NEW machine: install the identity and prove membership
+cairn device join grant.json
+cairn sync ping 100.x.y.z:9700         # mutual auth; no data flows yet (N6)
+
+# management
+cairn device list                       # member / REVOKED
+cairn device revoke <device-id> --root-key <restored>   # offline, then restart daemon
+```
+
+Requests expire after 1h and are single-use (R28). Refused connections are
+logged with the presented identity on the daemon's stderr. A joined node
+becomes fully operational (digest/search) when N6 replication lands; until
+then `sync ping` is the membership proof.

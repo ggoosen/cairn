@@ -1127,3 +1127,64 @@ Commit: ed9de25 (+ docs commit).
 Next: **N5 — transport + membership (Tailscale)** — OPERATOR CHECKPOINT
 milestone: requires the physical root-key ceremony; the next iteration
 prepares the enrolment flow and STOPS for the operator.
+
+## N5 — Transport + membership (Tailscale) — COMPLETE (machinery) / OPERATOR CHECKPOINT
+
+Status: every automatable acceptance criterion passes (full suite
+-count=1 green). The REAL two-machine ceremony on the operator's tailnet
+is deliberately NOT simulated — the runbook is DOGFOOD.md §11 and the
+loop is STOPPED for the operator. Durable-log internals untouched (the
+ceremony appends via the public log API exactly as migrate does).
+
+- internal/peer: tailnet-only listener + 3-message mutual handshake
+  (details in RULINGS.md R37). Un-enrolled/revoked/impostor/cross-mesh
+  refusals all LOG the presented identity (R27).
+- Enrolment ceremony offline end-to-end: enroll (key never leaves the new
+  node) → approve (restored root key; 1h expiry + durable single-use per
+  R28; root-signed device.add; grant carries the genesis-rooted identity
+  chain) → join (verifies EVERYTHING from genesis; installs identity +
+  bootstrap trust) → revoke (root-signed, offline).
+- Daemon wiring: device-local sync_listen; SyncAddr accessor; listener
+  refuses non-tailnet binds at startup. `cairn sync ping` = membership
+  probe (N6 keeps the connection for reconciliation via Server.OnPeer).
+- Acceptance evidence:
+  - TestN5TwoNodeCeremonyAndRefusals (daemon-level E2E): ceremony with
+    the root key REMOVED from the running node (restored copy used only
+    at approve/revoke); enrolled B authenticates BOTH directions;
+    un-enrolled peer refused + logged; revoked B refused + logged after
+    device.revoke, across a daemon restart.
+  - TestN5EnrolmentCeremony / TestN5RequestExpiryAndTamper: single-use,
+    expiry, wrong-root-key, tampered-grant, double/self-revoke.
+  - internal/peer matrix: mutual auth, impostor key, cross-mesh,
+    unauthenticated responder, listener guard (0.0.0.0/public/localhost
+    refused; tailnet v4/v6 accepted; loopback env-gated).
+  - TestN5DeviceCeremonyCLI: verb wiring + operator-facing reminders.
+- Deviations / notes:
+  - Tests bind loopback under the explicit dev acknowledgement; the
+    tailnet-range guard itself is unit-tested. The operator ceremony
+    validates the real Tailscale path.
+  - The joined node is handshake-capable but not daemon-operational until
+    N6 delivers the log (bootstrap trust per R37). `cairn sync ping`
+    works from it; digest/search need N6.
+  - device.add payloads gained optional enrolment_request_id (noted in
+    p1-events schema; chain verifier ignores unknown fields by design).
+
+Commit: dc8a616 (+ docs commit).
+Next: **N6 — reconciliation + text replication** — but FIRST the operator
+checkpoint below.
+
+### OPERATOR CHECKPOINT — N5 ceremony (requires you physically)
+
+Run the real ceremony on your tailnet (full runbook: DOGFOOD.md §11):
+1. On the NEW machine (WSL2 box per the buildpack appendix, or the air):
+   build cairn, then `cairn device enroll --name <machine> --out req.json`.
+2. Carry req.json to THIS machine. Stop the daemon. Restore the root key
+   from offline storage to a temp path.
+3. `cairn device approve req.json --root-key <restored> --grant grant.json`
+   — then REMOVE the restored key. Restart the daemon.
+4. Set `sync_listen = "<this-machine-tailnet-ip>:9700"` in the device
+   config (path printed by `cairn identity show`), restart the daemon.
+5. Carry grant.json to the new machine: `cairn device join grant.json`,
+   then `cairn sync ping <tailnet-ip>:9700` — expect mutual auth success.
+6. Negative probe: from any un-enrolled machine on the tailnet, the same
+   ping must be REFUSED and logged on this machine's daemon stderr.

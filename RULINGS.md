@@ -351,3 +351,28 @@ buildpack preamble):
   signal exists; hard filters and caps still govern); a uniform pool where
   nothing stands out surfaces NOTHING — a relative calibrator cannot
   certify it, and silence is the conservative failure mode.
+
+## R37 — N5 implementation rulings (interprets R27/R28)
+
+- **Ceremony steps are OFFLINE**: enroll/approve/join/revoke run with the
+  daemon stopped (the daemon write lock is held for the append), matching
+  `cairn migrate`'s posture. Membership changes therefore take effect at
+  the next daemon start — a running listener's trust view is the
+  recover-time snapshot.
+- **Join-grant bootstrap trust**: until N6 replicates real segments, the
+  new node authenticates peers from the grant's identity chain, verified
+  from genesis by the SAME chain verifier the log uses. Nothing in the
+  grant is trusted that the chain did not prove (the embedded cert is
+  re-verified against the chain's root). N6 must replace this bootstrap
+  with replicated segments and delete the crutch.
+- **Single-use marker (R28)** is the enrolment request id recorded in the
+  device.add payload — durable in the signed log, scanned at approve time;
+  no side-channel state to lose.
+- **Loopback listener binding** is a dev/test mode behind an explicit
+  CAIRN_SYNC_ALLOW_LOOPBACK=1 acknowledgement; production accepts only
+  100.64.0.0/10 / fd7a:115c:a1e0::/48 literals. 0.0.0.0/:: is always
+  refused.
+- **Handshake shape**: three-message mutual proof over fresh 32-byte
+  nonces under the "cairn-sync-hello-v1" domain separator; signature
+  binds {cairn_id, signer device, both nonces}. Both directions verify
+  membership + revocation + key possession BEFORE any protocol byte.
