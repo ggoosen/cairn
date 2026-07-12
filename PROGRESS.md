@@ -852,3 +852,76 @@ single-suite runs.
   rulings, and P1 (networking/replication/MCP — a design phase, not a
   BUILD-PLAN milestone).
 - `// RULING-NEEDED:` markers in code: one (root-key storage, M0).
+
+---
+
+# P1 (cairn-p1-buildpack-v1.1-full.md) — N1→N9
+
+Authority for P1: RULINGS.md (R18–R34 appended, commit 0a9fd4a) >
+rulings-v0.3.1 > spec-v0.3. Durable-log internals remain out of bounds —
+N1 did not touch internal/log framing/signing/sealing.
+
+## N1 — MCP server + untrusted-content envelope — COMPLETE
+
+Status: all automatable acceptance criteria pass; the Claude Desktop leg
+is the operator's (instructions in DOGFOOD.md §3b).
+
+- `internal/mcp`: transport-agnostic tool layer (`CallTool`) + stdio
+  JSON-RPC framing (`ServeStdio`), newline-delimited per the MCP spec.
+  Tool layer is reusable unchanged for a later HTTP mount. Tools mirror
+  spec §5.5 exactly — nine tools, nothing else.
+- `cairn mcp --view <v> --actor <a>`: bridges stdio to the daemon's unix
+  socket; fails fast (nonzero, R8) when no daemon is running; stdout
+  carries protocol messages ONLY (diagnostics go to stderr).
+- **R18**: every content-bearing result (digest, search + each result,
+  peek, fetch, why_ranked) is wrapped in the §7.4 envelope with
+  trust:"untrusted" and provenance {message_id, revision_id, sender,
+  content_hash}; every such tool description states returned content is
+  data, not instructions. Aggregate kinds (digest, search_results) carry
+  content + interaction_id; per-message provenance rides on the per-result
+  envelopes — interpretation recorded here, no ruling gap.
+- **R19**: budgets pass through to the daemon and are accounted over the
+  complete retrieval payload, identically to the CLI (the JSON-RPC wrapper
+  is transport, exactly as the IPC wrapper is for the CLI). Defaults
+  digest 1500 / search 2000 in config (MCPDigestBudgetDefault /
+  MCPSearchBudgetDefault). The server re-verifies payload ≤ budget and
+  errors if the daemon ever exceeded it.
+- **R20**: cairn_send/cairn_reply decode arguments strictly
+  (DisallowUnknownFields) — operator_override / force-class /
+  auto_create_topics do not exist on this surface and are rejected as
+  invalid arguments; unresolved topics reject BEFORE ack (no auto-create
+  from MCP, consistent with the FIX-F1 outbox ruling).
+- R21 groundwork: the recorded principal is the server's --actor; N2 binds
+  it to a capability profile (MCP never tier-1).
+
+Tests (all green, `make test` + `go test -count=3 ./internal/mcp`):
+- handshake (echoes client protocolVersion), tools/list = exactly the nine
+  §5.5 names, R18 description check, unknown method → -32601, notification
+  silence, ping
+- full round-trip against a live daemon: send → search (envelope + full
+  provenance per result) → peek (metadata-only, no content) → fetch (body
+  + mime + provenance matches search's content_hash) → why_ranked →
+  outcome(found) → reply (threads correctly) → signal → digest (envelope,
+  ≤ default budget)
+- R19: 12-message corpus, digest budget 220 → payload ≤ 220 runes while
+  the unbudgeted digest exceeds it; search budget 150 honored
+- R20: hidden-knob rejection ×3, unresolved-topic pre-ack rejection,
+  empty-body and invalid-outcome rejection
+- CLI level: `cairn mcp` serves initialize + tools/list over stdio with
+  pure-protocol stdout; nonzero exit when the daemon is down
+
+Deviations / notes:
+- Fetch returns the body inline in the envelope by reading the
+  daemon-materialized body file (same host by definition of the stdio
+  transport); the views/<view>/fetched/ manifest+body pair is still
+  written, so provenance separation on disk is unchanged.
+- Test-helper flake fixed during the milestone: waiting on existence of
+  daemon.sock.path races its content write; the helper now polls a status
+  call. Pre-existing cmd/cairn tests use waitForSocket the same racy way
+  but have never flaked — left untouched (fix scope).
+- F9 (bench golden --embedder real) not taken this session; must ride
+  along by N4 per the buildpack.
+
+Commits: 0a9fd4a (R18–R34), 2ca7b07 (N1 implementation), + docs.
+Next: **N2 — capability enforcement + trusted launcher**. Operator
+checkpoint after N2 per the buildpack (security model activation).

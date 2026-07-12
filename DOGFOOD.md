@@ -57,6 +57,38 @@ Per surface:
 
 Regenerate digests any time: `cairn digest --view <name> --budget 4000`.
 
+### 3b. MCP surface (P1 N1): Claude Desktop / Claude Code
+
+With the daemon running, any MCP client gets the nine §5.5 tools
+(`cairn_digest/search/peek/fetch/send/reply/signal/outcome/why_ranked`)
+over stdio. Claude Desktop — add to
+`~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "cairn": {
+      "command": "/usr/local/bin/cairn",
+      "args": ["mcp", "--view", "claude-desktop", "--actor", "claude-desktop"]
+    }
+  }
+}
+```
+
+Claude Code: `claude mcp add cairn -- cairn mcp --view claude-code --actor
+claude-code`. Use the absolute binary path (GUI apps don't inherit your
+shell PATH). One view per client keeps digests and telemetry attributable.
+
+Every content-bearing result arrives in the untrusted-content envelope
+(`trust: "untrusted"` + full provenance); budgets default to 1500 chars
+(digest) / 2000 (search) and are tunable per call. There is no
+force-class or topic auto-creation from MCP, by ruling (R20/R21).
+
+**N1 acceptance leg (operator):** in Claude Desktop against the live mesh,
+run one full round-trip — digest → search → fetch → send → outcome — and
+confirm each result shows the envelope. The protocol-level equivalent is
+already automated (`internal/mcp` tests).
+
 ## 4. The 30-handoff diary protocol (human-measured gates)
 
 A **handoff** = one session genuinely needing context another session
