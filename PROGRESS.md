@@ -791,6 +791,29 @@ Tasks completed:
 `go test -tags sqlite_fts5 ./...` — 12 packages green (ingest: 3 tests,
 end-to-end over real daemon IPC). `go vet` clean.
 
+## Audit fix work order (docs/cairn-p0-fix-workorder.md) — COMPLETE
+
+Two independent audits of d0aca05 (Codex, Claude) returned FAIL; the
+adjudicated work order F1–F7 is fully executed. `make verify` green
+(untagged compile-guard + 17 packages). One commit per item (FIX-F1…F7).
+
+| Item | Defect | Fix | Regression proof |
+|---|---|---|---|
+| F1 BLOCKER | `send --topic` poisoned the projection; projector stalled silently; restart/reindex unrecoverable | pre-ack referential validation for ALL intra-mesh refs; `--topic` resolves by name and auto-creates (create+link in-request, all durable before the single ack); projector PARKING (quarantine table, stream never stalls; reindex exits 0 with report); projection schema v2 | CLI red test confirmed the stall (1/3 messages); pre-ack link rejection; injected historical poison parked with later events projecting |
+| F2 BLOCKER | migrated mesh could never reindex (per-origin key verification); identity show broken post-migrate | two-pass replay: `identity.MeshTrust` (pass 1, fixpoint across ALL origins) + seeded verifiers (pass 2) used by reindex, recovery, doctor, gates, object checks, and Migrate itself (double-migrate had the same bug); identity show reads mesh trust; revocation gates writes only | red with the auditor's exact "record before genesis"; migrate→reindex byte-identical; A→B→C; F1+F2 combined; post-migrate trust |
+| F3 MAJOR | doctor false-clean on projection poison and missing objects | DeepDoctor: parked events, checkpoint semantics (AHEAD/unverifiable = fail; BEHIND with zero parked = informational — parking makes stalls impossible), object presence + hash verification, cross-origin trust; nonzero exit; gates zero-loss row cites it | CLI: missing-object fail, parked fail, post-migrate clean |
+| F4 MAJOR | plain build produced a non-functional binary | compile-time guard (untagged build fails naming the fix); `make verify` asserts guard + tagged suite | make verify in CI path |
+| F5 MAJOR | export-root ruling never reached the repo | `cairn identity export-root` (verified export, mesh-dir refusal, prompted/one-shot local removal); **RULINGS.md** created (all conversation + work-order rulings; chat rulings land there before implementation); unknown subcommands exit nonzero | export lifecycle + exit-code tests |
+| F6 MINOR | restore UX; TTL ergonomics; version | typed ErrRestoredCopy pointing at `init --adopt`; READ-ONLY daemon mode over restores (search/digest/fetch/doctor/identity show per R9; all writes refused); ephemeral_ttl_hours / housekeep_minutes portable-config tunables + startup sweep + `cairn housekeep`; version from build info | read-only e2e; tightened-TTL expiry; drill script updated to probe write-refusal |
+| F7 | blockers grew in untested seams | direct unit tests: rank / embed / views / telemetry / projection-replay (blocker shapes pinned) — immediately caught and fixed a REAL budget bug (truncation marker could exceed budget_chars) | 17 packages green |
+
+Durable-log internals (frame format, signing, sealing) were NOT touched by
+any fix, as the work order requires.
+
+Re-audit scope readiness: plain-command Phase 0 now fails instructively;
+F1/F2 live-drill scenarios are automated; deepened doctor covers
+missing-object/parked/post-migrate; durability paths untouched.
+
 ## Resume-cold notes
 - **Every milestone in BUILD-PLAN.md (M0–M9) is complete.** What remains is
   operator work and future phases: the 30-handoff evaluation (DOGFOOD.md),
