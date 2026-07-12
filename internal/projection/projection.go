@@ -86,6 +86,12 @@ func Open(path string, bodyFetch BodyFetch) (*Projection, error) {
 
 func (p *Projection) Close() error { return p.db.Close() }
 
+// DBForTest exposes the raw handle for test fixtures ONLY.
+func (p *Projection) DBForTest() *sql.DB { return p.db }
+
+// IsSchemaVersionErr reports the typed schema-drift condition.
+func IsSchemaVersionErr(err error) bool { return errors.Is(err, ErrSchemaVersion) }
+
 // Checkpoint returns the last applied sequence for an origin (0 if none).
 func (p *Projection) Checkpoint(originDeviceID string, generation int) (int64, error) {
 	var seq int64

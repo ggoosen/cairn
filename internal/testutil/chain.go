@@ -20,6 +20,7 @@ type Chain struct {
 	CairnID  string
 	DeviceID string
 	DevPriv  ed25519.PrivateKey
+	RootPriv ed25519.PrivateKey
 	KeyID    string
 	NextSeq  int64
 	LastID   string
@@ -41,6 +42,7 @@ func NewChain(t *testing.T) (*Chain, *event.Envelope, []byte) {
 		CairnID:  "0190a1b2-c3d4-7e5f-8901-234567890abc",
 		DeviceID: "0190a1b2-c3d4-7e5f-8901-234567890def",
 		DevPriv:  devPriv,
+		RootPriv: rootPriv,
 		KeyID:    event.KeyID(devPub),
 	}
 	cert := identity.DeviceCert{
@@ -93,6 +95,43 @@ func (c *Chain) Event(t *testing.T, eventType, objectType, objectID string, payl
 	c.NextSeq++
 	c.LastID = env.EventID
 	return env, record
+}
+
+// AdmitNewDevice appends a device.add for a FRESH device to the given log
+// (signed by this chain's device; cert root-signed) and returns a chain for
+// the new device's own origin — the migrate shape at the log layer.
+func (c *Chain) AdmitNewDevice(t *testing.T, lg interface {
+	Append([]byte, *event.Envelope) error
+}) *Chain {
+	t.Helper()
+	newPub, newPriv, err := identity.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	newID := "0190a1b2-c3d4-7e5f-8901-23456789beef"
+	cert := identity.DeviceCert{
+		DeviceID:   newID,
+		Pubkey:     base64.StdEncoding.EncodeToString(newPub),
+		Generation: 1,
+		IssuedAt:   wallTime(c.clock + 1),
+	}
+	if err := cert.SignCert(c.RootPriv); err != nil {
+		t.Fatal(err)
+	}
+	env, rec := c.Event(t, "device.add", "device", newID, map[string]any{"cert": cert}, "operator")
+	if err := lg.Append(rec, env); err != nil {
+		t.Fatal(err)
+	}
+	return &Chain{
+		CairnID:  c.CairnID,
+		DeviceID: newID,
+		DevPriv:  newPriv,
+		RootPriv: c.RootPriv,
+		KeyID:    event.KeyID(newPub),
+		NextSeq:  1,
+		LastID:   "",
+		clock:    c.clock + 100,
+	}
 }
 
 // wallTime: deterministic, unique RFC3339 timestamps for replay-identity

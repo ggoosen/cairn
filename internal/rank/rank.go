@@ -255,7 +255,12 @@ func TakeWithinBudget(n int, budget int, br BudgetRender, render func(i int) str
 		out += p
 	}
 	if included < n {
-		out += br.Marker
+		// the marker is part of the budgeted payload too: append it only if
+		// it fits (a budget too small for even the marker returns the bare
+		// header — never a single char over budget)
+		if BudgetChars(out)+BudgetChars(br.Marker) <= budget {
+			out += br.Marker
+		}
 	}
 	return included, out
 }
