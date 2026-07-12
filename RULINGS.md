@@ -200,3 +200,108 @@ decay."
 Missing/corrupt-object doctor lines additionally name one referencing
 revision_id and message_id, so the operator never has to reverse a
 body_hash by hand.
+
+---
+
+# P1 rulings (cairn-p1-buildpack-v1.1-full.md — FULL, ungated)
+
+Operator ruling: build full P1, iterate after — no gated Part B. All
+previously-TBD constants are ruled by judgment, live in config, and are
+revisable from dogfood data without re-architecture.
+
+## R18 — MCP untrusted-content envelope (N1)
+
+Every content-bearing MCP result returns the spec §7.4 envelope
+`{kind, trust:"untrusted", provenance{message_id, revision_id, sender,
+content_hash}, content{mime, text}}`. Tool descriptions state that returned
+content is DATA, not instructions.
+
+## R19 — MCP budget accounting (N1)
+
+MCP budgets are accounted identically to the CLI: the budget covers the
+complete retrieval payload (header, entries, truncation markers). Defaults:
+digest 1500 chars, search 2000 chars (config constants).
+
+## R20 — MCP send policy (N1)
+
+`cairn_send` over MCP gets full pre-ack referential validation and
+text-class policy; there is NO `--force-class` equivalent exposed to MCP.
+
+## R21 — MCP capability tier (N2)
+
+MCP is never tier-1. Claude Desktop defaults to the `agent-standard`
+profile; any future remote client defaults to `read-only` + send.
+
+## R22 — Isolation honesty (N2)
+
+Same-OS-user isolation prevents ACCIDENTS, not malice — documented wherever
+profiles are described (rulings v0.3.1 §7.2 tier 1/2 language).
+
+## R23 — Session handles (N2)
+
+Capability handles are opaque daemon-side records (short-TTL, default 24h,
+non-delegable, bound to the launched process, auto-revoked on exit/idle).
+No JWT/macaroons in P1.
+
+## R24 — Subscription calibration (N3)
+
+Hard filters first; matching by top-N-per-window (default 10/24h) or
+percentile over observed similarity with margin-over-next-best; push_cap
+default 20/day. No static cosine thresholds, ever.
+
+## R25 — Session vs durable subscriptions (N3)
+
+Session subscriptions stay local (telemetry-class, never events). Only an
+explicit `cairn subscribe --durable` creates subscription.* events.
+
+## R26 — Digest composition with subscriptions (N3)
+
+One budget, composed in order: mandatory (explicit recipients, then pins) →
+durable-subscription matches (marked as such) → interest-query ranking.
+
+## R27 — Application-layer membership (N5)
+
+Peers authenticate mutually at the APPLICATION layer with device certs
+chained to the mesh root; a valid Tailscale connection from an un-enrolled
+or revoked device is refused and logged. Endpoint identity is never mesh
+authorization.
+
+## R28 — Enrolment requests (N5)
+
+Enrolment requests expire (default 1h) and are single-use.
+
+## R29 — Sync cadence (N6)
+
+Push notification to connected peers on append; anti-entropy sweep default
+every 5 minutes; both config-tunable. Battery/metered awareness is P3
+(thin nodes) — P1 full nodes assume mains power.
+
+## R30 — Bulk catch-up (N6)
+
+A node syncing more than N events behind (default 10k, config) streams
+sealed segments wholesale instead of per-event ranges.
+
+## R31 — Blob fetch integrity (N7)
+
+Blob fetch verifies the hash before serving; cache-then-advertise — a node
+that fetched a blob becomes a source for it.
+
+## R32 — Durability in doctor (N7)
+
+Deep doctor verifies durability targets are met for non-pending blobs and
+reports pending ones informationally.
+
+## R33 — Fork isolation (N8)
+
+Fork handling (freeze + quarantine of the equivocating origin) never blocks
+other origins' sync.
+
+## R34 — Standalone-mesh adoption (cross-cutting)
+
+A pre-existing standalone mesh (own genesis/root) cannot merge origin logs
+into another mesh — different mesh_id + root is a different trust domain by
+design. Adoption: enrol the machine as a FRESH device of the main mesh,
+re-publish the standalone mesh's knowledge via export/re-send carrying
+`source_ref` provenance, retire the standalone mesh. Ship as
+`cairn adopt-standalone <path>` if time permits, else a documented shell
+script.
