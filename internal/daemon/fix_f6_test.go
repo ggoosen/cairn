@@ -177,3 +177,64 @@ func timeAt(t *testing.T, s string) *testClock {
 }
 func (c *testClock) Now() time.Time     { return c.t }
 func (c *testClock) AdvanceHours(h int) { c.t = c.t.Add(time.Duration(h) * time.Hour) }
+
+// F8.1 regression: end-to-end expiry drill at TTL=30s — sub-hour TTLs are
+// auditable without waiting an hour.
+func TestF8SubMinuteTTLExpiryDrill(t *testing.T) {
+	dir := initCairn(t)
+	setTOMLKeyString(t, dir, "ephemeral_ttl", "30s")
+
+	clock := timeAt(t, "2026-07-12T00:00:00.000000Z")
+	d, err := daemon.Start(daemon.Options{Dir: dir, Now: clock.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	pub, err := d.Publish(daemon.PublishRequest{Actor: "operator", Body: "thirty second scratch", TextClass: "ephemeral"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 29s: alive
+	clock.t = clock.t.Add(29 * time.Second)
+	if deleted, err := d.Housekeep(); err != nil || len(deleted) != 0 {
+		t.Fatalf("expired early: %v %v", deleted, err)
+	}
+	if _, err := d.Fetch(pub.MessageID, "operator"); err != nil {
+		t.Fatalf("fetch before expiry: %v", err)
+	}
+	// 31s: expired — housekeep removes; fetch returns typed content_expired
+	clock.t = clock.t.Add(2 * time.Second)
+	deleted, err := d.Housekeep()
+	if err != nil || len(deleted) != 1 || deleted[0] != pub.BodyHash {
+		t.Fatalf("30s TTL not honored: %v %v", deleted, err)
+	}
+	fr, err := d.Fetch(pub.MessageID, "operator")
+	if err != nil || !fr.Expired {
+		t.Fatalf("expired fetch: %+v %v", fr, err)
+	}
+	// the event replays fine (log untouched)
+	if got := len(walkActive(t, dir)); got != 2 {
+		t.Fatalf("events: %d", got)
+	}
+}
+
+// setTOMLKeyString rewrites (or appends) a top-level string key.
+func setTOMLKeyString(t *testing.T, dir, key, value string) {
+	t.Helper()
+	path := filepath.Join(dir, "cairn.toml")
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept []string
+	for _, line := range strings.Split(string(blob), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), key) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	out := strings.Join(kept, "\n") + fmt.Sprintf("\n%s = %q\n", key, value)
+	if err := os.WriteFile(path, []byte(out), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

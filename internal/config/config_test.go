@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPortableConfigRoundTrip(t *testing.T) {
@@ -105,5 +106,64 @@ func TestDeviceStateDirOverride(t *testing.T) {
 	want := filepath.Join("/tmp/devstate", "abc", "device")
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestParseTTLDuration(t *testing.T) {
+	good := map[string]time.Duration{
+		"30s":   30 * time.Second,
+		"90m":   90 * time.Minute,
+		"1h":    time.Hour,
+		"7d":    7 * 24 * time.Hour,
+		"1d12h": 36 * time.Hour,
+		"0.5d":  12 * time.Hour,
+	}
+	for in, want := range good {
+		got, err := ParseTTLDuration(in)
+		if err != nil || got != want {
+			t.Errorf("ParseTTLDuration(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"", "d", "seven days", "-1h", "0s", "5x"} {
+		if _, err := ParseTTLDuration(bad); err == nil {
+			t.Errorf("ParseTTLDuration(%q) accepted", bad)
+		}
+	}
+}
+
+func TestPortableConfigDurationStrings(t *testing.T) {
+	dir := t.TempDir()
+	write := func(extra string) error {
+		body := "config_version = 1\ncairn_id = \"x\"\ncreated_at = \"t\"\n" + extra
+		if err := os.WriteFile(filepath.Join(dir, PortableConfigName), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := LoadPortable(dir)
+		return err
+	}
+	// duration strings parse and win
+	if err := write("ephemeral_ttl = \"30s\"\nhousekeep_interval = \"90m\"\n"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := LoadPortable(dir)
+	if cfg.EphemeralTTL() != 30*time.Second || cfg.HousekeepInterval() != 90*time.Minute {
+		t.Fatalf("resolved: %v %v", cfg.EphemeralTTL(), cfg.HousekeepInterval())
+	}
+	// legacy integer keys still work
+	if err := write("ephemeral_ttl_hours = 2\n"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ = LoadPortable(dir)
+	if cfg.EphemeralTTL() != 2*time.Hour {
+		t.Fatalf("legacy key: %v", cfg.EphemeralTTL())
+	}
+	// both forms → clear error
+	if err := write("ephemeral_ttl = \"1h\"\nephemeral_ttl_hours = 2\n"); err == nil ||
+		!strings.Contains(err.Error(), "BOTH") {
+		t.Fatalf("ambiguous config accepted: %v", err)
+	}
+	// unparseable string → clear error at load
+	if err := write("ephemeral_ttl = \"seven days\"\n"); err == nil {
+		t.Fatal("bad duration accepted")
 	}
 }

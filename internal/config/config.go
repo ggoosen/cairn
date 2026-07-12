@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -22,22 +25,70 @@ type PortableConfig struct {
 	DailyCanonicalBytes      int64 `toml:"daily_canonical_bytes,omitempty"`
 	PerMessageCanonicalBytes int64 `toml:"per_message_canonical_bytes,omitempty"`
 
-	// Ephemeral housekeeping tunables (RULINGS.md R10); zero → defaults
+	// Ephemeral housekeeping tunables (RULINGS.md R10, R13). Preferred form:
+	// duration strings supporting s/m/h and a d suffix ("30s", "90m", "7d",
+	// "1d12h"). The integer keys remain for backward compatibility; setting
+	// BOTH forms for the same knob is a config error. Zero/empty → defaults
 	// (EphemeralTTL = 7d, HousekeepInterval = 1h).
-	EphemeralTTLHours int64 `toml:"ephemeral_ttl_hours,omitempty"`
-	HousekeepMinutes  int64 `toml:"housekeep_minutes,omitempty"`
+	EphemeralTTLStr      string `toml:"ephemeral_ttl,omitempty"`
+	HousekeepIntervalStr string `toml:"housekeep_interval,omitempty"`
+	EphemeralTTLHours    int64  `toml:"ephemeral_ttl_hours,omitempty"`
+	HousekeepMinutes     int64  `toml:"housekeep_minutes,omitempty"`
 }
 
-// EphemeralTTL resolves the configured TTL (default from constants).
+// durationRe splits a leading day component ("7d", "1d12h") off a Go
+// duration string; time.ParseDuration handles the rest.
+var durationRe = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?)d(.*)$`)
+
+// ParseTTLDuration parses a duration string with day support (FIX-F8.1).
+func ParseTTLDuration(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, errors.New("empty duration")
+	}
+	var days time.Duration
+	if m := durationRe.FindStringSubmatch(s); m != nil {
+		f, err := strconv.ParseFloat(m[1], 64)
+		if err != nil {
+			return 0, fmt.Errorf("bad day component in %q: %w", s, err)
+		}
+		days = time.Duration(f * 24 * float64(time.Hour))
+		s = m[2]
+		if s == "" {
+			return days, nil
+		}
+	}
+	rest, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("bad duration %q (use Go durations plus optional d suffix, e.g. \"30s\", \"90m\", \"7d\", \"1d12h\"): %w", s, err)
+	}
+	if days+rest <= 0 {
+		return 0, fmt.Errorf("duration %q must be positive", s)
+	}
+	return days + rest, nil
+}
+
+// EphemeralTTL resolves the configured TTL: duration string wins, then the
+// legacy integer key, then the default. Validation happens in LoadPortable.
 func (c *PortableConfig) EphemeralTTL() time.Duration {
+	if c.EphemeralTTLStr != "" {
+		if d, err := ParseTTLDuration(c.EphemeralTTLStr); err == nil {
+			return d
+		}
+	}
 	if c.EphemeralTTLHours > 0 {
 		return time.Duration(c.EphemeralTTLHours) * time.Hour
 	}
 	return EphemeralTTLDefault
 }
 
-// HousekeepInterval resolves the sweep cadence (default from constants).
+// HousekeepInterval resolves the sweep cadence (same precedence).
 func (c *PortableConfig) HousekeepInterval() time.Duration {
+	if c.HousekeepIntervalStr != "" {
+		if d, err := ParseTTLDuration(c.HousekeepIntervalStr); err == nil {
+			return d
+		}
+	}
 	if c.HousekeepMinutes > 0 {
 		return time.Duration(c.HousekeepMinutes) * time.Minute
 	}
@@ -110,6 +161,23 @@ func LoadPortable(dir string) (*PortableConfig, error) {
 	}
 	if cfg.CairnID == "" {
 		return nil, errors.New("portable config missing cairn_id")
+	}
+	// FIX-F8.1: validate duration strings up front; refuse ambiguous configs
+	if cfg.EphemeralTTLStr != "" {
+		if _, err := ParseTTLDuration(cfg.EphemeralTTLStr); err != nil {
+			return nil, fmt.Errorf("cairn.toml ephemeral_ttl: %w", err)
+		}
+		if cfg.EphemeralTTLHours > 0 {
+			return nil, errors.New("cairn.toml sets BOTH ephemeral_ttl and ephemeral_ttl_hours — keep one (the duration-string form is preferred)")
+		}
+	}
+	if cfg.HousekeepIntervalStr != "" {
+		if _, err := ParseTTLDuration(cfg.HousekeepIntervalStr); err != nil {
+			return nil, fmt.Errorf("cairn.toml housekeep_interval: %w", err)
+		}
+		if cfg.HousekeepMinutes > 0 {
+			return nil, errors.New("cairn.toml sets BOTH housekeep_interval and housekeep_minutes — keep one (the duration-string form is preferred)")
+		}
 	}
 	return &cfg, nil
 }
