@@ -326,3 +326,28 @@ this boundary explicitly.
 Any stronger boundary — socket peer-credential binding, per-principal OS
 users, mandatory handles for ALL clients — is a P3 consideration and would
 change the tier-1 ergonomics ruling; it is out of P1 scope.
+
+## R36 — Subscription calibration mechanism (N3, interprets R24)
+
+R24 mandates relative calibration with no static cosine thresholds but
+leaves the mechanism open. Ruling (constants config-revisable per the
+buildpack preamble):
+
+- "Observed similarity" is the per-subscription HISTORY of similarities
+  seen across digest evaluations (last 1000, telemetry-class — local,
+  never events, survives projection rebuilds) combined with the current
+  candidate pool.
+- **top_n mode:** a candidate qualifies when its similarity clears the
+  observed noise floor — the lower quartile of the observed distribution —
+  by `SubMarginMin` (0.15). This is the "margin over next-best" clause:
+  matches must stand out from what the subscription typically sees.
+- **percentile mode:** a candidate qualifies at or above the subscription's
+  Pth percentile of the observed distribution (default P=90).
+- Window allowance (top-N-per-window, default 10/24h) and the daily
+  push_cap (default 20) TRUNCATE the qualifying set; they never widen it.
+  Only entries actually included in the budget-capped digest consume
+  allowance.
+- Edge rulings: a single candidate with no history passes (no relative
+  signal exists; hard filters and caps still govern); a uniform pool where
+  nothing stands out surfaces NOTHING — a relative calibrator cannot
+  certify it, and silence is the conservative failure mode.

@@ -197,3 +197,22 @@ After ≥30 handoffs: `cairn gates`. If product gates miss, the P0 ranking
 CONFIGURATION is falsified first — one documented tuning pass on held-out
 tasks (constants live in `internal/config/constants.go`) before any thesis
 conclusions (rulings §10).
+
+## 9. Durable subscriptions (P1 N3)
+
+Standing semantic interests that survive restarts and (post-N6) replicate:
+
+```sh
+cairn subscribe "council planning approval" --view roastery --durable
+cairn subscription list
+cairn subscription disable <id>       # stops delivery; history kept
+cairn subscription update <id> --base-revision <n> --query "..."
+```
+
+Matches surface in that view's next digest marked `[subscription]`, after
+recipients/pins, inside the same budget. Calibration is relative — no
+similarity thresholds to tune; caps default to 10 matches/24h and 20/day
+(flags: --mode, --top-n, --window-hours, --percentile, --push-cap).
+Without `--durable` the command just updates the view's LOCAL view.json
+(no events). Requires the real embedder (§2) for genuine semantic
+matching — the dev embedder only matches shared words.

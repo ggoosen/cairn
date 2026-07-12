@@ -992,3 +992,67 @@ behavior and recorded as **RULINGS.md R35** (env-cooperative confinement;
 R22 honesty; stronger binding is P3).
 
 Next: **N3 — durable semantic subscriptions** (after operator checkpoint).
+
+## N3 — Durable semantic subscriptions — COMPLETE
+
+Status: all acceptance criteria pass (full suite -count=1 green).
+Durable-log internals untouched. Not an operator-checkpoint milestone.
+
+- Events subscription.create/update/disable/delete (normative schemas in
+  build/schemas/p1-events.schema.json — new P1 file; the P0 schema file is
+  untouched). Update is base-revision optimistic (rulings v0.3.1 §2):
+  stale base rejects pre-ack; a mismatch at replay time errors and PARKS
+  loudly. Projection schema v3 (subscriptions table; existing derived DBs
+  auto-rebuild on open, as designed).
+- R24/R36 calibration: relative-only via the observed-similarity
+  distribution; see RULINGS.md R36 for the exact mechanism and edge
+  rulings. Iterated twice during TDD: a pure per-pool largest-gap rule
+  surfaced junk-above-junk once real matches were delivered; the
+  observed-distribution reference (what R24's "percentile over observed
+  similarity" actually says) fixed it.
+- R25: `cairn subscribe` defaults to the LOCAL tier (writes view.json, no
+  events — proven by next_seq unchanged); --durable is the only
+  event-creating path. Delivery + observation history in telemetry.sqlite.
+- R26: digest = mandatory → subscription matches (marked [subscription],
+  rank class between pins and interest ranking) → interest ranking, one
+  budget. Sub matches are NOT counted as omitted-mandatory; only included
+  entries consume window/cap allowance.
+- N2 interlock: subscription ops are admin capability — agent-standard
+  sessions are refused (tested).
+- Constants (judgment, config-revisable): SubTopNDefault 10/24h,
+  SubPercentileDefault 90, SubPushCapDefault 20/day, SubMarginMin 0.15.
+
+Acceptance evidence:
+- semantically matching send with NO shared keywords ("shire signed off on
+  the development application" vs query "council planning approval")
+  surfaces marked in the next digest; distractors unmarked; no
+  re-delivery (TestN3SemanticMatchSurfacesMarked, deterministic
+  synonym-stub embedder — proves the pipeline; semantic quality in
+  production is the embedder model's job)
+- cap enforced: top_n=1/push_cap=1 delivers exactly one of two matches and
+  nothing next digest (TestN3CapEnforcedAndDisableStopsDelivery)
+- disable stops delivery even for fresh matches (same test)
+- events replay cleanly through reindex: projection deleted, daemon
+  restart rebuilds from the log — subscription rows byte-identical
+  (including the optimistic-update revision), zero parked events, digest
+  still matches and marks (TestN3ReplayThroughReindex)
+- optimistic concurrency: stale base pre-ack rejection, revision bump,
+  re-used base rejection, unknown topic/sub/empty-query rejections
+  (TestN3OptimisticUpdateAndValidation)
+- calibration decision table pinned (rank.TestCalibrateSubscription)
+- CLI: local-vs-durable tier proof, list/disable round-trip, pre-ack
+  unknown-topic refusal, agent-standard capability refusal
+  (TestN3SubscribeLocalVsDurable)
+
+Deviations / notes:
+- Delivery metering is per-node (telemetry-class): after P1 networking
+  lands, each node meters its own digest deliveries — flagged for the N6
+  review rather than inventing cross-node semantics now.
+- BagOfWords dev embedder cannot pass the no-shared-keywords criterion by
+  construction; tests inject a deterministic synonym-stub embedder through
+  the standard Options.Embedder seam. Operator verification with the real
+  sentence-transformers model happens in dogfood.
+
+Commit: 0f62484 (+ docs commit).
+Next: **N4 — deterministic derivatives + receiver summary check** (F9
+bench --embedder real must ride along by N4 per the buildpack).
