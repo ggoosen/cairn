@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -19,20 +20,20 @@ import (
 
 // VerifyObjects walks every origin and checks each publish/revise body
 // reference against the object store (TESTING.md: missing referenced object
-// → doctor reports). Expired ephemeral objects are legitimate absences.
-func VerifyObjects(fsys fsx.FS, portableDir string, now time.Time) ([]string, error) {
+// → doctor reports). Expired ephemeral objects are legitimate absences,
+// reported INFORMATIONALLY (F3 ruling 2), never as failures.
+func VerifyObjects(fsys fsx.FS, portableDir string, now time.Time) (problems, infos []string, err error) {
 	store := object.NewStore(fsys, portableDir)
 	origins, err := cairnlog.Origins(fsys, portableDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var problems []string
 	type ref struct {
 		hash, class, created string
 	}
 	trust, err := identity.MeshTrust(fsys, portableDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var refs []ref
 	for _, o := range origins {
@@ -62,7 +63,7 @@ func VerifyObjects(fsys fsx.FS, portableDir string, now time.Time) ([]string, er
 				return nil
 			})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	for _, r := range refs {
@@ -74,11 +75,60 @@ func VerifyObjects(fsys fsx.FS, portableDir string, now time.Time) ([]string, er
 		}
 		created, err := time.Parse(time.RFC3339Nano, r.created)
 		expired := err == nil && r.class == object.ClassEphemeral && now.Sub(created) > config.EphemeralTTL
-		if !expired {
+		if expired {
+			infos = append(infos, fmt.Sprintf("ephemeral object %s expired (TTL); event preserved", r.hash))
+		} else {
 			problems = append(problems, fmt.Sprintf("referenced object %s missing (class %q) — not explainable by ephemeral expiry", r.hash, r.class))
 		}
 	}
-	return problems, nil
+	return problems, infos, nil
+}
+
+// DeepDoctor is the F3 doctor: log integrity (frames, hashes, signatures,
+// chains, seals) + projectability (checkpoint vs log head, zero parked
+// events) + object presence + cross-origin trust. Problems are FAILURE
+// conditions; infos (expired ephemerals, absent-but-rebuildable projection)
+// are not. The gates zero-loss row cites this.
+func DeepDoctor(fsys fsx.FS, portableDir, dbPath string, now time.Time) (problems, infos []string, err error) {
+	// 1. cross-origin trust (F3 ruling 3)
+	trust, terr := identity.MeshTrust(fsys, portableDir)
+	if terr != nil {
+		return []string{fmt.Sprintf("mesh trust unresolved: %v", terr)}, nil, nil
+	}
+
+	// 2. log integrity
+	doc, err := cairnlog.Doctor(fsys, portableDir, trust.Verifier())
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, o := range doc.Origins {
+		for _, p := range o.Problems {
+			problems = append(problems, fmt.Sprintf("log %s: %s", p.Segment, p.Detail))
+		}
+	}
+
+	// 3. object presence (F3 ruling 2)
+	objProblems, objInfos, err := VerifyObjects(fsys, portableDir, now)
+	if err != nil {
+		return nil, nil, err
+	}
+	problems = append(problems, objProblems...)
+	infos = append(infos, objInfos...)
+
+	// 4. projectability (F3 ruling 1): parked events + checkpoint drift.
+	// An ABSENT projection is rebuildable derived state (informational);
+	// a PRESENT projection must match the log and hold zero parked events.
+	if _, statErr := os.Stat(dbPath); statErr != nil {
+		infos = append(infos, "no projection database yet (start the daemon or run `cairn reindex --lexical`)")
+		return problems, infos, nil
+	}
+	projProblems, projInfos, err := DoctorProjection(portableDir, dbPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	problems = append(problems, projProblems...)
+	infos = append(infos, projInfos...)
+	return problems, infos, nil
 }
 
 // ProjectionDrift compares the projection checkpoint against the verified
@@ -122,14 +172,15 @@ func (d *Daemon) GatesReport(w io.Writer) error {
 		return err
 	}
 
-	// zero-loss proxy: doctor clean now (the full crash matrix runs in CI)
-	doc, err := cairnlog.Doctor(d.fs, d.dir, d.trust.Verifier())
+	// zero-loss: the DEEP doctor (log + projectability + objects + trust,
+	// FIX-F3); the full crash matrix runs in CI
+	deepProblems, _, err := DeepDoctor(d.fs, d.dir, projection.DBPath(d.dir), d.now())
 	if err != nil {
 		return err
 	}
-	zeroLoss := "PASS (doctor clean; crash matrix enforced in CI)"
-	if !doc.Clean() {
-		zeroLoss = "FAIL (doctor found problems)"
+	zeroLoss := "PASS (deep doctor clean: log+projection+objects+trust; crash matrix in CI)"
+	if len(deepProblems) > 0 {
+		zeroLoss = fmt.Sprintf("FAIL (deep doctor: %d problem(s), run `cairn doctor`)", len(deepProblems))
 	}
 
 	// provenance: every fetched manifest must reference a verifiable source
@@ -213,18 +264,21 @@ func (d *Daemon) GatesReport(w io.Writer) error {
 	return nil
 }
 
-// DoctorProjection inspects the derived projection (F1/F3): parked events
-// and checkpoint-vs-log drift are failure conditions.
-func DoctorProjection(portableDir, dbPath string) ([]string, error) {
+// DoctorProjection inspects the derived projection (F1/F3). Parked events
+// and a checkpoint AHEAD of the log are failures. A checkpoint BEHIND the
+// log with zero parked events is informational: parking guarantees the
+// projector can no longer stall silently, so "behind" is always
+// heal-by-replay (daemon start / reindex), e.g. after an offline migrate
+// appended security events. Interpretation recorded in RULINGS.md.
+func DoctorProjection(portableDir, dbPath string) (problems, infos []string, err error) {
 	p, err := projection.Open(dbPath, nil)
 	if err != nil {
-		return []string{fmt.Sprintf("projection unopenable: %v (run `cairn reindex --lexical`)", err)}, nil
+		return []string{fmt.Sprintf("projection unopenable: %v (run `cairn reindex --lexical`)", err)}, nil, nil
 	}
 	defer p.Close()
-	var problems []string
 	parked, err := p.ParkedEvents()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, pe := range parked {
 		problems = append(problems, fmt.Sprintf("parked event %s (%s, origin %s seq %d): %s",
@@ -232,11 +286,11 @@ func DoctorProjection(portableDir, dbPath string) ([]string, error) {
 	}
 	origins, err := cairnlog.Origins(fsx.OS{}, portableDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	trust, err := identity.MeshTrust(fsx.OS{}, portableDir)
 	if err != nil {
-		return append(problems, fmt.Sprintf("mesh trust unresolved: %v", err)), nil
+		return append(problems, fmt.Sprintf("mesh trust unresolved: %v", err)), nil, nil
 	}
 	for _, o := range origins {
 		report, err := cairnlog.Walk(fsx.OS{}, portableDir, o, trust.Verifier(), nil)
@@ -246,12 +300,17 @@ func DoctorProjection(portableDir, dbPath string) ([]string, error) {
 		}
 		ck, err := p.Checkpoint(o.DeviceID, o.Generation)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		if ck != report.NextSeq-1 {
-			problems = append(problems, fmt.Sprintf("projection drift: origin %s/%d checkpoint %d, log head %d",
-				o.DeviceID, o.Generation, ck, report.NextSeq-1))
+		head := report.NextSeq - 1
+		switch {
+		case ck > head:
+			problems = append(problems, fmt.Sprintf("projection checkpoint AHEAD of log: origin %s/%d checkpoint %d, log head %d",
+				o.DeviceID, o.Generation, ck, head))
+		case ck < head:
+			infos = append(infos, fmt.Sprintf("projection behind log by %d event(s) on origin %s/%d (heals on daemon start or reindex)",
+				head-ck, o.DeviceID, o.Generation))
 		}
 	}
-	return problems, nil
+	return problems, infos, nil
 }

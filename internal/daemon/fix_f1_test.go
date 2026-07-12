@@ -182,7 +182,7 @@ func TestF1UnprojectableEventIsParkedNotFatal(t *testing.T) {
 	}
 
 	// doctor flags parked events as a failure condition (F3 hook)
-	problems, err := daemon.DoctorProjection(dir, dbPath)
+	problems, _, err := daemon.DoctorProjection(dir, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}

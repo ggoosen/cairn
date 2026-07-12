@@ -379,13 +379,13 @@ func TestMissingObjectSurfaced(t *testing.T) {
 	}
 	d.Close()
 
-	problems, err := daemon.VerifyObjects(fsx.OS{}, dir, time.Now())
+	problems, _, err := daemon.VerifyObjects(fsx.OS{}, dir, time.Now())
 	if err != nil || len(problems) != 0 {
 		t.Fatalf("healthy store reported problems: %v %v", problems, err)
 	}
 	// delete the canonical object out from under the log
 	os.Remove(filepath.Join(dir, "objects", pub.BodyHash[:2], pub.BodyHash[2:]))
-	problems, err = daemon.VerifyObjects(fsx.OS{}, dir, time.Now())
+	problems, _, err = daemon.VerifyObjects(fsx.OS{}, dir, time.Now())
 	if err != nil || len(problems) == 0 {
 		t.Fatalf("missing canonical object not reported: %v %v", problems, err)
 	}
