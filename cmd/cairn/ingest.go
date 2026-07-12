@@ -94,5 +94,6 @@ func newIngestCmd(dirFlag *string) *cobra.Command {
 	apply.Flags().StringVar(&applyManifest, "manifest", "cairn-ingest-manifest.json", "manifest to apply")
 
 	cmd.AddCommand(scan, apply)
+	groupGuard(cmd)
 	return cmd
 }

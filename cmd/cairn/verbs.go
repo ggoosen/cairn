@@ -44,6 +44,18 @@ func printJSON(cmd *cobra.Command, v any) error {
 	return nil
 }
 
+// groupGuard (FIX-F5 ruling 3): a parent command invoked with an unknown
+// subcommand — or bare — exits NONZERO instead of printing help with exit 0.
+func groupGuard(cmd *cobra.Command) {
+	cmd.RunE = func(c *cobra.Command, args []string) error {
+		if len(args) > 0 {
+			return fmt.Errorf("unknown %s subcommand %q — see `cairn %s --help`", c.Name(), args[0], c.Name())
+		}
+		c.Help()
+		return fmt.Errorf("%s requires a subcommand", c.Name())
+	}
+}
+
 func timeNow() time.Time { return time.Now() }
 
 func newUUID() string {
@@ -193,6 +205,7 @@ func newRetractCmd(dirFlag *string) *cobra.Command {
 
 func newTopicCmd(dirFlag *string) *cobra.Command {
 	cmd := &cobra.Command{Use: "topic", Short: "Topic management"}
+	defer groupGuard(cmd)
 	cmd.AddCommand(&cobra.Command{
 		Use:   "create <name>",
 		Short: "Create a topic",
@@ -488,6 +501,7 @@ func newGatesCmd(dirFlag *string) *cobra.Command {
 
 func newReserveCmd(dirFlag *string) *cobra.Command {
 	cmd := &cobra.Command{Use: "reserve", Short: "Emergency reserve (64 MiB preallocated; rulings §11)"}
+	defer groupGuard(cmd)
 	cmd.AddCommand(&cobra.Command{
 		Use:   "status",
 		Short: "Show reserve and release-grant state",
