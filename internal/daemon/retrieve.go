@@ -337,6 +337,23 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 		}
 	}
 
+	// N3 (R26): durable-subscription matches come after mandatory, marked,
+	// inside the SAME budget. Hard filters, delivery history, windows and
+	// caps are all applied inside subscriptionMatches (R24).
+	subAttribution, err := d.subscriptionMatches(opts.AgentView, mandatory)
+	if err != nil {
+		return nil, err
+	}
+	for id := range subAttribution {
+		if _, ok := mandatory[id]; !ok {
+			mandatory[id] = "subscription"
+		}
+		if !inSet[id] {
+			candIDs = append(candIDs, id)
+			inSet[id] = true
+		}
+	}
+
 	// relevance: hybrid vs the interest query; none ⇒ R=1.0 uniformly
 	mode := "lexical_only"
 	lexRank := map[string]int{}
@@ -402,11 +419,23 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 
 	// mandatory overflow accounting (drop-oldest-first is the sort order:
 	// within a mandatory class newest sorts last by wall time? No — rank
-	// sorts newer first, so TakeWithinBudget keeps newest and drops oldest)
+	// sorts newer first, so TakeWithinBudget keeps newest and drops oldest).
+	// Subscription matches are NOT mandatory (R26): budget overflow drops
+	// them without alarm, and only INCLUDED matches consume window/cap
+	// allowance (recorded below).
 	omitted := 0
 	for i := included; i < len(scored); i++ {
-		if scored[i].Mandatory != "" {
+		if scored[i].Mandatory != "" && scored[i].Mandatory != "subscription" {
 			omitted++
+		}
+	}
+	if d.tel != nil {
+		for i := 0; i < included; i++ {
+			for _, subID := range subAttribution[scored[i].MessageID] {
+				if err := d.tel.RecordSubDelivery(subID, scored[i].MessageID, d.now()); err != nil {
+					fmt.Fprintf(d.warn, "WARNING: subscription delivery record: %v\n", err)
+				}
+			}
 		}
 	}
 

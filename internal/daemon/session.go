@@ -57,6 +57,12 @@ var opCapability = map[string]string{
 	"reserve-status": capAdmin, "emergency-publish": capAdmin,
 	"housekeep": capAdmin, "reindex-semantic": capAdmin,
 	"session-create": capAdmin, "session-revoke": capAdmin, "session-list": capAdmin,
+
+	// durable subscriptions are structural (N3): agent-standard cannot
+	// create or mutate them; the session tier (view.json) needs no daemon op
+	"subscribe-durable": capAdmin, "subscription-update": capAdmin,
+	"subscription-disable": capAdmin, "subscription-delete": capAdmin,
+	"subscription-list": capAdmin,
 }
 
 func capabilityFor(op string) string {

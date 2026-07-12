@@ -192,3 +192,23 @@ CREATE TABLE parked_events (
 -- NOTE: telemetry (interactions, impressions, outcomes) lives in a SEPARATE
 -- database (.cairn/telemetry.sqlite) per rulings §10 / spec §4.5 stream
 -- classes — never in the event log, never replicated.
+
+-- Durable semantic subscriptions (P1 N3; RULINGS.md R24/R25/R26).
+-- Rebuilt from subscription.* events; delivery history is telemetry-class
+-- (local, never events) and lives in telemetry.sqlite.
+CREATE TABLE subscriptions (
+  subscription_id TEXT PRIMARY KEY,      -- UUIDv7
+  owner_view TEXT NOT NULL,              -- digest view this sub feeds
+  interest_query TEXT NOT NULL,          -- raw NL, embedded locally at use
+  hard_topics TEXT NOT NULL DEFAULT '[]',-- JSON array of topic_ids (filter FIRST)
+  threshold_mode TEXT NOT NULL,          -- top_n | percentile (relative only)
+  top_n INTEGER NOT NULL,
+  window_hours INTEGER NOT NULL,
+  percentile INTEGER NOT NULL,
+  push_cap_per_day INTEGER NOT NULL,
+  revision INTEGER NOT NULL,             -- optimistic-concurrency counter
+  disabled INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  created_event_id TEXT NOT NULL
+);
+CREATE INDEX idx_subscriptions_view ON subscriptions(owner_view, disabled);

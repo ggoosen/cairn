@@ -87,5 +87,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newMCPCmd(&dir))
 	root.AddCommand(newRunCmd(&dir))
 	root.AddCommand(newSessionCmd(&dir))
+	root.AddCommand(newSubscribeCmd(&dir))
+	root.AddCommand(newSubscriptionCmd(&dir))
 	return root
 }

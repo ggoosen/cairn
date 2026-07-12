@@ -160,7 +160,7 @@ const (
 // ---------------------------------------------------------------------------
 
 const (
-	ProjectionSchemaVersion = 2 // v2: parked_events quarantine table (FIX-F1)
+	ProjectionSchemaVersion = 3 // v3: subscriptions (N3); v2: parked_events (FIX-F1)
 
 	// FTSTokenize: unicode61 with tokenchars `_ - # @` (rulings §6).
 	FTSTokenize = "unicode61 tokenchars '_-#@'"
@@ -254,6 +254,17 @@ const (
 	// MCPMaxLineBytes bounds one stdio JSON-RPC message (N1). Matches the
 	// IPC bound: the MCP layer never carries more than one IPC payload.
 	MCPMaxLineBytes = 32 << 20
+
+	// Durable semantic subscriptions (N3, RULINGS.md R24): calibration is
+	// RELATIVE — top-N-per-window or percentile over observed similarity,
+	// with a margin over the next-best candidate at the inclusion boundary.
+	// No static cosine thresholds, ever. All buildpack-judgment values,
+	// revisable from dogfood data.
+	SubTopNDefault        = 10 // top_n mode: matches per window
+	SubWindowHoursDefault = 24
+	SubPercentileDefault  = 90   // percentile mode: include above this pool percentile
+	SubPushCapDefault     = 20   // deliveries per day per subscription
+	SubMarginMin          = 0.15 // required gap over the observed noise floor (q25)
 
 	// Capability sessions (N2, RULINGS.md R23): opaque daemon-side handles,
 	// short-TTL, non-delegable, auto-revoked on exit/idle. TTL and idle

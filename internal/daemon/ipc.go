@@ -63,6 +63,11 @@ type Request struct {
 	Body       string `json:"body,omitempty"`
 	SourcePath string `json:"source_path,omitempty"`
 
+	// durable subscriptions (N3)
+	Subscribe      *SubscribeRequest `json:"subscribe,omitempty"`
+	SubUpdate      *SubUpdateRequest `json:"sub_update,omitempty"`
+	SubscriptionID string            `json:"subscription_id,omitempty"`
+
 	// reads
 	Query            string `json:"query,omitempty"`
 	K                int    `json:"k,omitempty"`
@@ -74,21 +79,23 @@ type Request struct {
 
 // Response is the IPC reply.
 type Response struct {
-	OK         bool                      `json:"ok"`
-	Error      string                    `json:"error,omitempty"`
-	Publish    *PublishResult            `json:"publish,omitempty"`
-	EventID    string                    `json:"event_id,omitempty"`
-	Results    []projection.SearchResult `json:"results,omitempty"`
-	Search     *SearchOutput             `json:"search,omitempty"`
-	Digest     *DigestOutput             `json:"digest,omitempty"`
-	Text       string                    `json:"text,omitempty"`
-	Message    *projection.MessageInfo   `json:"message,omitempty"`
-	Fetched    *FetchResult              `json:"fetched,omitempty"`
-	Ingest     *IngestResult             `json:"ingest,omitempty"`
-	TopicID    string                    `json:"topic_id,omitempty"`
-	Path       string                    `json:"path,omitempty"`
-	MessageID2 string                    `json:"message_id,omitempty"`
-	Status     map[string]any            `json:"status,omitempty"`
+	OK         bool                         `json:"ok"`
+	Error      string                       `json:"error,omitempty"`
+	Publish    *PublishResult               `json:"publish,omitempty"`
+	EventID    string                       `json:"event_id,omitempty"`
+	Results    []projection.SearchResult    `json:"results,omitempty"`
+	Search     *SearchOutput                `json:"search,omitempty"`
+	Digest     *DigestOutput                `json:"digest,omitempty"`
+	Text       string                       `json:"text,omitempty"`
+	Message    *projection.MessageInfo      `json:"message,omitempty"`
+	Fetched    *FetchResult                 `json:"fetched,omitempty"`
+	Ingest     *IngestResult                `json:"ingest,omitempty"`
+	TopicID    string                       `json:"topic_id,omitempty"`
+	Path       string                       `json:"path,omitempty"`
+	MessageID2 string                       `json:"message_id,omitempty"`
+	Status     map[string]any               `json:"status,omitempty"`
+	Subs       []projection.SubscriptionRow `json:"subscriptions,omitempty"`
+	Sub        *SubscribeResult             `json:"subscription,omitempty"`
 }
 
 // SocketPath returns the daemon's unix socket location: short, deterministic
@@ -235,6 +242,49 @@ func (d *Daemon) dispatch(req Request) Response {
 
 	case "session-list":
 		return Response{OK: true, Status: map[string]any{"sessions": d.sessions.list()}}
+
+	case "subscribe-durable":
+		if req.Subscribe == nil {
+			return fail(errors.New("subscribe payload missing"))
+		}
+		req.Subscribe.Actor = req.Actor
+		res, err := d.SubscribeDurable(*req.Subscribe)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Sub: res}
+
+	case "subscription-update":
+		if req.SubUpdate == nil {
+			return fail(errors.New("sub_update payload missing"))
+		}
+		req.SubUpdate.Actor = req.Actor
+		res, err := d.SubscriptionUpdate(*req.SubUpdate)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Sub: res}
+
+	case "subscription-disable":
+		id, err := d.SubscriptionDisable(req.SubscriptionID, req.Actor)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, EventID: id}
+
+	case "subscription-delete":
+		id, err := d.SubscriptionDelete(req.SubscriptionID, req.Actor)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, EventID: id}
+
+	case "subscription-list":
+		subs, err := d.proj.Subscriptions(req.AgentView, false)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Subs: subs}
 
 	case "publish":
 		if req.Publish == nil {

@@ -47,6 +47,17 @@ CREATE TABLE IF NOT EXISTS latencies (
   micros INTEGER NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sub_observations (
+  subscription_id TEXT NOT NULL,      -- N3 (R24): observed similarity history
+  sim_bp INTEGER NOT NULL,            -- cosine in basis points (integers only)
+  observed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sub_deliveries (
+  subscription_id TEXT NOT NULL,      -- N3: delivery history is telemetry-class (R25)
+  message_id TEXT NOT NULL,
+  delivered_at TEXT NOT NULL,
+  PRIMARY KEY (subscription_id, message_id)
+);
 `
 
 // Store is the telemetry database.
@@ -242,4 +253,85 @@ func nz(s string) any {
 		return nil
 	}
 	return s
+}
+
+// --- durable-subscription delivery tracking (N3; R24 window/cap math) -------
+// Local-only: caps and windows survive projection rebuilds but are never
+// replicated — each node meters its own digest deliveries.
+
+// RecordSubDelivery marks one message as delivered for a subscription.
+func (s *Store) RecordSubDelivery(subscriptionID, messageID string, at time.Time) error {
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO sub_deliveries(subscription_id, message_id, delivered_at) VALUES (?,?,?)`,
+		subscriptionID, messageID, at.UTC().Format(config.WallTimeFormat))
+	return err
+}
+
+// SubDelivered returns every message already delivered for a subscription.
+func (s *Store) SubDelivered(subscriptionID string) (map[string]bool, error) {
+	rows, err := s.db.Query(`SELECT message_id FROM sub_deliveries WHERE subscription_id=?`, subscriptionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
+// SubDeliveredSince counts deliveries at or after the given instant
+// (window allowance and daily push-cap math).
+func (s *Store) SubDeliveredSince(subscriptionID string, since time.Time) (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT count(*) FROM sub_deliveries WHERE subscription_id=? AND delivered_at >= ?`,
+		subscriptionID, since.UTC().Format(config.WallTimeFormat)).Scan(&n)
+	return n, err
+}
+
+// RecordSubObservations appends the similarities a subscription observed in
+// one digest evaluation (basis points). The observed distribution is the
+// R24 calibration reference — relative, never a static threshold.
+func (s *Store) RecordSubObservations(subscriptionID string, simsBP []int, at time.Time) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	ts := at.UTC().Format(config.WallTimeFormat)
+	for _, bp := range simsBP {
+		if _, err := tx.Exec(`INSERT INTO sub_observations(subscription_id, sim_bp, observed_at) VALUES (?,?,?)`,
+			subscriptionID, bp, ts); err != nil {
+			return err
+		}
+	}
+	// bound history: keep the most recent 1000 observations per subscription
+	if _, err := tx.Exec(`DELETE FROM sub_observations WHERE subscription_id=? AND rowid NOT IN
+		(SELECT rowid FROM sub_observations WHERE subscription_id=? ORDER BY observed_at DESC, rowid DESC LIMIT 1000)`,
+		subscriptionID, subscriptionID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SubObservedSims returns the recorded similarity history (as float64).
+func (s *Store) SubObservedSims(subscriptionID string) ([]float64, error) {
+	rows, err := s.db.Query(`SELECT sim_bp FROM sub_observations WHERE subscription_id=?`, subscriptionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []float64
+	for rows.Next() {
+		var bp int
+		if err := rows.Scan(&bp); err != nil {
+			return nil, err
+		}
+		out = append(out, float64(bp)/10000)
+	}
+	return out, rows.Err()
 }

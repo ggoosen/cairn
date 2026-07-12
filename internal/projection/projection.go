@@ -407,6 +407,134 @@ func (p *Projection) applyPayload(tx *sql.Tx, env *event.Envelope) error {
 			env.EventID, pl.MessageID, pl.Kind, pl.Weight, nullable(env.ActorPrincipalID), env.WallTime)
 		return err
 
+	// --- durable semantic subscriptions (P1 N3; R24/R25) --------------------
+
+	case "subscription.create":
+		var pl struct {
+			SubscriptionID string   `json:"subscription_id"`
+			OwnerView      string   `json:"owner_view"`
+			InterestQuery  string   `json:"interest_query"`
+			HardTopics     []string `json:"hard_topics,omitempty"`
+			ThresholdMode  string   `json:"threshold_mode"`
+			TopN           int64    `json:"top_n"`
+			WindowHours    int64    `json:"window_hours"`
+			Percentile     int64    `json:"percentile"`
+			PushCapPerDay  int64    `json:"push_cap_per_day"`
+		}
+		if err := json.Unmarshal(env.Payload, &pl); err != nil {
+			return err
+		}
+		topics, err := json.Marshal(pl.HardTopics)
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(`INSERT INTO subscriptions(subscription_id, owner_view, interest_query,
+				hard_topics, threshold_mode, top_n, window_hours, percentile, push_cap_per_day,
+				revision, disabled, created_at, created_event_id)
+			VALUES (?,?,?,?,?,?,?,?,?,1,0,?,?)`,
+			pl.SubscriptionID, pl.OwnerView, pl.InterestQuery, string(topics), pl.ThresholdMode,
+			pl.TopN, pl.WindowHours, pl.Percentile, pl.PushCapPerDay, env.WallTime, env.EventID)
+		return err
+
+	case "subscription.update":
+		// base-revision optimistic update (rulings v0.3.1 §2): a stale base
+		// is rejected pre-ack on the writing node; a mismatch at replay time
+		// is a genuine anomaly — the error PARKS the event loudly (R4.3).
+		var pl struct {
+			SubscriptionID string   `json:"subscription_id"`
+			BaseRevision   int64    `json:"base_revision"`
+			InterestQuery  *string  `json:"interest_query,omitempty"`
+			HardTopics     []string `json:"hard_topics,omitempty"`
+			ThresholdMode  *string  `json:"threshold_mode,omitempty"`
+			TopN           *int64   `json:"top_n,omitempty"`
+			WindowHours    *int64   `json:"window_hours,omitempty"`
+			Percentile     *int64   `json:"percentile,omitempty"`
+			PushCapPerDay  *int64   `json:"push_cap_per_day,omitempty"`
+			Disabled       *bool    `json:"disabled,omitempty"` // re-enable path
+		}
+		if err := json.Unmarshal(env.Payload, &pl); err != nil {
+			return err
+		}
+		var cur int64
+		if err := tx.QueryRow(`SELECT revision FROM subscriptions WHERE subscription_id=?`,
+			pl.SubscriptionID).Scan(&cur); err != nil {
+			return fmt.Errorf("subscription %s not found", pl.SubscriptionID)
+		}
+		if cur != pl.BaseRevision {
+			return fmt.Errorf("subscription %s base_revision %d != current %d",
+				pl.SubscriptionID, pl.BaseRevision, cur)
+		}
+		set := func(col string, v any) error {
+			_, err := tx.Exec(`UPDATE subscriptions SET `+col+`=? WHERE subscription_id=?`, v, pl.SubscriptionID)
+			return err
+		}
+		if pl.InterestQuery != nil {
+			if err := set("interest_query", *pl.InterestQuery); err != nil {
+				return err
+			}
+		}
+		if pl.HardTopics != nil {
+			topics, err := json.Marshal(pl.HardTopics)
+			if err != nil {
+				return err
+			}
+			if err := set("hard_topics", string(topics)); err != nil {
+				return err
+			}
+		}
+		if pl.ThresholdMode != nil {
+			if err := set("threshold_mode", *pl.ThresholdMode); err != nil {
+				return err
+			}
+		}
+		if pl.TopN != nil {
+			if err := set("top_n", *pl.TopN); err != nil {
+				return err
+			}
+		}
+		if pl.WindowHours != nil {
+			if err := set("window_hours", *pl.WindowHours); err != nil {
+				return err
+			}
+		}
+		if pl.Percentile != nil {
+			if err := set("percentile", *pl.Percentile); err != nil {
+				return err
+			}
+		}
+		if pl.PushCapPerDay != nil {
+			if err := set("push_cap_per_day", *pl.PushCapPerDay); err != nil {
+				return err
+			}
+		}
+		if pl.Disabled != nil {
+			if err := set("disabled", boolInt(*pl.Disabled)); err != nil {
+				return err
+			}
+		}
+		_, err := tx.Exec(`UPDATE subscriptions SET revision=revision+1 WHERE subscription_id=?`, pl.SubscriptionID)
+		return err
+
+	case "subscription.disable":
+		var pl struct {
+			SubscriptionID string `json:"subscription_id"`
+		}
+		if err := json.Unmarshal(env.Payload, &pl); err != nil {
+			return err
+		}
+		_, err := tx.Exec(`UPDATE subscriptions SET disabled=1, revision=revision+1 WHERE subscription_id=?`, pl.SubscriptionID)
+		return err
+
+	case "subscription.delete":
+		var pl struct {
+			SubscriptionID string `json:"subscription_id"`
+		}
+		if err := json.Unmarshal(env.Payload, &pl); err != nil {
+			return err
+		}
+		_, err := tx.Exec(`DELETE FROM subscriptions WHERE subscription_id=?`, pl.SubscriptionID)
+		return err
+
 	case "cairn.genesis":
 		var pl struct {
 			CairnID string `json:"cairn_id"`

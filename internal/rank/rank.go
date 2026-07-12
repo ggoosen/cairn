@@ -197,9 +197,61 @@ func mandatoryClass(m string) int {
 		return 0
 	case "pin":
 		return 1
-	default:
+	case "subscription": // N3 (R26): after mandatory, before interest ranking
 		return 2
+	default:
+		return 3
 	}
+}
+
+// CalibrateSubscription decides how many of the similarity-sorted candidates
+// a durable subscription surfaces (N3, RULINGS.md R24). Calibration is
+// RELATIVE only — no static cosine thresholds. The reference distribution is
+// everything this subscription has OBSERVED: its recorded similarity history
+// plus the current pool. A candidate qualifies when it stands out from that
+// distribution:
+//
+//   - top_n mode: sim ≥ lower-quartile(observed) + margin — it must clear
+//     the observed NOISE FLOOR by a clear gap ("margin over next-best"),
+//     capped at the remaining window allowance;
+//   - percentile mode: sim ≥ the Pth percentile of the observed
+//     distribution, capped at the allowance.
+//
+// A single candidate with NO history has no relative signal at all and
+// passes — hard filters, windows, and caps still govern it. A uniform pool
+// (nothing stands out from what has been observed) surfaces nothing: a
+// relative calibrator cannot certify a pool without structure.
+func CalibrateSubscription(sims, observed []float64, allowance int, mode string, percentile int, margin float64) int {
+	n := len(sims)
+	if n == 0 || allowance <= 0 {
+		return 0
+	}
+	if n == 1 && len(observed) == 0 {
+		return 1
+	}
+	combined := make([]float64, 0, n+len(observed))
+	combined = append(combined, sims...)
+	combined = append(combined, observed...)
+	sort.Float64s(combined) // ascending
+
+	var ref float64
+	if mode == "percentile" {
+		idx := len(combined) * percentile / 100
+		if idx >= len(combined) {
+			idx = len(combined) - 1
+		}
+		ref = combined[idx]
+	} else {
+		ref = combined[len(combined)/4] + margin // noise floor (q25) + margin
+	}
+	included := 0
+	for included < n && sims[included] >= ref {
+		included++
+	}
+	if included > allowance {
+		included = allowance
+	}
+	return included
 }
 
 // Dec renders a float as the decimal string stored in rank_explanations —

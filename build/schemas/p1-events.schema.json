@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cairn/p1-events/v1",
+  "title": "Cairn P1 event payloads (N3 durable subscriptions)",
+  "description": "Normative payload schemas for P1 subscription.* events (buildpack v1.1 N3; RULINGS.md R24/R25). Same envelope and canonicalization rules as p0-events: no floats, integers and RFC 3339 UTC strings only. Calibration margins are LOCAL config, never event payload (no static thresholds, R24).",
+  "$defs": {
+    "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+    "subscription.create": {
+      "type": "object",
+      "required": ["subscription_id", "owner_view", "interest_query", "threshold_mode", "top_n", "window_hours", "percentile", "push_cap_per_day"],
+      "additionalProperties": false,
+      "properties": {
+        "subscription_id": { "$ref": "#/$defs/uuid" },
+        "owner_view": { "type": "string", "minLength": 1 },
+        "interest_query": { "type": "string", "minLength": 1, "description": "raw natural language; embedded locally at use, never in the event" },
+        "hard_topics": { "type": "array", "items": { "$ref": "#/$defs/uuid" }, "description": "topic_ids, applied FIRST (R24); must exist pre-ack, never auto-created" },
+        "threshold_mode": { "enum": ["top_n", "percentile"] },
+        "top_n": { "type": "integer", "minimum": 1 },
+        "window_hours": { "type": "integer", "minimum": 1 },
+        "percentile": { "type": "integer", "minimum": 1, "maximum": 99 },
+        "push_cap_per_day": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "subscription.update": {
+      "type": "object",
+      "required": ["subscription_id", "base_revision"],
+      "additionalProperties": false,
+      "properties": {
+        "subscription_id": { "$ref": "#/$defs/uuid" },
+        "base_revision": { "type": "integer", "minimum": 1, "description": "optimistic concurrency (rulings v0.3.1 §2): stale base rejects pre-ack; replay mismatch parks" },
+        "interest_query": { "type": "string", "minLength": 1 },
+        "hard_topics": { "type": "array", "items": { "$ref": "#/$defs/uuid" } },
+        "threshold_mode": { "enum": ["top_n", "percentile"] },
+        "top_n": { "type": "integer", "minimum": 1 },
+        "window_hours": { "type": "integer", "minimum": 1 },
+        "percentile": { "type": "integer", "minimum": 1, "maximum": 99 },
+        "push_cap_per_day": { "type": "integer", "minimum": 1 },
+        "disabled": { "type": "boolean", "description": "false re-enables a disabled subscription" }
+      }
+    },
+    "subscription.disable": {
+      "type": "object",
+      "required": ["subscription_id"],
+      "additionalProperties": false,
+      "properties": { "subscription_id": { "$ref": "#/$defs/uuid" } }
+    },
+    "subscription.delete": {
+      "type": "object",
+      "required": ["subscription_id"],
+      "additionalProperties": false,
+      "properties": { "subscription_id": { "$ref": "#/$defs/uuid" } }
+    }
+  }
+}
