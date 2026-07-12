@@ -277,6 +277,89 @@ func (d *Daemon) appendRevision(messageID string, bodies [][2]any, machineMerged
 	return res, nil
 }
 
+// Link adds a topic link with pre-ack referential validation (FIX-F1):
+// message and topic must resolve (topic by id or name); unknown → reject
+// before anything is appended.
+func (d *Daemon) Link(messageID, topicRef string, protected bool, actor string) (string, error) {
+	if _, err := d.proj.MessageInfo(messageID); err != nil {
+		return "", fmt.Errorf("rejected before ack: %w", err)
+	}
+	d.mu.Lock()
+	topicID, _, err := d.resolveTopic(topicRef)
+	d.mu.Unlock()
+	if err != nil {
+		return "", fmt.Errorf("rejected before ack: %w (create it with `cairn topic create` or use `cairn send --topic`)", err)
+	}
+	payload := map[string]any{"link_id": d.newUUID(), "message_id": messageID, "topic_id": topicID}
+	if protected {
+		payload["protected"] = true
+	}
+	return d.SimpleEvent("topic.link.add", "link", payload["link_id"].(string), payload, PublishRequest{Actor: actor})
+}
+
+// Unlink removes an observed link assertion; the assertion must exist.
+func (d *Daemon) Unlink(linkID, actor string) (string, error) {
+	active, err := d.proj.LinkActive(linkID)
+	if err != nil {
+		return "", err
+	}
+	if !active {
+		return "", fmt.Errorf("rejected before ack: no active link %s", linkID)
+	}
+	return d.SimpleEvent("topic.link.remove", "link", linkID,
+		map[string]any{"removed_link_ids": []string{linkID}}, PublishRequest{Actor: actor})
+}
+
+// Signal validates the target message before ack.
+func (d *Daemon) Signal(messageID, kind string, weight int, actor string) (string, error) {
+	if _, err := d.proj.MessageInfo(messageID); err != nil {
+		return "", fmt.Errorf("rejected before ack: %w", err)
+	}
+	payload := map[string]any{"message_id": messageID, "kind": kind}
+	if weight > 0 {
+		payload["weight"] = weight
+	}
+	return d.SimpleEvent("signal.emit", "message", messageID, payload, PublishRequest{Actor: actor})
+}
+
+// Pin validates the object exists before ack.
+func (d *Daemon) Pin(objectHash, durability, actor string) (string, error) {
+	if !d.store.Exists(objectHash) {
+		return "", fmt.Errorf("rejected before ack: object %s not found in the store", objectHash)
+	}
+	pinID := d.newUUID()
+	return d.SimpleEvent("blob.pin", "pin", pinID,
+		map[string]any{"pin_id": pinID, "principal_id": actorOr(actor), "object_hash": objectHash, "durability": durability},
+		PublishRequest{Actor: actor})
+}
+
+// Unpin validates the pin exists and is active.
+func (d *Daemon) Unpin(pinID, actor string) (string, error) {
+	active, err := d.proj.PinActiveByID(pinID)
+	if err != nil {
+		return "", err
+	}
+	if !active {
+		return "", fmt.Errorf("rejected before ack: no active pin %s", pinID)
+	}
+	return d.SimpleEvent("blob.unpin", "pin", pinID,
+		map[string]any{"pin_ids": []string{pinID}}, PublishRequest{Actor: actor})
+}
+
+func actorOr(a string) string {
+	if a == "" {
+		return "operator"
+	}
+	return a
+}
+
+// SimpleEventUnvalidatedForTest bypasses pre-ack referential validation —
+// ONLY for injecting historical poison events in the parking regression
+// tests (the F1 defense-in-depth path).
+func (d *Daemon) SimpleEventUnvalidatedForTest(eventType, objectType, objectID string, payload map[string]any) (string, error) {
+	return d.SimpleEvent(eventType, objectType, objectID, payload, PublishRequest{Actor: "test"})
+}
+
 // Revise appends one normal revision with the CURRENT head as base (the
 // M9 ingest update path — base==head by construction, so no merge arises).
 func (d *Daemon) Revise(messageID, body string) (*IngestResult, error) {

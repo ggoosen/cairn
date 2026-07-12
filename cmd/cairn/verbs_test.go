@@ -26,6 +26,11 @@ func startTestDaemon(t *testing.T, dir string) {
 		cancel()
 		d.Close()
 	})
+	waitForSocket(t, dir)
+}
+
+func waitForSocket(t *testing.T, dir string) {
+	t.Helper()
 	loaded, err := identity.Load(dir)
 	if err != nil {
 		t.Fatal(err)

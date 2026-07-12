@@ -239,7 +239,7 @@ func TestReindexByteIdentical(t *testing.T) {
 	}
 
 	// live build (as the daemon would apply)
-	if err := projection.ReindexLexical(m, "/p", dbPath, func() cairnlog.VerifyFunc {
+	if _, err := projection.ReindexLexical(m, "/p", dbPath, func() cairnlog.VerifyFunc {
 		return identity.NewChainVerifier().Verify
 	}, projection.StoreBodyFetch(store)); err != nil {
 		t.Fatal(err)
@@ -255,7 +255,7 @@ func TestReindexByteIdentical(t *testing.T) {
 	os.Remove(dbPath)
 	os.Remove(dbPath + "-wal")
 	os.Remove(dbPath + "-shm")
-	if err := projection.ReindexLexical(m, "/p", dbPath, func() cairnlog.VerifyFunc {
+	if _, err := projection.ReindexLexical(m, "/p", dbPath, func() cairnlog.VerifyFunc {
 		return identity.NewChainVerifier().Verify
 	}, projection.StoreBodyFetch(store)); err != nil {
 		t.Fatal(err)

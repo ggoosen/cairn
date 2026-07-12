@@ -280,7 +280,7 @@ func Apply(call Caller, m *Manifest, now time.Time) (*Report, error) {
 				Body:      string(body),
 				TextClass: m.TextClass,
 				MessageID: e.MessageID,
-				TopicIDs:  ids,
+				Topics:    ids, // pre-resolved via topic-ensure
 				SourceRef: &daemon.SourceRef{
 					Path:        m.Repo + "/" + e.Path,
 					Repo:        m.Repo,

@@ -46,12 +46,16 @@ func newReindexCmd(dirFlag *string) *cobra.Command {
 			if lexical {
 				fsys := fsx.OS{}
 				store := object.NewStore(fsys, dir)
-				if err := projection.ReindexLexical(fsys, dir, projection.DBPath(dir),
+				report, err := projection.ReindexLexical(fsys, dir, projection.DBPath(dir),
 					func() cairnlog.VerifyFunc { return identity.NewChainVerifier().Verify },
-					projection.StoreBodyFetch(store)); err != nil {
+					projection.StoreBodyFetch(store))
+				if err != nil {
 					return err
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "lexical projection rebuilt at %s\n", projection.DBPath(dir))
+				fmt.Fprintf(cmd.OutOrStdout(), "lexical projection rebuilt at %s (%d events)\n", projection.DBPath(dir), report.Events)
+				if report.Parked > 0 {
+					fmt.Fprintf(cmd.ErrOrStderr(), "\nATTENTION: %d event(s) PARKED (failed to project). Run `cairn doctor` for details.\n", report.Parked)
+				}
 			}
 			return nil
 		},

@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 
@@ -24,6 +25,10 @@ import (
 
 //go:embed schema.sql
 var schemaSQL string
+
+// ErrSchemaVersion: the on-disk projection predates this build. The
+// projection is derived — callers rebuild it (delete + replay/reindex).
+var ErrSchemaVersion = errors.New("projection schema version mismatch")
 
 // BodyFetch resolves a body_hash to indexable text. ok=false means the body
 // is unavailable (e.g. expired ephemeral) — the revision is simply not
@@ -73,7 +78,7 @@ func Open(path string, bodyFetch BodyFetch) (*Projection, error) {
 		}
 		if v != fmt.Sprintf("%d", config.ProjectionSchemaVersion) {
 			db.Close()
-			return nil, fmt.Errorf("projection schema version %s (want %d): run cairn reindex", v, config.ProjectionSchemaVersion)
+			return nil, fmt.Errorf("%w: found %s, want %d", ErrSchemaVersion, v, config.ProjectionSchemaVersion)
 		}
 	}
 	return p, nil
@@ -125,8 +130,26 @@ func (p *Projection) Apply(env *event.Envelope, _ []byte) error {
 		return fmt.Errorf("events insert for %s: %w", env.EventID, err)
 	}
 
-	if err := p.applyPayload(tx, env); err != nil {
-		return fmt.Errorf("projecting %s %s: %w", env.EventType, env.EventID, err)
+	// F1 ruling 3 (defense in depth): a payload that cannot project is
+	// PARKED — quarantined in the same transaction — and the stream
+	// continues. The projector never stalls; the log is never touched.
+	if _, err := tx.Exec(`SAVEPOINT payload`); err != nil {
+		return err
+	}
+	if perr := p.applyPayload(tx, env); perr != nil {
+		if _, err := tx.Exec(`ROLLBACK TO payload`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO parked_events
+				(event_id, origin_device_id, origin_generation, origin_sequence, event_type, error, parked_at)
+				VALUES (?,?,?,?,?,?,?)`,
+			env.EventID, env.OriginDeviceID, env.OriginGeneration, env.OriginSequence,
+			env.EventType, perr.Error(), time.Now().UTC().Format(config.WallTimeFormat)); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`RELEASE payload`); err != nil {
+		return err
 	}
 
 	if _, err := tx.Exec(`INSERT INTO checkpoint(origin_device_id, origin_generation, last_applied_sequence, last_applied_event_id)

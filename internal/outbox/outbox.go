@@ -158,7 +158,7 @@ func (w *Watcher) processBundle(bundleDir string) error {
 		ThreadID:         req.ThreadID,
 		ReplyToMessageID: req.ReplyToMessageID,
 		Recipients:       req.Recipients,
-		TopicIDs:         req.TopicIDs,
+		Topics:           req.TopicIDs, // resolve-only: outbox callers never auto-create (FIX-F1)
 		// OperatorOverride deliberately impossible from the outbox (rulings §5)
 	})
 	if err != nil {
@@ -204,7 +204,7 @@ func (w *Watcher) processMarkdown(path string) error {
 		DeclaredPriority: fm.DeclaredPriority,
 		MessageID:        fm.MessageID,
 		ReplyToMessageID: fm.ReplyToMessageID,
-		TopicIDs:         fm.TopicIDs,
+		Topics:           fm.TopicIDs, // resolve-only (FIX-F1)
 	})
 	if err != nil {
 		return w.rejectFile(path, name, "rejected: "+err.Error())

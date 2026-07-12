@@ -146,14 +146,14 @@ func (s *Store) RecordLatency(kind string, d time.Duration, at time.Time) error 
 
 // GateStats aggregates for `cairn gates`.
 type GateStats struct {
-	Interactions        int
-	BudgetedCount       int
-	BudgetViolations    int
-	OutcomeFound        int
-	OutcomeNotFound     int
-	OutcomeWorkaround   int
-	LatencySamples      int
-	LatencyP95Micros    int64
+	Interactions      int
+	BudgetedCount     int
+	BudgetViolations  int
+	OutcomeFound      int
+	OutcomeNotFound   int
+	OutcomeWorkaround int
+	LatencySamples    int
+	LatencyP95Micros  int64
 }
 
 func (s *Store) Gates() (*GateStats, error) {

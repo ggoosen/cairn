@@ -205,50 +205,35 @@ func (d *Daemon) dispatch(req Request) Response {
 		return Response{OK: true, EventID: id}
 
 	case "link":
-		payload := map[string]any{"link_id": req.LinkID, "message_id": req.MessageID, "topic_id": req.TopicID}
-		if req.Protected {
-			payload["protected"] = true
-		}
-		id, err := d.SimpleEvent("topic.link.add", "link", req.LinkID, payload, pubReq)
+		id, err := d.Link(req.MessageID, req.TopicID, req.Protected, req.Actor)
 		if err != nil {
 			return fail(err)
 		}
 		return Response{OK: true, EventID: id}
 
 	case "unlink":
-		id, err := d.SimpleEvent("topic.link.remove", "link", req.LinkID,
-			map[string]any{"removed_link_ids": []string{req.LinkID}}, pubReq)
+		id, err := d.Unlink(req.LinkID, req.Actor)
 		if err != nil {
 			return fail(err)
 		}
 		return Response{OK: true, EventID: id}
 
 	case "pin":
-		actor := req.Actor
-		if actor == "" {
-			actor = "operator"
-		}
-		id, err := d.SimpleEvent("blob.pin", "pin", req.PinID,
-			map[string]any{"pin_id": req.PinID, "principal_id": actor, "object_hash": req.ObjectRef, "durability": req.Durability}, pubReq)
+		id, err := d.Pin(req.ObjectRef, req.Durability, req.Actor)
 		if err != nil {
 			return fail(err)
 		}
 		return Response{OK: true, EventID: id}
 
 	case "unpin":
-		id, err := d.SimpleEvent("blob.unpin", "pin", req.PinID,
-			map[string]any{"pin_ids": []string{req.PinID}}, pubReq)
+		id, err := d.Unpin(req.PinID, req.Actor)
 		if err != nil {
 			return fail(err)
 		}
 		return Response{OK: true, EventID: id}
 
 	case "signal":
-		payload := map[string]any{"message_id": req.MessageID, "kind": req.Kind}
-		if req.Weight > 0 {
-			payload["weight"] = req.Weight
-		}
-		id, err := d.SimpleEvent("signal.emit", "message", req.MessageID, payload, pubReq)
+		id, err := d.Signal(req.MessageID, req.Kind, req.Weight, req.Actor)
 		if err != nil {
 			return fail(err)
 		}

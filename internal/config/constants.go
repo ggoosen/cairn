@@ -159,7 +159,7 @@ const (
 // ---------------------------------------------------------------------------
 
 const (
-	ProjectionSchemaVersion = 1
+	ProjectionSchemaVersion = 2 // v2: parked_events quarantine table (FIX-F1)
 
 	// FTSTokenize: unicode61 with tokenchars `_ - # @` (rulings §6).
 	FTSTokenize = "unicode61 tokenchars '_-#@'"

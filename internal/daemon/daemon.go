@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -124,6 +125,14 @@ func Start(opts Options) (*Daemon, error) {
 	}
 
 	proj, err := projection.Open(opts.DBPath, projection.StoreBodyFetch(d.store))
+	if errors.Is(err, projection.ErrSchemaVersion) {
+		// the projection is DERIVED: on schema drift, rebuild from the log
+		fmt.Fprintf(opts.Warn, "WARNING: %v — rebuilding the derived projection from the log\n", err)
+		for _, f := range []string{opts.DBPath, opts.DBPath + "-wal", opts.DBPath + "-shm"} {
+			os.Remove(f)
+		}
+		proj, err = projection.Open(opts.DBPath, projection.StoreBodyFetch(d.store))
+	}
 	if err != nil {
 		d.releaseLock()
 		return nil, err
@@ -285,7 +294,12 @@ type PublishRequest struct {
 	ThreadID         string   `json:"thread_id,omitempty"`
 	ReplyToMessageID string   `json:"reply_to_message_id,omitempty"`
 	Recipients       []string `json:"recipients,omitempty"`
-	TopicIDs         []string `json:"topic_ids,omitempty"` // initial links: separate events, same request
+	// Topics: initial topic links (separate events, SAME request, all durable
+	// before the single ack — FIX-F1). Each entry resolves as topic_id, then
+	// topic name; unresolved entries auto-create when AutoCreateTopics (the
+	// operator CLI path) or reject BEFORE ack otherwise.
+	Topics           []string `json:"topics,omitempty"`
+	AutoCreateTopics bool     `json:"auto_create_topics,omitempty"`
 
 	// M9 ingest hooks (schema: optional fields on message.publish)
 	SourceRef *SourceRef `json:"source_ref,omitempty"`
@@ -420,6 +434,36 @@ func (d *Daemon) Publish(req PublishRequest) (*PublishResult, error) {
 		eventType = "message.reply"
 	}
 
+	// FIX-F1 ruling 2: resolve EVERY intra-mesh reference BEFORE anything is
+	// appended — an event that cannot project must never be acked.
+	type topicPlan struct {
+		id     string
+		create bool
+		name   string
+	}
+	var topicPlans []topicPlan
+	seenTopics := map[string]bool{}
+	for _, ref := range req.Topics {
+		id, name, err := d.resolveTopic(ref)
+		if err != nil {
+			if !req.AutoCreateTopics {
+				return nil, fmt.Errorf("rejected before ack: %w (create it first, or use `cairn send --topic` which auto-creates)", err)
+			}
+			// auto-create: the ref is the new topic NAME (validated)
+			if !topicNameRe.MatchString(ref) {
+				return nil, fmt.Errorf("rejected before ack: %q is not a valid topic name (%s)", ref, topicNamePattern)
+			}
+			id, name = d.newUUID(), ref
+			topicPlans = append(topicPlans, topicPlan{id: id, create: true, name: name})
+		} else {
+			topicPlans = append(topicPlans, topicPlan{id: id, name: name})
+		}
+		if seenTopics[id] {
+			return nil, fmt.Errorf("rejected before ack: duplicate topic %q in request", ref)
+		}
+		seenTopics[id] = true
+	}
+
 	res := &PublishResult{
 		MessageID:       msgID,
 		RevisionID:      revID,
@@ -436,28 +480,64 @@ func (d *Daemon) Publish(req PublishRequest) (*PublishResult, error) {
 	if err := d.lg.Append(rec, env); err != nil {
 		return nil, err
 	}
-	// === ACK POINT: the publish event is durable ===
 	ackAt := time.Now()
 	res.EventIDs = append(res.EventIDs, env.EventID)
 	d.applyProjection(env, rec)
-	if d.tel != nil {
-		d.tel.RecordLatency("ack_to_lexical_visible", time.Since(ackAt), d.now())
-	}
 
-	// initial topic links: separate events sharing the request (rulings §2)
-	for _, topicID := range req.TopicIDs {
-		linkPayload := map[string]any{"link_id": d.newUUID(), "message_id": msgID, "topic_id": topicID}
-		lenv, lrec, err := d.buildEvent("topic.link.add", "link", linkPayload["link_id"].(string), linkPayload, req)
+	// topic.create then topic.link.add, in order, same request — ALL durable
+	// before the single ack (FIX-F1 ruling 1)
+	for _, tp := range topicPlans {
+		if tp.create {
+			cenv, crec, err := d.buildEvent("topic.create", "topic", tp.id,
+				map[string]any{"topic_id": tp.id, "name": tp.name}, req)
+			if err != nil {
+				return nil, err
+			}
+			if err := d.lg.Append(crec, cenv); err != nil {
+				return nil, fmt.Errorf("topic.create append failed before ack: %w", err)
+			}
+			res.EventIDs = append(res.EventIDs, cenv.EventID)
+			d.applyProjection(cenv, crec)
+		}
+		linkID := d.newUUID()
+		lenv, lrec, err := d.buildEvent("topic.link.add", "link", linkID,
+			map[string]any{"link_id": linkID, "message_id": msgID, "topic_id": tp.id}, req)
 		if err != nil {
-			return res, fmt.Errorf("publish acked but link event failed: %w", err)
+			return nil, err
 		}
 		if err := d.lg.Append(lrec, lenv); err != nil {
-			return res, fmt.Errorf("publish acked but link append failed: %w", err)
+			return nil, fmt.Errorf("topic.link.add append failed before ack: %w", err)
 		}
 		res.EventIDs = append(res.EventIDs, lenv.EventID)
 		d.applyProjection(lenv, lrec)
 	}
+
+	// === ACK POINT: the COMPLETE request is durable ===
+	if d.tel != nil {
+		d.tel.RecordLatency("ack_to_lexical_visible", time.Since(ackAt), d.now())
+	}
 	return res, nil
+}
+
+// topicNamePattern is the schema's topic-name rule.
+const topicNamePattern = "^[a-z0-9][a-z0-9/_-]*$"
+
+var topicNameRe = regexp.MustCompile(topicNamePattern)
+
+// resolveTopic resolves a CLI/agent topic reference: exact topic_id first,
+// then exact name. Caller holds d.mu.
+func (d *Daemon) resolveTopic(ref string) (topicID, name string, err error) {
+	if id, err := d.proj.TopicIDByName(ref); err != nil {
+		return "", "", err
+	} else if id != "" {
+		return id, ref, nil
+	}
+	if name, err := d.proj.TopicNameByID(ref); err != nil {
+		return "", "", err
+	} else if name != "" {
+		return ref, name, nil
+	}
+	return "", "", fmt.Errorf("unknown topic %q", ref)
 }
 
 // buildEvent constructs and signs a chained envelope for the active origin.

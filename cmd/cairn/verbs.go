@@ -117,6 +117,7 @@ func newSendCmd(dirFlag *string) *cobra.Command {
 				body = string(blob)
 			}
 			req.Body = body
+			req.AutoCreateTopics = true // operator CLI path (FIX-F1 ruling 1)
 			op := "publish"
 			if emergency {
 				op = "emergency-publish"
@@ -135,7 +136,7 @@ func newSendCmd(dirFlag *string) *cobra.Command {
 	cmd.Flags().IntVar(&req.DeclaredPriority, "priority", 0, "declared priority 0-3 (immutable testimony)")
 	cmd.Flags().BoolVar(&req.OperatorOverride, "force-class", false, "OPERATOR override: keep declared class despite size policy")
 	cmd.Flags().StringVar(&req.ThreadID, "thread", "", "thread id")
-	cmd.Flags().StringSliceVar(&req.TopicIDs, "topic", nil, "initial topic link(s)")
+	cmd.Flags().StringSliceVar(&req.Topics, "topic", nil, "initial topic link(s) by name or id (auto-creates unknown names)")
 	cmd.Flags().StringSliceVar(&req.Recipients, "to", nil, "explicit recipient agent view(s)")
 	return cmd
 }
@@ -213,12 +214,12 @@ func newLinkCmd(dirFlag *string) *cobra.Command {
 	var protected bool
 	var actor string
 	cmd := &cobra.Command{
-		Use:   "link <message-id> <topic-id>",
-		Short: "Link a message to a topic (observed-remove assertion)",
+		Use:   "link <message-id> <topic-name-or-id>",
+		Short: "Link a message to an EXISTING topic (unknown topics are rejected before ack)",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resp, err := call(dirFlag, daemon.Request{
-				Op: "link", LinkID: newUUID(), MessageID: args[0], TopicID: args[1],
+				Op: "link", MessageID: args[0], TopicID: args[1],
 				Protected: protected, Actor: actor,
 			})
 			if err != nil {

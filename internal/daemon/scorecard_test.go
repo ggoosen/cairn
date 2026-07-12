@@ -83,7 +83,7 @@ func TestScorecard(t *testing.T) {
 
 	// --- reindex --lexical (side-build + swap) --------------------------------
 	t0 = time.Now()
-	if err := projection.ReindexLexical(fsx.OS{}, dir, projection.DBPath(dir),
+	if _, err := projection.ReindexLexical(fsx.OS{}, dir, projection.DBPath(dir),
 		func() cairnlog.VerifyFunc { return identity.NewChainVerifier().Verify },
 		nil); err != nil {
 		t.Fatal(err)

@@ -175,6 +175,20 @@ CREATE TABLE rank_explanations (
   PRIMARY KEY (interaction_id, message_id)
 );
 
+-- Projection-layer quarantine (F1 ruling 3): events that fail projection are
+-- PARKED here and the stream continues — the projector never stalls and the
+-- log is never touched (parking is a projection concept only). Doctor treats
+-- parked events as a failure condition. Rebuildable like everything else.
+CREATE TABLE parked_events (
+  event_id TEXT PRIMARY KEY,
+  origin_device_id TEXT NOT NULL,
+  origin_generation INTEGER NOT NULL,
+  origin_sequence INTEGER NOT NULL,
+  event_type TEXT NOT NULL,
+  error TEXT NOT NULL,
+  parked_at TEXT NOT NULL
+);
+
 -- NOTE: telemetry (interactions, impressions, outcomes) lives in a SEPARATE
 -- database (.cairn/telemetry.sqlite) per rulings §10 / spec §4.5 stream
 -- classes — never in the event log, never replicated.

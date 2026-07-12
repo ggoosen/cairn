@@ -14,6 +14,7 @@ import (
 	"github.com/ggoosen/cairn/internal/identity"
 	cairnlog "github.com/ggoosen/cairn/internal/log"
 	"github.com/ggoosen/cairn/internal/object"
+	"github.com/ggoosen/cairn/internal/projection"
 )
 
 // VerifyObjects walks every origin and checks each publish/revise body
@@ -214,4 +215,42 @@ func (d *Daemon) GatesReport(w io.Writer) error {
 	fmt.Fprintf(w, "%-42s %-16s %s\n", "manual-workaround rate ≤ 25%", "human-measured", workaround)
 	fmt.Fprintf(w, "%-42s %-16s %s\n", "median time-to-context < 60s", "human-measured", "diary protocol (DOGFOOD.md, M8)")
 	return nil
+}
+
+// DoctorProjection inspects the derived projection (F1/F3): parked events
+// and checkpoint-vs-log drift are failure conditions.
+func DoctorProjection(portableDir, dbPath string) ([]string, error) {
+	p, err := projection.Open(dbPath, nil)
+	if err != nil {
+		return []string{fmt.Sprintf("projection unopenable: %v (run `cairn reindex --lexical`)", err)}, nil
+	}
+	defer p.Close()
+	var problems []string
+	parked, err := p.ParkedEvents()
+	if err != nil {
+		return nil, err
+	}
+	for _, pe := range parked {
+		problems = append(problems, fmt.Sprintf("parked event %s (%s, origin %s seq %d): %s",
+			pe.EventID, pe.EventType, pe.Origin, pe.Sequence, pe.Error))
+	}
+	origins, err := cairnlog.Origins(fsx.OS{}, portableDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, o := range origins {
+		report, err := cairnlog.Walk(fsx.OS{}, portableDir, o, identity.NewChainVerifier().Verify, nil)
+		if err != nil {
+			continue // trust resolution reported elsewhere (F2/F3)
+		}
+		ck, err := p.Checkpoint(o.DeviceID, o.Generation)
+		if err != nil {
+			return nil, err
+		}
+		if ck != report.NextSeq-1 {
+			problems = append(problems, fmt.Sprintf("projection drift: origin %s/%d checkpoint %d, log head %d",
+				o.DeviceID, o.Generation, ck, report.NextSeq-1))
+		}
+	}
+	return problems, nil
 }

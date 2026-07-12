@@ -265,3 +265,57 @@ func (p *Projection) TopicIDByName(name string) (string, error) {
 	}
 	return id, err
 }
+
+// ParkedEvent is one quarantined event (F1 ruling 3).
+type ParkedEvent struct {
+	EventID   string `json:"event_id"`
+	EventType string `json:"event_type"`
+	Origin    string `json:"origin"`
+	Sequence  int64  `json:"sequence"`
+	Error     string `json:"error"`
+	ParkedAt  string `json:"parked_at"`
+}
+
+// ParkedEvents lists the quarantine, oldest first.
+func (p *Projection) ParkedEvents() ([]ParkedEvent, error) {
+	rows, err := p.db.Query(`SELECT event_id, event_type,
+		origin_device_id || '/' || origin_generation, origin_sequence, error, parked_at
+		FROM parked_events ORDER BY parked_at, event_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ParkedEvent
+	for rows.Next() {
+		var pe ParkedEvent
+		if err := rows.Scan(&pe.EventID, &pe.EventType, &pe.Origin, &pe.Sequence, &pe.Error, &pe.ParkedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, pe)
+	}
+	return out, rows.Err()
+}
+
+// TopicNameByID resolves a topic id; "" if absent.
+func (p *Projection) TopicNameByID(id string) (string, error) {
+	var name string
+	err := p.db.QueryRow(`SELECT name FROM topics WHERE topic_id=?`, id).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return name, err
+}
+
+// LinkActive reports whether a live (unremoved) link assertion exists.
+func (p *Projection) LinkActive(linkID string) (bool, error) {
+	var n int
+	err := p.db.QueryRow(`SELECT count(*) FROM topic_links WHERE link_id=? AND removed=0`, linkID).Scan(&n)
+	return n > 0, err
+}
+
+// PinActiveByID reports whether a pin intent exists and is unremoved.
+func (p *Projection) PinActiveByID(pinID string) (bool, error) {
+	var n int
+	err := p.db.QueryRow(`SELECT count(*) FROM pins WHERE pin_id=? AND removed=0`, pinID).Scan(&n)
+	return n > 0, err
+}
