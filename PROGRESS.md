@@ -980,4 +980,15 @@ Acceptance evidence (all green; full suite -count=1 clean):
   less CLI still full)
 
 Commits: 91f987a (implementation), + docs commit.
+
+**Operator drill executed (2026-07-12, scratch mesh + live daemon):** all
+legs behaved as ruled — read-only search and digest work (exit 0); send
+refused pre-ack with the capability error (exit 1) and the body is
+unfindable afterwards; the session auto-revoked on shell exit
+(`session list` empty); tier-1 send outside the shell intact; doctor +
+deep doctor clean after the drill. Escape probe (`unset CAIRN_SESSION`
+inside the shell): send succeeds at tier-1 — adjudicated as designed
+behavior and recorded as **RULINGS.md R35** (env-cooperative confinement;
+R22 honesty; stronger binding is P3).
+
 Next: **N3 — durable semantic subscriptions** (after operator checkpoint).

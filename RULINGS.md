@@ -305,3 +305,24 @@ re-publish the standalone mesh's knowledge via export/re-send carrying
 `source_ref` provenance, retire the standalone mesh. Ship as
 `cairn adopt-standalone <path>` if time permits, else a documented shell
 script.
+
+## R35 — CAIRN_SESSION escape probe: env-strip returns to tier-1 (N2 drill)
+
+Observed in the operator drill (2026-07-12): inside a `cairn run --profile
+read-only` shell, `unset CAIRN_SESSION` followed by `cairn send` SUCCEEDS —
+the process falls back to the handle-less local CLI path, which is operator
+tier-1 by design.
+
+**Ruling: this is the designed behavior, not a defect.** Confinement is
+environment-cooperative: the daemon cannot distinguish same-OS-user local
+processes except by the handle they present (R22 — accident prevention,
+not malice prevention). The profile guardrail protects against an agent
+accidentally issuing structural ops through its normal toolchain (which
+inherits the env); it does not and cannot stop code that deliberately
+strips its environment, because that code could equally dial the daemon
+socket directly. Documentation (DOGFOOD.md §3c, session.go, run.go) states
+this boundary explicitly.
+
+Any stronger boundary — socket peer-credential binding, per-principal OS
+users, mandatory handles for ALL clients — is a P3 consideration and would
+change the tier-1 ergonomics ruling; it is out of P1 scope.
