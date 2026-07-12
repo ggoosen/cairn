@@ -255,6 +255,16 @@ const (
 	// IPC bound: the MCP layer never carries more than one IPC payload.
 	MCPMaxLineBytes = 32 << 20
 
+	// Capability sessions (N2, RULINGS.md R23): opaque daemon-side handles,
+	// short-TTL, non-delegable, auto-revoked on exit/idle. TTL and idle
+	// window are buildpack-judgment constants, revisable from dogfood data.
+	SessionTTLDefault  = 24 * time.Hour
+	SessionIdleTimeout = 6 * time.Hour
+	SessionTokenBytes  = 32
+	SessionsFileName   = "sessions.json" // device-local (cache-class)
+	ProfilesFileName   = "profiles.toml" // device-local capability profiles
+	SessionEnvVar      = "CAIRN_SESSION" // set by `cairn run` for the child
+
 	// EnrichInterval/EnrichBatch pace the background embedding enricher
 	// (rulings §6: async; a just-sent message is briefly lexical_only).
 	EnrichInterval = 2 * time.Second

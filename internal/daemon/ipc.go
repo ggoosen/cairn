@@ -26,6 +26,16 @@ import (
 type Request struct {
 	Op string `json:"op"`
 
+	// N2 capability session: the opaque handle this request runs under.
+	// Absent = local operator CLI = tier-1 full (rulings §7.2).
+	Session string `json:"session,omitempty"`
+
+	// session-create / session-revoke parameters
+	SessionName    string `json:"session_name,omitempty"`
+	SessionProfile string `json:"session_profile,omitempty"`
+	SessionPID     int    `json:"session_pid,omitempty"`
+	TargetSession  string `json:"target_session,omitempty"`
+
 	Publish *PublishRequest `json:"publish,omitempty"`
 
 	// simple mutations
@@ -165,9 +175,67 @@ func writeResponse(w io.Writer, resp Response) {
 
 func (d *Daemon) dispatch(req Request) Response {
 	fail := func(err error) Response { return Response{Error: err.Error()} }
+
+	// --- N2 capability gate (rulings §7.2, RULINGS.md R21/R23) ------------
+	// Runs BEFORE any op logic, so every refusal is structurally pre-ack.
+	principal := "operator" // tier-1: local CLI without a handle
+	var sess *Session
+	if req.Session != "" {
+		var prof *Profile
+		var err error
+		sess, prof, err = d.sessions.resolve(req.Session, d.now())
+		if err != nil {
+			return Response{Error: "capability: " + err.Error()}
+		}
+		principal = sess.Principal()
+		if strings.HasPrefix(req.Op, "session-") {
+			// R23: handles are non-delegable — a session can neither mint
+			// nor revoke handles; that stays with the operator tier.
+			return Response{Error: "capability: session handles are non-delegable (session ops require the operator tier)"}
+		}
+		if capNeeded := capabilityFor(req.Op); !prof.Allows(capNeeded) {
+			return Response{Error: fmt.Sprintf(
+				"capability: profile %q does not allow %q (op %q) — refused before ack", sess.Profile, capNeeded, req.Op)}
+		}
+		// a handle acts AS its leaf principal: the client-supplied actor is
+		// overridden, and tier-1-only publish knobs are stripped
+		req.Actor = sess.Name
+		if req.Publish != nil {
+			req.Publish.Actor = sess.Name
+			req.Publish.OperatorOverride = false
+			req.Publish.AutoCreateTopics = false
+		}
+	}
+
 	pubReq := PublishRequest{Actor: req.Actor}
 
 	switch req.Op {
+	case "session-create":
+		if req.SessionProfile == "" {
+			return fail(errors.New("session_profile is required"))
+		}
+		name := req.SessionName
+		if name == "" {
+			name = req.SessionProfile
+		}
+		created, err := d.sessions.create(name, req.SessionProfile, principal, req.SessionPID, d.now())
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Status: map[string]any{
+			"session": created.Token, "principal": created.Principal(),
+			"profile": created.Profile, "expires_at": created.ExpiresAt,
+		}}
+
+	case "session-revoke":
+		if err := d.sessions.revoke(req.TargetSession); err != nil {
+			return fail(err)
+		}
+		return Response{OK: true}
+
+	case "session-list":
+		return Response{OK: true, Status: map[string]any{"sessions": d.sessions.list()}}
+
 	case "publish":
 		if req.Publish == nil {
 			return fail(errors.New("publish payload missing"))
@@ -247,6 +315,7 @@ func (d *Daemon) dispatch(req Request) Response {
 		if req.Search2 != nil {
 			sopts = *req.Search2
 		}
+		sopts.Principal = principal // dispatch-resolved; client value ignored
 		out, err := d.Search(sopts)
 		if err != nil {
 			return fail(err)
@@ -254,7 +323,7 @@ func (d *Daemon) dispatch(req Request) Response {
 		return Response{OK: true, Search: out}
 
 	case "digest":
-		out, err := d.Digest(DigestOptions{AgentView: req.AgentView, BudgetChars: req.BudgetChars})
+		out, err := d.Digest(DigestOptions{AgentView: req.AgentView, BudgetChars: req.BudgetChars, Principal: principal})
 		if err != nil {
 			return fail(err)
 		}

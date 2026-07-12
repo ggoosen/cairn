@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS interactions (
   payload_chars INTEGER NOT NULL,
   result_count INTEGER NOT NULL,
   retrieval_mode TEXT,
+  principal TEXT,                     -- N2 capability principal hierarchy
   created_at TEXT NOT NULL,
   outcome TEXT,                       -- found | not_found | manual_workaround
   outcome_message_id TEXT,
@@ -66,6 +67,35 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	// N2 migration: pre-existing local telemetry DBs lack the principal
+	// column (telemetry is cache-class; additive ALTER is safe).
+	var hasPrincipal bool
+	rows, err := db.Query("PRAGMA table_info(interactions)")
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			db.Close()
+			return nil, err
+		}
+		if name == "principal" {
+			hasPrincipal = true
+		}
+	}
+	rows.Close()
+	if !hasPrincipal {
+		if _, err := db.Exec("ALTER TABLE interactions ADD COLUMN principal TEXT"); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	return &Store{db: db}, nil
 }
 
@@ -80,6 +110,7 @@ type Interaction struct {
 	AgentInstanceID string
 	Inferred        bool
 	Query           string
+	Principal       string // N2 capability principal hierarchy
 	BudgetRequested int
 	PayloadChars    int
 	ResultCount     int
@@ -101,11 +132,11 @@ func (s *Store) Record(it Interaction) error {
 	}
 	if _, err := tx.Exec(`INSERT OR REPLACE INTO interactions
 		(interaction_id, kind, task_id, agent_surface, agent_instance_id, inferred, query,
-		 budget_requested, payload_chars, result_count, retrieval_mode, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 budget_requested, payload_chars, result_count, retrieval_mode, principal, created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		it.InteractionID, it.Kind, nz(it.TaskID), nz(it.AgentSurface), nz(it.AgentInstanceID), inferred,
 		nz(it.Query), it.BudgetRequested, it.PayloadChars, it.ResultCount, it.RetrievalMode,
-		it.CreatedAt.UTC().Format(config.WallTimeFormat)); err != nil {
+		nz(it.Principal), it.CreatedAt.UTC().Format(config.WallTimeFormat)); err != nil {
 		return err
 	}
 	for i, id := range it.ResultIDs {
@@ -115,6 +146,19 @@ func (s *Store) Record(it Interaction) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// Principal returns the recorded principal hierarchy for one interaction.
+func (s *Store) Principal(interactionID string) (string, error) {
+	var p sql.NullString
+	err := s.db.QueryRow(`SELECT principal FROM interactions WHERE interaction_id=?`, interactionID).Scan(&p)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("interaction %s not found", interactionID)
+	}
+	if err != nil {
+		return "", err
+	}
+	return p.String, nil
 }
 
 // RecordOutcome binds an outcome to an interaction_id (rulings §10: outcome

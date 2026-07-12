@@ -23,6 +23,9 @@ import (
 )
 
 // call resolves the cairn dir and sends one IPC request to the daemon.
+// Under `cairn run` the launcher exports CAIRN_SESSION; attaching it here
+// confines EVERY CLI verb in that process tree to the session's profile
+// (N2). Without it the local CLI is operator tier-1, unchanged from P0.
 func call(dirFlag *string, req daemon.Request) (*daemon.Response, error) {
 	dir, err := config.PortableDir(*dirFlag)
 	if err != nil {
@@ -31,6 +34,9 @@ func call(dirFlag *string, req daemon.Request) (*daemon.Response, error) {
 	clientDir, err := daemon.ClientDir(dir) // handles read-only restores (R9)
 	if err != nil {
 		return nil, err
+	}
+	if req.Session == "" {
+		req.Session = os.Getenv(config.SessionEnvVar)
 	}
 	return daemon.Call(clientDir, req)
 }

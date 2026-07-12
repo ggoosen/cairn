@@ -26,6 +26,10 @@ type SearchOptions struct {
 	TaskID          string `json:"task_id,omitempty"`
 	AgentSurface    string `json:"agent_surface,omitempty"`
 	AgentInstanceID string `json:"agent_instance_id,omitempty"`
+
+	// Principal hierarchy (N2). Set by dispatch from the capability gate —
+	// any client-supplied value is overwritten there.
+	Principal string `json:"principal,omitempty"`
 }
 
 // SearchOutput carries the ranked results plus the budget-compliant payload.
@@ -133,13 +137,13 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 	if err != nil {
 		return nil, err
 	}
-	d.recordInteraction("search", out.InteractionID, opts.Query, opts.BudgetChars, out, opts.TaskID, opts.AgentSurface, opts.AgentInstanceID)
+	d.recordInteraction("search", out.InteractionID, opts.Query, opts.BudgetChars, out, opts.TaskID, opts.AgentSurface, opts.AgentInstanceID, opts.Principal)
 	return out, nil
 }
 
 // recordInteraction logs telemetry (local-only; never an event). Missing
 // attribution is daemon-inferred and flagged (rulings §10).
-func (d *Daemon) recordInteraction(kind, interactionID, query string, budget int, out *SearchOutput, taskID, surface, instance string) {
+func (d *Daemon) recordInteraction(kind, interactionID, query string, budget int, out *SearchOutput, taskID, surface, instance, principal string) {
 	if d.tel == nil {
 		return
 	}
@@ -152,13 +156,16 @@ func (d *Daemon) recordInteraction(kind, interactionID, query string, budget int
 		surface = "operator"
 		inferred = true
 	}
+	if principal == "" {
+		principal = "operator" // direct method call = tier-1 (not inferred)
+	}
 	ids := make([]string, 0, len(out.Results))
 	for _, r := range out.Results {
 		ids = append(ids, r.MessageID)
 	}
 	it := telemetry.Interaction{
 		InteractionID: interactionID, Kind: kind,
-		TaskID: taskID, AgentSurface: surface, AgentInstanceID: instance,
+		TaskID: taskID, AgentSurface: surface, AgentInstanceID: instance, Principal: principal,
 		Inferred: inferred, Query: query, BudgetRequested: budget,
 		PayloadChars: rank.BudgetChars(out.Payload), ResultCount: len(out.Results),
 		RetrievalMode: out.RetrievalMode, CreatedAt: d.now(), ResultIDs: ids,
@@ -275,6 +282,7 @@ type DigestOptions struct {
 	AgentView   string `json:"agent_view"`
 	BudgetChars int    `json:"budget_chars"`
 	TaskID      string `json:"task_id,omitempty"`
+	Principal   string `json:"principal,omitempty"` // dispatch-resolved (N2)
 }
 
 // DigestOutput is the generated digest.
@@ -440,7 +448,7 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 	for i := 0; i < included; i++ {
 		so.Results = append(so.Results, RankedResult{MessageID: scored[i].MessageID})
 	}
-	d.recordInteraction("digest", interactionID, cfg.InterestQuery, opts.BudgetChars, so, opts.TaskID, opts.AgentView, "")
+	d.recordInteraction("digest", interactionID, cfg.InterestQuery, opts.BudgetChars, so, opts.TaskID, opts.AgentView, "", opts.Principal)
 	return dout, nil
 }
 

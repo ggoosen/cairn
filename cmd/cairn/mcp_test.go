@@ -9,13 +9,17 @@ import (
 )
 
 func runMCP(t *testing.T, dir, stdin string) (string, error) {
+	return runMCPArgs(t, dir, nil, stdin)
+}
+
+func runMCPArgs(t *testing.T, dir string, extra []string, stdin string) (string, error) {
 	t.Helper()
 	root := newRootCmd()
 	var out, errOut strings.Builder
 	root.SetIn(strings.NewReader(stdin))
 	root.SetOut(&out)
 	root.SetErr(&errOut)
-	root.SetArgs([]string{"mcp", "--dir", dir})
+	root.SetArgs(append([]string{"mcp", "--dir", dir}, extra...))
 	err := root.Execute()
 	return out.String(), err
 }

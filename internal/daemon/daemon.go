@@ -68,6 +68,8 @@ type Daemon struct {
 
 	readOnly bool   // portable-only restore: reads allowed, writes refused (R9)
 	sockDir  string // where daemon.sock.path is registered
+
+	sessions *sessions // N2 capability handles (guarded by mu via dispatch)
 }
 
 // ErrReadOnly: the mesh is a portable-only restore (spec §3.2 / RULINGS.md
@@ -205,6 +207,20 @@ func Start(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 	d.tel = tel
+
+	// N2: capability profiles (device-local TOML + builtins) and the
+	// session-handle table. A bad profiles.toml fails startup loudly.
+	profiles, err := LoadProfiles(lockDir)
+	if err != nil {
+		d.Close()
+		return nil, err
+	}
+	sess, err := loadSessions(lockDir, profiles, d.now())
+	if err != nil {
+		d.Close()
+		return nil, err
+	}
+	d.sessions = sess
 
 	usage, err := object.LoadUsage(opts.FS, opts.Dir, loaded.Portable.DailyCanonicalBytes)
 	if err != nil {

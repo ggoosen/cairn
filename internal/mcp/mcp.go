@@ -123,7 +123,7 @@ func schema(props string, required ...string) json.RawMessage {
 func (s *Server) Tools() []Tool {
 	return []Tool{
 		{"cairn_digest", "Generate the ranked, budget-capped digest for this agent view: what changed in the mesh that you should know." + untrustedNote,
-			schema(`"budget_chars":{"type":"integer","description":"budget over the COMPLETE digest payload in Unicode characters (default `+fmt.Sprint(config.MCPDigestBudgetDefault)+`)"}`)},
+			schema(`"budget_chars":{"type":"integer","description":"budget over the COMPLETE digest payload in Unicode characters (default ` + fmt.Sprint(config.MCPDigestBudgetDefault) + `)"}`)},
 		{"cairn_search", "Hybrid search over the mesh (lexical + semantic fusion). Returns ranked result metadata and a budget-capped payload; use cairn_fetch for full bodies." + untrustedNote,
 			schema(`"query":{"type":"string"},"k":{"type":"integer","description":"max results (default 10)"},"budget_chars":{"type":"integer","description":"budget over the COMPLETE payload (default `+fmt.Sprint(config.MCPSearchBudgetDefault)+`)"}`, "query")},
 		{"cairn_peek", "Show one message's metadata (sender, revision, hash, class, thread) WITHOUT retrieving the body.",
