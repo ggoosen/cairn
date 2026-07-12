@@ -63,6 +63,9 @@ type Request struct {
 	Body       string `json:"body,omitempty"`
 	SourcePath string `json:"source_path,omitempty"`
 
+	// derivatives (N4)
+	DerivativeID string `json:"derivative_id,omitempty"`
+
 	// durable subscriptions (N3)
 	Subscribe      *SubscribeRequest `json:"subscribe,omitempty"`
 	SubUpdate      *SubUpdateRequest `json:"sub_update,omitempty"`
@@ -96,12 +99,18 @@ type Response struct {
 	Status     map[string]any               `json:"status,omitempty"`
 	Subs       []projection.SubscriptionRow `json:"subscriptions,omitempty"`
 	Sub        *SubscribeResult             `json:"subscription,omitempty"`
+	Derivs     []projection.DerivativeRow   `json:"derivatives,omitempty"`
+	Summary    *projection.SummaryRow       `json:"summary,omitempty"`
 }
 
 // SocketPath returns the daemon's unix socket location: short, deterministic
 // per cairn (unix socket path length limits rule out Application Support).
+// The FULL cairn id is required: a UUIDv7 prefix is a millisecond timestamp,
+// and two meshes created in the same millisecond would collide — one
+// daemon's startup would silently remove the other's live socket (the root
+// cause of the TestF3 flake recorded in PROGRESS.md).
 func SocketPath(cairnID string) string {
-	return filepath.Join(os.TempDir(), "cairn-"+cairnID[:13]+".sock")
+	return filepath.Join(os.TempDir(), "cairn-"+cairnID+".sock")
 }
 
 // socketPathFile records the socket location in device-local state.
@@ -278,6 +287,27 @@ func (d *Daemon) dispatch(req Request) Response {
 			return fail(err)
 		}
 		return Response{OK: true, EventID: id}
+
+	case "derivative-list":
+		derivs, err := d.proj.DerivativesForMessage(req.MessageID)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Derivs: derivs}
+
+	case "derivative-invalidate":
+		id, err := d.DerivativeInvalidate(req.DerivativeID, req.Reason, req.Actor)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, EventID: id}
+
+	case "summary-show":
+		row, err := d.proj.SummaryForMessage(req.MessageID)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Summary: row}
 
 	case "subscription-list":
 		subs, err := d.proj.Subscriptions(req.AgentView, false)

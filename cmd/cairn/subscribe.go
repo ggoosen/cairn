@@ -168,3 +168,50 @@ func newSubscriptionCmd(dirFlag *string) *cobra.Command {
 	groupGuard(cmd)
 	return cmd
 }
+
+// N4: derivative inspection + invalidation.
+func newDerivativeCmd(dirFlag *string) *cobra.Command {
+	cmd := &cobra.Command{Use: "derivative", Short: "Inspect and invalidate attachment derivatives (N4)"}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "list <message-id>",
+		Short: "Show derivative records (extractor provenance) for a message's attachments",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := call(dirFlag, daemon.Request{Op: "derivative-list", MessageID: args[0]})
+			if err != nil {
+				return err
+			}
+			return printJSON(cmd, resp.Derivs)
+		},
+	})
+	var reason string
+	inv := &cobra.Command{
+		Use:   "invalidate <derivative-id>",
+		Short: "Invalidate a derivative (drops it from search; regenerated on the next enrichment pass)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := call(dirFlag, daemon.Request{Op: "derivative-invalidate", DerivativeID: args[0], Reason: reason})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "invalidated:", resp.EventID)
+			return nil
+		},
+	}
+	inv.Flags().StringVar(&reason, "reason", "", "why (recorded in the event)")
+	cmd.AddCommand(inv)
+	cmd.AddCommand(&cobra.Command{
+		Use:   "summary <message-id>",
+		Short: "Show the sender summary claim and the receiver's consistency verdict",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := call(dirFlag, daemon.Request{Op: "summary-show", MessageID: args[0]})
+			if err != nil {
+				return err
+			}
+			return printJSON(cmd, resp.Summary)
+		},
+	})
+	groupGuard(cmd)
+	return cmd
+}

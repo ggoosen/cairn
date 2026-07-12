@@ -74,8 +74,12 @@ type Result struct {
 }
 
 // RunGolden executes the benchmark in a throwaway mesh and writes a
-// human-readable report to w.
-func RunGolden(w io.Writer) (*Result, error) {
+// human-readable report to w. A nil embedder runs the deterministic dev
+// embedder; F9 passes the real sentence-transformers model here.
+func RunGolden(w io.Writer, embedder cairnembed.Embedder) (*Result, error) {
+	if embedder == nil {
+		embedder = cairnembed.BagOfWords{}
+	}
 	msgs, queries, err := Corpus()
 	if err != nil {
 		return nil, err
@@ -107,9 +111,9 @@ func RunGolden(w io.Writer) (*Result, error) {
 		return nil, err
 	}
 
-	fmt.Fprintf(w, "golden corpus: %d messages, %d queries (dev embedder %q)\n",
-		len(msgs), len(queries), cairnembed.BagOfWords{}.ModelID())
-	d, err := daemon.Start(daemon.Options{Dir: dir, Embedder: cairnembed.BagOfWords{}, Warn: io.Discard})
+	fmt.Fprintf(w, "golden corpus: %d messages, %d queries (embedder %q)\n",
+		len(msgs), len(queries), embedder.ModelID())
+	d, err := daemon.Start(daemon.Options{Dir: dir, Embedder: embedder, Warn: io.Discard})
 	if err != nil {
 		return nil, err
 	}
@@ -151,7 +155,7 @@ func RunGolden(w io.Writer) (*Result, error) {
 	res := &Result{
 		Messages: len(msgs), Queries: len(queries),
 		GateSuccess: config.GateSuccessAt5Min, GateLexical: config.GateLexicalOnlyTop10Min,
-		EmbedderModel: cairnembed.BagOfWords{}.ModelID(),
+		EmbedderModel: embedder.ModelID(),
 	}
 
 	hits := 0
@@ -195,7 +199,7 @@ func RunGolden(w io.Writer) (*Result, error) {
 	}
 	fmt.Fprintf(w, "\nSuccess@5 (hybrid)     %.2f  (gate ≥ %.2f)  %s\n", res.SuccessAt5, res.GateSuccess, verdict(res.PassSuccess))
 	fmt.Fprintf(w, "lexical-only top-10    %.2f  (gate ≥ %.2f)  %s\n", res.LexicalTop10, res.GateLexical, verdict(res.PassLexicalOnly))
-	fmt.Fprintln(w, "\nnote: scores use the deterministic dev embedder; identical inputs")
+	fmt.Fprintln(w, "\nnote: with the dev embedder, identical inputs")
 	fmt.Fprintln(w, "reproduce identical hit sets (freshness decays with wall time, so raw")
 	fmt.Fprintln(w, "scores drift; hit identity and ordering do not).")
 	return res, nil

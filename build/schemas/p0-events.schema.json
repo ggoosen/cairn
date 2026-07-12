@@ -65,6 +65,7 @@
         "reply_to_message_id": { "$ref": "#/$defs/uuid" },
         "reply_to_revision_id": { "$ref": "#/$defs/uuid" },
         "recipients": { "type": "array", "items": { "type": "string" }, "description": "agent view names; drives mandatory inclusion" },
+        "sender_summary": { "type": "string", "description": "P1 N4 (spec §8.4): sender's UNTRUSTED summary claim; the receiver verifies it against the body and prefers its own extractive summary on divergence" },
         "attachments": { "type": "array", "items": {
           "type": "object",
           "required": ["object_hash", "byte_len", "mime"],

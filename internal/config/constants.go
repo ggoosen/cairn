@@ -160,7 +160,7 @@ const (
 // ---------------------------------------------------------------------------
 
 const (
-	ProjectionSchemaVersion = 3 // v3: subscriptions (N3); v2: parked_events (FIX-F1)
+	ProjectionSchemaVersion = 4 // v4: derivatives+summaries (N4); v3: subscriptions (N3); v2: parked_events
 
 	// FTSTokenize: unicode61 with tokenchars `_ - # @` (rulings §6).
 	FTSTokenize = "unicode61 tokenchars '_-#@'"
@@ -265,6 +265,24 @@ const (
 	SubPercentileDefault  = 90   // percentile mode: include above this pool percentile
 	SubPushCapDefault     = 20   // deliveries per day per subscription
 	SubMarginMin          = 0.15 // required gap over the observed noise floor (q25)
+
+	// Deterministic derivatives (N4, spec §8.3): sandbox limits. All
+	// extraction is in-process, pure over the input bytes (no network by
+	// construction), panic-contained, and bounded by these caps.
+	DeriveMaxBytes     = 16 << 20 // input blob cap (matches the IPC attach path)
+	DeriveMaxTextBytes = 1 << 20  // extracted-text cap
+	DeriveMaxPages     = 200      // PDF page cap
+	DeriveTimeout      = 10 * time.Second
+
+	// Receiver summary topical-consistency check (N4, spec §8.4): the
+	// sender summary is an untrusted claim; below this cosine vs the body
+	// the receiver marks disagreement and prefers its LOCAL extractive
+	// summary. Local-check constant (config-revisable) — subscriptions'
+	// no-static-threshold rule (R24) is about match calibration, not this.
+	SummaryAgreeCosineMin = 0.5
+
+	// SummaryExtractLen bounds the local extractive summary (lead text).
+	SummaryExtractLen = 400
 
 	// Capability sessions (N2, RULINGS.md R23): opaque daemon-side handles,
 	// short-TTL, non-delegable, auto-revoked on exit/idle. TTL and idle

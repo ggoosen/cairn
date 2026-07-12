@@ -13,6 +13,7 @@ import (
 // LexicalTopK returns message IDs of HEAD-revision FTS matches in bm25
 // order (ties by message_id) — the lexical candidate list for RRF fusion.
 func (p *Projection) LexicalTopK(query string, k int, includeRetracted bool) ([]string, error) {
+	raw := query
 	query = FTSQuery(query)
 	rows, err := p.db.Query(`
 		SELECT m.message_id
@@ -35,7 +36,26 @@ func (p *Projection) LexicalTopK(query string, k int, includeRetracted bool) ([]
 		}
 		out = append(out, id)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// N4: attachments are searchable via their derivatives — union hits from
+	// derivative text (body hits rank first; derivative hits append after,
+	// deduplicated). Provenance stays inspectable via `cairn derivative list`.
+	derivHits, err := p.DerivativeMessageHits(raw, k, includeRetracted)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	for _, id := range out {
+		seen[id] = true
+	}
+	for _, id := range derivHits {
+		if !seen[id] && len(out) < k {
+			out = append(out, id)
+		}
+	}
+	return out, nil
 }
 
 // VecBlob encodes float32 little-endian (the DDL's vectors.vec format).

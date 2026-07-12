@@ -412,8 +412,15 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 	}
 
 	interactionID := d.newUUID()
+	// N4 (spec §8.4): disputed sender summaries carry a visible marker
+	disputed, err := d.proj.DisputedSummaries()
+	if err != nil {
+		return nil, err
+	}
 	header := fmt.Sprintf("# digest — %s\ninteraction: %s\nmode: %s\n\n", opts.AgentView, interactionID, mode)
-	render := func(i int) string { return d.renderDigestEntry(i+1, scored[i], rows[scored[i].MessageID]) }
+	render := func(i int) string {
+		return d.renderDigestEntry(i+1, scored[i], rows[scored[i].MessageID], disputed[scored[i].MessageID])
+	}
 	included, payload := rank.TakeWithinBudget(len(scored), opts.BudgetChars,
 		rank.BudgetRender{Header: header, Marker: "…truncated…\n"}, render)
 
@@ -483,11 +490,17 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 
 // renderDigestEntry: one digest item; EVERY line quoting cairn content is
 // prefixed with config.QuotePrefix (per-line prefixing cannot be escaped).
-func (d *Daemon) renderDigestEntry(pos int, s rank.Scored, row projection.RankRow) string {
+func (d *Daemon) renderDigestEntry(pos int, s rank.Scored, row projection.RankRow, summaryDisputed bool) string {
 	var b strings.Builder
 	tag := ""
 	if s.Mandatory != "" {
 		tag = " [" + s.Mandatory + "]"
+	}
+	if summaryDisputed {
+		// the sender's summary claim diverges from the body; the excerpt
+		// below is the receiver's own (bodies are always excerpted, never
+		// sender summaries — spec §8.4)
+		tag += " [summary-disputed]"
 	}
 	fmt.Fprintf(&b, "%d. %s%s score=%s\n", pos, s.MessageID, tag, rank.Dec(s.Score))
 	body, err := d.store.Get(row.BodyHash)

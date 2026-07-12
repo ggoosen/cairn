@@ -157,6 +157,13 @@ func (d *Daemon) Run(ctx context.Context, processOutbox func() error) error {
 				if _, err := d.EnrichOnce(config.EnrichBatch); err != nil {
 					fmt.Fprintf(d.warn, "WARNING: enricher: %v\n", err)
 				}
+				// N4: derivatives + summary checks share the enricher cadence
+				if _, err := d.DeriveOnce(config.EnrichBatch); err != nil {
+					fmt.Fprintf(d.warn, "WARNING: derivatives: %v\n", err)
+				}
+				if _, err := d.SummaryCheckOnce(config.EnrichBatch); err != nil {
+					fmt.Fprintf(d.warn, "WARNING: summary check: %v\n", err)
+				}
 			}
 		}
 	}()

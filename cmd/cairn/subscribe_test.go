@@ -96,3 +96,47 @@ func TestN3SubscribeLocalVsDurable(t *testing.T) {
 		t.Fatalf("agent-standard created a durable subscription: %v", err)
 	}
 }
+
+// F9: --embedder real refuses to run without the venv (a fake "real" score
+// is worse than none); --embedder dev remains the default path.
+func TestF9BenchEmbedderFlag(t *testing.T) {
+	dir := setupEnv(t)
+	t.Setenv("CAIRN_EMBED_PYTHON", "") // ensure no ambient interpreter
+	if _, err := runCLI(t, "bench", "golden", "--embedder", "real", "--dir", dir); err == nil ||
+		!strings.Contains(err.Error(), "embed venv") {
+		t.Fatalf("real without venv should refuse with instructions: %v", err)
+	}
+	if _, err := runCLI(t, "bench", "golden", "--embedder", "nonsense", "--dir", dir); err == nil {
+		t.Fatal("bad embedder kind accepted")
+	}
+}
+
+// N4 CLI plumbing: --attach reads and ships the file; --summary lands as
+// the sender claim; derivative/summary verbs round-trip.
+func TestN4SendAttachAndSummaryCLI(t *testing.T) {
+	dir := setupEnv(t)
+	if out, err := runCLI(t, "init", "--dir", dir); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	startTestDaemon(t, dir)
+
+	attach := filepath.Join(t.TempDir(), "notes.txt")
+	if err := os.WriteFile(attach, []byte("hydraulic pump rebuild procedure"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runCLI(t, "send", "see attachment", "--attach", attach,
+		"--summary", "pump rebuild notes", "--dir", dir)
+	if err != nil {
+		t.Fatalf("send --attach: %v\n%s", err, out)
+	}
+	var pub daemon.PublishResult
+	json.Unmarshal([]byte(out), &pub)
+
+	out, err = runCLI(t, "derivative", "summary", pub.MessageID, "--dir", dir)
+	if err != nil || !strings.Contains(out, "pump rebuild notes") {
+		t.Fatalf("summary-show: %v\n%s", err, out)
+	}
+	if out, err = runCLI(t, "derivative", "list", pub.MessageID, "--dir", dir); err != nil {
+		t.Fatalf("derivative list: %v\n%s", err, out)
+	}
+}

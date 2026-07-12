@@ -121,6 +121,7 @@ func newDaemonCmd(dirFlag *string) *cobra.Command {
 func newSendCmd(dirFlag *string) *cobra.Command {
 	var req daemon.PublishRequest
 	var emergency bool
+	var attach []string
 	cmd := &cobra.Command{
 		Use:   "send <body|-> ",
 		Short: "Publish a message (body as argument, or - for stdin)",
@@ -135,6 +136,15 @@ func newSendCmd(dirFlag *string) *cobra.Command {
 				body = string(blob)
 			}
 			req.Body = body
+			for _, path := range attach {
+				data, err := os.ReadFile(path)
+				if err != nil {
+					return err
+				}
+				req.Attachments = append(req.Attachments, daemon.AttachmentIn{
+					Data: data, Filename: filepath.Base(path),
+				})
+			}
 			req.AutoCreateTopics = true // operator CLI path (FIX-F1 ruling 1)
 			op := "publish"
 			if emergency {
@@ -156,6 +166,8 @@ func newSendCmd(dirFlag *string) *cobra.Command {
 	cmd.Flags().StringVar(&req.ThreadID, "thread", "", "thread id")
 	cmd.Flags().StringSliceVar(&req.Topics, "topic", nil, "initial topic link(s) by name or id (auto-creates unknown names)")
 	cmd.Flags().StringSliceVar(&req.Recipients, "to", nil, "explicit recipient agent view(s)")
+	cmd.Flags().StringSliceVar(&attach, "attach", nil, "attach file(s); content-addressed, made searchable via deterministic derivatives (N4)")
+	cmd.Flags().StringVar(&req.SenderSummary, "summary", "", "sender summary (an UNTRUSTED claim; the receiver verifies it against the body)")
 	return cmd
 }
 

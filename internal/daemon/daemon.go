@@ -371,6 +371,19 @@ type PublishRequest struct {
 	// M9 ingest hooks (schema: optional fields on message.publish)
 	SourceRef *SourceRef `json:"source_ref,omitempty"`
 	RelatesTo []string   `json:"relates_to,omitempty"`
+
+	// N4: attachments (content-addressed blobs; derivatives make them
+	// searchable) and the sender's UNTRUSTED summary claim (spec §8.4).
+	Attachments   []AttachmentIn `json:"attachments,omitempty"`
+	SenderSummary string         `json:"sender_summary,omitempty"`
+}
+
+// AttachmentIn carries one attachment's bytes into Publish (base64 over
+// IPC via encoding/json's []byte handling).
+type AttachmentIn struct {
+	Data     []byte `json:"data"`
+	Filename string `json:"filename,omitempty"`
+	Mime     string `json:"mime,omitempty"` // optional hint; content is SNIFFED regardless
 }
 
 // SourceRef is the ingest provenance payload (schema §message.publish).
@@ -457,10 +470,36 @@ func (d *Daemon) Publish(req PublishRequest) (*PublishResult, error) {
 		threadID = req.ThreadID
 	}
 
-	// 1. object first
+	// 1. objects first (body, then every attachment — durability ordering)
 	hash, err := d.store.Put(body)
 	if err != nil {
 		return nil, err
+	}
+	type attachOut struct {
+		ObjectHash string `json:"object_hash"`
+		ByteLen    int    `json:"byte_len"`
+		Mime       string `json:"mime"`
+		Filename   string `json:"filename,omitempty"`
+	}
+	var attachments []attachOut
+	for i, a := range req.Attachments {
+		if len(a.Data) == 0 {
+			return nil, fmt.Errorf("attachment %d is empty", i)
+		}
+		if len(a.Data) > config.DeriveMaxBytes {
+			return nil, fmt.Errorf("attachment %d is %d bytes (cap %d)", i, len(a.Data), config.DeriveMaxBytes)
+		}
+		mime := a.Mime
+		if mime == "" {
+			mime = sniffMime(a.Data)
+		}
+		ahash, err := d.store.Put(a.Data)
+		if err != nil {
+			return nil, err
+		}
+		attachments = append(attachments, attachOut{
+			ObjectHash: ahash, ByteLen: len(a.Data), Mime: mime, Filename: a.Filename,
+		})
 	}
 
 	msgID := req.MessageID
@@ -498,6 +537,12 @@ func (d *Daemon) Publish(req PublishRequest) (*PublishResult, error) {
 	}
 	if len(req.RelatesTo) > 0 {
 		payload["relates_to"] = req.RelatesTo
+	}
+	if len(attachments) > 0 {
+		payload["attachments"] = attachments
+	}
+	if req.SenderSummary != "" {
+		payload["sender_summary"] = req.SenderSummary
 	}
 	eventType := "message.publish"
 	if req.ReplyToMessageID != "" {

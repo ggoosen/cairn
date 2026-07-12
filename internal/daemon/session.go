@@ -63,6 +63,10 @@ var opCapability = map[string]string{
 	"subscribe-durable": capAdmin, "subscription-update": capAdmin,
 	"subscription-disable": capAdmin, "subscription-delete": capAdmin,
 	"subscription-list": capAdmin,
+
+	// derivatives (N4): reads are read-tier; invalidation is structural
+	"derivative-list": capRead, "summary-show": capRead,
+	"derivative-invalidate": capAdmin,
 }
 
 func capabilityFor(op string) string {

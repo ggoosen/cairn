@@ -89,5 +89,6 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newSessionCmd(&dir))
 	root.AddCommand(newSubscribeCmd(&dir))
 	root.AddCommand(newSubscriptionCmd(&dir))
+	root.AddCommand(newDerivativeCmd(&dir))
 	return root
 }

@@ -212,3 +212,45 @@ CREATE TABLE subscriptions (
   created_event_id TEXT NOT NULL
 );
 CREATE INDEX idx_subscriptions_view ON subscriptions(owner_view, disabled);
+
+-- Deterministic derivatives (P1 N4; spec §8.3). Rebuilt from derivative.*
+-- events; the extracted text lives in the object store keyed by text_hash.
+CREATE TABLE derivatives (
+  derivative_id TEXT PRIMARY KEY,        -- UUIDv7
+  blob_hash TEXT NOT NULL,               -- source blob (attachment object)
+  derivative_type TEXT NOT NULL,         -- plain|sanitized_html|text_layer|office_text
+  text_hash TEXT,                        -- extracted-text object (NULL for failed)
+  extractor TEXT NOT NULL,
+  extractor_version TEXT NOT NULL,
+  status TEXT NOT NULL,                  -- ok | failed
+  error TEXT,
+  invalidated INTEGER NOT NULL DEFAULT 0,
+  generated_at TEXT NOT NULL,
+  created_event_id TEXT NOT NULL
+);
+CREATE INDEX idx_derivatives_blob ON derivatives(blob_hash);
+
+-- FTS over derivative text (contentless, managed rowids like fts_revisions)
+CREATE VIRTUAL TABLE fts_derivatives USING fts5(
+  body,
+  content='',
+  tokenize="unicode61 tokenchars '_-#@'"
+);
+CREATE TABLE fts_derivatives_map (
+  rowid INTEGER PRIMARY KEY,
+  derivative_id TEXT NOT NULL UNIQUE
+);
+
+-- Receiver summary topical-consistency check (P1 N4; spec §8.4).
+-- sender_summary is event-derived (untrusted claim); the check columns are
+-- enrichment-class (recomputed by the enricher, like vectors).
+CREATE TABLE message_summaries (
+  message_id TEXT PRIMARY KEY,
+  sender_summary TEXT NOT NULL,
+  checked INTEGER NOT NULL DEFAULT 0,
+  agree_bp INTEGER,                      -- cosine in basis points at check time
+  disagree INTEGER NOT NULL DEFAULT 0,
+  local_summary TEXT,                    -- receiver extractive summary (on disagreement)
+  local_method TEXT,                     -- provenance: method + embedder model
+  checked_at TEXT
+);

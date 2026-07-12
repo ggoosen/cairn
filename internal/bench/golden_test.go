@@ -37,7 +37,7 @@ func TestCorpusMatchesShippedFixtures(t *testing.T) {
 func TestRunGoldenReproducesClaim(t *testing.T) {
 	t.Setenv("CAIRN_FAKE_VOLUME_STATUS", "encrypted")
 	var out bytes.Buffer
-	res, err := bench.RunGolden(&out)
+	res, err := bench.RunGolden(&out, nil)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out.String())
 	}

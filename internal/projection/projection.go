@@ -212,6 +212,7 @@ type publishPayload struct {
 	ReplyToMessageID string              `json:"reply_to_message_id"`
 	Recipients       []string            `json:"recipients"`
 	Attachments      []attachmentPayload `json:"attachments"`
+	SenderSummary    string              `json:"sender_summary"`
 	SourceRef        *sourceRefPayload   `json:"source_ref"`
 }
 
@@ -262,6 +263,14 @@ func (p *Projection) applyPayload(tx *sql.Tx, env *event.Envelope) error {
 			// (last event wins on path collisions).
 			if _, err := tx.Exec(`INSERT OR REPLACE INTO source_refs(path, message_id) VALUES (?,?)`,
 				pl.SourceRef.Path, pl.MessageID); err != nil {
+				return err
+			}
+		}
+		if pl.SenderSummary != "" {
+			// N4 (spec §8.4): the sender summary is an UNTRUSTED CLAIM; the
+			// check columns are enrichment-class and recomputed locally.
+			if _, err := tx.Exec(`INSERT OR IGNORE INTO message_summaries(message_id, sender_summary) VALUES (?,?)`,
+				pl.MessageID, pl.SenderSummary); err != nil {
 				return err
 			}
 		}
@@ -405,6 +414,66 @@ func (p *Projection) applyPayload(tx *sql.Tx, env *event.Envelope) error {
 		_, err := tx.Exec(`INSERT INTO signals(event_id, message_id, kind, weight, actor_principal_id, created_at)
 				VALUES (?,?,?,?,?,?)`,
 			env.EventID, pl.MessageID, pl.Kind, pl.Weight, nullable(env.ActorPrincipalID), env.WallTime)
+		return err
+
+	// --- deterministic derivatives (P1 N4; spec §8.3) ------------------------
+
+	case "derivative.publish":
+		var pl struct {
+			DerivativeID   string `json:"derivative_id"`
+			BlobHash       string `json:"blob_hash"`
+			DerivativeType string `json:"derivative_type"`
+			TextHash       string `json:"text_hash"`
+			Extractor      string `json:"extractor"`
+			Version        string `json:"extractor_version"`
+			GeneratedAt    string `json:"generated_at"`
+		}
+		if err := json.Unmarshal(env.Payload, &pl); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO derivatives(derivative_id, blob_hash, derivative_type, text_hash,
+				extractor, extractor_version, status, invalidated, generated_at, created_event_id)
+			VALUES (?,?,?,?,?,?,'ok',0,?,?)`,
+			pl.DerivativeID, pl.BlobHash, pl.DerivativeType, pl.TextHash,
+			pl.Extractor, pl.Version, pl.GeneratedAt, env.EventID); err != nil {
+			return err
+		}
+		return p.indexDerivative(tx, pl.DerivativeID, pl.TextHash)
+
+	case "derivative.fail":
+		var pl struct {
+			DerivativeID   string `json:"derivative_id"`
+			BlobHash       string `json:"blob_hash"`
+			DerivativeType string `json:"derivative_type"`
+			Extractor      string `json:"extractor"`
+			Version        string `json:"extractor_version"`
+			Error          string `json:"error"`
+			GeneratedAt    string `json:"generated_at"`
+		}
+		if err := json.Unmarshal(env.Payload, &pl); err != nil {
+			return err
+		}
+		_, err := tx.Exec(`INSERT INTO derivatives(derivative_id, blob_hash, derivative_type, text_hash,
+				extractor, extractor_version, status, error, invalidated, generated_at, created_event_id)
+			VALUES (?,?,?,NULL,?,?,'failed',?,0,?,?)`,
+			pl.DerivativeID, pl.BlobHash, pl.DerivativeType,
+			pl.Extractor, pl.Version, pl.Error, pl.GeneratedAt, env.EventID)
+		return err
+
+	case "derivative.invalidate":
+		var pl struct {
+			DerivativeID string `json:"derivative_id"`
+		}
+		if err := json.Unmarshal(env.Payload, &pl); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE derivatives SET invalidated=1 WHERE derivative_id=?`, pl.DerivativeID); err != nil {
+			return err
+		}
+		// deleting the MAP row hides the derivative from every search join
+		// (contentless FTS rows can only be deleted with their original
+		// body; the orphan is unreachable and reindex rebuilds clean)
+		_, err := tx.Exec(`DELETE FROM fts_derivatives_map WHERE derivative_id=?`, pl.DerivativeID)
 		return err
 
 	// --- durable semantic subscriptions (P1 N3; R24/R25) --------------------
@@ -553,6 +622,29 @@ func (p *Projection) applyPayload(tx *sql.Tx, env *event.Envelope) error {
 		// inserted) and otherwise ignored by this schema version (rulings §2).
 		return nil
 	}
+}
+
+// indexDerivative indexes extracted derivative text (same contentless
+// pattern as indexRevision). Missing text objects are recorded-but-skipped,
+// never fatal — reindex repairs once the object is present.
+func (p *Projection) indexDerivative(tx *sql.Tx, derivativeID, textHash string) error {
+	body, ok := p.bodyFetch(textHash)
+	if !ok {
+		return nil
+	}
+	res, err := tx.Exec(`INSERT OR IGNORE INTO fts_derivatives_map(derivative_id) VALUES (?)`, derivativeID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil // already indexed
+	}
+	var rowid int64
+	if err := tx.QueryRow(`SELECT rowid FROM fts_derivatives_map WHERE derivative_id=?`, derivativeID).Scan(&rowid); err != nil {
+		return err
+	}
+	_, err = tx.Exec(`INSERT INTO fts_derivatives(rowid, body) VALUES (?,?)`, rowid, string(body))
+	return err
 }
 
 // indexRevision inserts the revision body into the contentless FTS index
