@@ -57,7 +57,11 @@ type Daemon struct {
 	embedder embed.Embedder
 	trust    *identity.Trust
 	lg       *cairnlog.Log
-	proj     *projection.Projection
+	// logs holds append handles for FOREIGN origins (N6 replication ingest +
+	// frontier). The active origin is d.lg; the map excludes it.
+	logs          map[cairnlog.Origin]*cairnlog.Log
+	bootstrapMode bool // joined node running on grant-chain trust until genesis replicates (R37)
+	proj          *projection.Projection
 	store    *object.Store
 	usage    *object.UsageTracker
 	verifier *identity.ChainVerifier
@@ -72,6 +76,19 @@ type Daemon struct {
 
 	sessions *sessions    // N2 capability handles (guarded by mu via dispatch)
 	syncSrv  *peer.Server // N5 sync listener (nil unless configured)
+
+	syncBulkThreshold int           // N6: overrides config.SyncBulkCatchupThreshold in tests
+	syncKick          chan struct{} // N6: push-on-append nudges the anti-entropy sweep (R29)
+}
+
+// syncIdentity returns this node's peer identity for dialing. Caller holds
+// d.mu (reads device fields + key).
+func (d *Daemon) syncIdentity() peer.Identity {
+	return peer.Identity{
+		CairnID:  d.loaded.Portable.CairnID,
+		DeviceID: d.loaded.Device.DeviceID,
+		Priv:     d.devPriv,
+	}
 }
 
 // SyncAddr returns the bound sync listener address ("" if not listening).
@@ -172,6 +189,19 @@ func Start(opts Options) (*Daemon, error) {
 		return nil, fmt.Errorf("another daemon holds the write lock for this cairn: %w", err)
 	}
 
+	// N6: a joined node (R37) starts with only portable config + identity —
+	// its derived/object/view scaffold is created on first daemon start so
+	// replicated events, bodies, and the projection have somewhere to land.
+	if !readOnly {
+		for _, sub := range []string{config.EventsDirName, config.ObjectsDirName, config.ExportsDirName, config.ViewsDirName, config.DerivedDirName} {
+			if err := os.MkdirAll(filepath.Join(opts.Dir, sub), config.DirPerm); err != nil {
+				syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+				lockFile.Close()
+				return nil, fmt.Errorf("creating portable scaffold: %w", err)
+			}
+		}
+	}
+
 	if opts.Embedder == nil {
 		opts.Embedder = embed.Detect(opts.Dir)
 	}
@@ -188,6 +218,8 @@ func Start(opts Options) (*Daemon, error) {
 		embedder: opts.Embedder,
 		readOnly: readOnly,
 		sockDir:  lockDir,
+		logs:     map[cairnlog.Origin]*cairnlog.Log{},
+		syncKick: make(chan struct{}, 1),
 	}
 	if devPriv != nil {
 		d.keyID = event.KeyID(devPriv.Public().(ed25519.PublicKey))
@@ -267,6 +299,37 @@ func Start(opts Options) (*Daemon, error) {
 // against the seeded key set, projecting as it goes (pass 2).
 func (d *Daemon) recover() error {
 	trust, err := identity.MeshTrust(d.fs, d.dir)
+	// R37: a freshly-joined node has no local genesis yet — its origin log
+	// arrives via N6 replication. Until then it authenticates peers and
+	// verifies replicated records from the grant chain (BootstrapTrust), which
+	// is itself genesis-rooted and root-verified. This also covers a node
+	// whose genesis-bearing foreign origin was lost (a deleted-segment drill):
+	// MeshTrust cannot resolve the local chain, so we fall back to the grant
+	// chain and let N6 re-replicate the missing segments. A later start, once
+	// A's origin (with genesis) is local again, resolves via MeshTrust and
+	// this branch is skipped.
+	// RULING-NEEDED: R37 says a FRESHLY-JOINED node uses grant-chain bootstrap
+	// trust until segments replicate, and that N6 must "delete the crutch"
+	// once replicated. We additionally fall back to bootstrap trust when a
+	// previously-complete local chain becomes UNRESOLVABLE (its genesis-bearing
+	// foreign origin was lost — the deleted-segment drill), and we RETAIN
+	// bootstrap trust as a resilience fallback rather than deleting it. This is
+	// safe (bootstrap trust is genesis-rooted and root-verified, and MeshTrust
+	// wins whenever the local chain resolves), but it is broader than R37's
+	// literal wording; flagged for author confirmation.
+	needBootstrap := !d.readOnly && (err != nil || trust == nil || trust.GenesisEnv == nil)
+	if needBootstrap {
+		if bt, berr := identity.BootstrapTrust(d.loaded.DeviceDir); berr == nil && bt.GenesisEnv != nil {
+			trust = bt
+			d.bootstrapMode = true
+			if err != nil {
+				fmt.Fprintf(d.warn, "sync: local chain incomplete (%v) — running on grant-chain bootstrap trust; N6 re-replicates the log (R37)\n", err)
+			} else {
+				fmt.Fprintln(d.warn, "sync: no local genesis yet — running on grant-chain bootstrap trust until the log replicates (N6/R37)")
+			}
+			err = nil
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -293,9 +356,14 @@ func (d *Daemon) recover() error {
 		if o == active {
 			continue
 		}
-		if _, err := cairnlog.Walk(d.fs, d.dir, o, trust.Verifier(), apply); err != nil {
+		// N6: foreign origins get an APPEND handle (replication ingest +
+		// frontier), not just a read-only Walk. Open projects as it scans,
+		// exactly as Walk did, and repairs a torn tail from a crash-mid-sync.
+		lg, _, err := cairnlog.Open(d.fs, d.dir, o, trust.Verifier(), apply)
+		if err != nil {
 			return fmt.Errorf("replaying origin %s/%d: %w", o.DeviceID, o.Generation, err)
 		}
+		d.logs[o] = lg
 	}
 	lg, report, err := cairnlog.Open(d.fs, d.dir, active, trust.Verifier(), apply)
 	if err != nil {
@@ -340,6 +408,12 @@ func (d *Daemon) Close() error {
 			first = err
 		}
 		d.lg = nil
+	}
+	for o, lg := range d.logs {
+		if err := lg.Close(); err != nil && first == nil {
+			first = err
+		}
+		delete(d.logs, o)
 	}
 	if d.proj != nil {
 		if err := d.proj.Close(); err != nil && first == nil {
@@ -643,7 +717,20 @@ func (d *Daemon) Publish(req PublishRequest) (*PublishResult, error) {
 	if d.tel != nil {
 		d.tel.RecordLatency("ack_to_lexical_visible", time.Since(ackAt), d.now())
 	}
+	d.kickSync() // R29: push-on-append nudges the sweep toward connected peers
 	return res, nil
+}
+
+// kickSync signals the anti-entropy sweep to run now (push-on-append, R29).
+// Non-blocking: a pending kick already covers this append.
+func (d *Daemon) kickSync() {
+	if d.syncKick == nil {
+		return
+	}
+	select {
+	case d.syncKick <- struct{}{}:
+	default:
+	}
 }
 
 // topicNamePattern is the schema's topic-name rule.
@@ -752,6 +839,7 @@ func (d *Daemon) SimpleEvent(eventType, objectType, objectID string, payload map
 		return "", err
 	}
 	d.applyProjection(env, rec)
+	d.kickSync()
 	return env.EventID, nil
 }
 

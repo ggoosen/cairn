@@ -262,5 +262,36 @@ cairn device revoke <device-id> --root-key <restored>   # offline, then restart 
 
 Requests expire after 1h and are single-use (R28). Refused connections are
 logged with the presented identity on the daemon's stderr. A joined node
-becomes fully operational (digest/search) when N6 replication lands; until
-then `sync ping` is the membership proof.
+becomes fully operational (digest/search) once N6 replication lands (below);
+`sync ping` remains the zero-data membership probe.
+
+## 12. Peer sync — reconciliation (P1 N6)
+
+Once two machines are enrolled (§11), point them at each other and knowledge
+replicates automatically.
+
+```toml
+# in EACH machine's device config (path from `cairn identity show`):
+sync_listen = "100.x.y.z:9700"          # this machine's tailnet IP (never 0.0.0.0)
+sync_peers  = ["100.a.b.c:9700"]         # the other machine(s)' tailnet IP:port
+```
+Restart both daemons. From then on:
+
+- **Automatic**: every send pushes to connected peers immediately, and an
+  anti-entropy sweep reconciles every 5 minutes (both config-tunable). A
+  freshly-joined machine converges the whole mesh on its first sweep.
+- **On demand**:
+  ```bash
+  cairn sync now                 # reconcile every configured peer now
+  cairn sync now 100.a.b.c:9700  # reconcile one peer
+  cairn sync status              # per-origin frontiers + configured peers
+  ```
+
+What replicates in N6: the event log (all origins) and the searchable text
+corpus (canonical + eager message bodies; ephemeral only to a currently
+connected peer). Attachments/derivatives replicate in N7. Every replicated
+record is hash+signature verified before it is stored or indexed; a node that
+falls far behind is caught up by streaming whole segments. Convergence is
+crash-safe and idempotent — a re-run of `sync now` after any interruption
+simply re-fetches what is missing. Reindex on any node
+(`cairn reindex --lexical`) reproduces identical canonical search results.

@@ -56,6 +56,7 @@ var opCapability = map[string]string{
 	"resolve": capAdmin, "gates": capAdmin, "reserve-release": capAdmin,
 	"reserve-status": capAdmin, "emergency-publish": capAdmin,
 	"housekeep": capAdmin, "reindex-semantic": capAdmin,
+	"sync-now": capAdmin, "sync-status": capRead,
 	"session-create": capAdmin, "session-revoke": capAdmin, "session-list": capAdmin,
 
 	// durable subscriptions are structural (N3): agent-standard cannot

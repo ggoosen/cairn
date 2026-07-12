@@ -157,6 +157,8 @@ func (d *Daemon) Run(ctx context.Context, processOutbox func() error) error {
 		if err != nil {
 			return fmt.Errorf("sync listener: %w", err)
 		}
+		// N6: reconciliation runs over each authenticated connection.
+		srv.OnPeer = d.serveSync
 		fmt.Fprintf(d.warn, "sync: listening on %s (tailnet-only; membership = root-chained certs)\n", srv.Addr())
 		d.mu.Lock()
 		d.syncSrv = srv
@@ -166,6 +168,13 @@ func (d *Daemon) Run(ctx context.Context, processOutbox func() error) error {
 			<-ctx.Done()
 			srv.Close()
 		}()
+	}
+
+	// N6: anti-entropy sweep (R29) — dial every configured peer on a timer
+	// and on every push-on-append kick, running one bidirectional reconcile
+	// per peer. A peer that is offline is logged and retried next tick.
+	if len(d.loaded.Device.SyncPeers) > 0 && !d.readOnly {
+		go d.antiEntropyLoop(ctx)
 	}
 
 	// background enricher (rulings §6: embeddings on an in-process

@@ -291,6 +291,26 @@ const (
 	// signatures (never sign raw peer-supplied bytes).
 	SyncHelloDomain = "cairn-sync-hello-v1"
 
+	// N6 reconciliation + text replication (R29/R30). All config-revisable.
+	// SyncProtocolVersion tags the reconciliation wire protocol (post-handshake).
+	SyncProtocolVersion = 1
+	// SyncAntiEntropyInterval — R29 anti-entropy sweep cadence (default 5 min).
+	// A just-appended event ALSO kicks an immediate sweep (push-on-append).
+	SyncAntiEntropyInterval = 5 * time.Minute
+	// SyncPushDebounce collapses a burst of appends into one push sweep.
+	SyncPushDebounce = 250 * time.Millisecond
+	// SyncRangeBatch caps records per range/push message (memory bound).
+	SyncRangeBatch = 512
+	// SyncBulkCatchupThreshold — R30: a peer more than this many events behind
+	// on one origin is caught up by streaming whole sealed segments rather
+	// than per-event ranges (logged as a bulk catch-up).
+	SyncBulkCatchupThreshold = 10000
+	// SyncReconcileTimeout bounds one full reconciliation session.
+	SyncReconcileTimeout = 60 * time.Second
+	// SyncMaxObjectBytes caps a single replicated body/blob transfer (frame
+	// sanity bound; mirrors the 16 MiB record cap).
+	SyncMaxObjectBytes = 16 << 20
+
 	// Capability sessions (N2, RULINGS.md R23): opaque daemon-side handles,
 	// short-TTL, non-delegable, auto-revoked on exit/idle. TTL and idle
 	// window are buildpack-judgment constants, revisable from dogfood data.

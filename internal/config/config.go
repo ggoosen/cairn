@@ -111,6 +111,11 @@ type DeviceConfig struct {
 	// SyncListen (N5): tailnet host:port for the sync listener. Device-local
 	// by design (networking is per-device). Empty = no listener.
 	SyncListen string `toml:"sync_listen,omitempty"`
+
+	// SyncPeers (N6): tailnet host:port addresses of known peers. The
+	// anti-entropy sweep dials each (R29); a just-appended event kicks an
+	// immediate sweep. Device-local (networking is per-device).
+	SyncPeers []string `toml:"sync_peers,omitempty"`
 }
 
 // PortableDir resolves the portable cairn directory: explicit flag value,

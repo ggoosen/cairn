@@ -376,3 +376,51 @@ buildpack preamble):
   nonces under the "cairn-sync-hello-v1" domain separator; signature
   binds {cairn_id, signer device, both nonces}. Both directions verify
   membership + revocation + key possession BEFORE any protocol byte.
+
+## R38 — N6 reconciliation implementation rulings (interprets §6.2 / R29/R30/R37)
+
+Reconciliation runs over the N5-authenticated peer connection with a
+newline-delimited JSON protocol (frontier → get_range/push_records →
+records/ack → done). The INITIATOR drives BOTH directions in one dial, so a
+single reconcile fully converges both nodes.
+
+- **Foreign-origin ingest reuses the public log.** Received records are
+  hash+signature verified (mesh trust) BEFORE they are appended; the append
+  is the SAME `log.Append` the local write path uses, so contiguity,
+  chaining, framing, fsync, and sealing are enforced identically. Durable-log
+  internals are untouched. Idempotency is by (origin, sequence): a record at
+  or below the local frontier is a no-op (at-least-once → idempotent).
+- **Frontier = highest-contiguous next-sequence per origin.** Because
+  `log.Append` enforces contiguity, a node can only store a contiguous
+  prefix; range transfer therefore always starts at the receiver's frontier.
+  Non-contiguous "known gaps" (§6.2) cannot be durably held and are not
+  tracked separately — a conservative, spec-consistent simplification.
+- **Text-replication scope (N6 vs N7).** N6 replicates message.publish /
+  message.reply bodies and revise_body revision bodies (the searchable text
+  corpus). Attachments and derivative text are N7 (lazy blob fetch by hash +
+  local re-derivation). Canonical + eager bodies ship on both PULL and PUSH
+  (backfillable to full nodes); ephemeral bodies ship ONLY on a live PUSH to
+  a currently-connected peer and are never backfilled via a PULL response.
+- **Own-active-origin ingest is refused.** A peer presenting events for THIS
+  node's active origin beyond what it already holds is a possible fork
+  (equivocation) — refused and surfaced, never silently ingested. Live fork
+  detection + repair is N8.
+- **Cadence (R29).** Push-on-append kicks an immediate (debounced) sweep of
+  every configured `sync_peers`; an anti-entropy timer sweeps every 5 min
+  (both config-tunable). A far-behind receiver (> `SyncBulkCatchupThreshold`,
+  default 10k) is caught up with segment-sized batches (R30 bulk streaming),
+  logged as a bulk catch-up.
+- **Bootstrap-trust fallback (extends R37).** A node with no local genesis
+  (freshly joined) OR whose genesis-bearing foreign origin was lost falls
+  back to grant-chain bootstrap trust — genesis-rooted and root-verified —
+  until N6 re-replicates the missing segments; MeshTrust resumes control the
+  moment the local chain resolves. Bootstrap trust is RETAINED as a
+  resilience fallback rather than deleted. Marked `// RULING-NEEDED:` in
+  daemon.recover for author confirmation (broader than R37's literal "delete
+  the crutch"; safe because it never widens the trust root).
+- **Known limitation (flagged for N9 hardening).** A replicated record whose
+  signing device is not yet locally admitted (a device enrolled on a peer
+  whose device.add has not yet replicated) is refused until the admitting
+  origin replicates; it resolves across subsequent sweeps (fixpoint), exactly
+  as MeshTrust converges across origins. Not exercised by the two-node
+  acceptance (both devices are mutually known before sync).

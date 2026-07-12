@@ -147,8 +147,10 @@ type Server struct {
 	warn  io.Writer
 	ln    net.Listener
 	// OnPeer runs after a successful mutual handshake (N6 attaches the
-	// reconciliation protocol here). nil = N5 skeleton: acknowledge + close.
-	OnPeer func(conn net.Conn, peerDevice string)
+	// reconciliation protocol here). The reader carries any bytes the
+	// handshake buffered past the last message, so reconciliation MUST read
+	// through it. nil = N5 skeleton: acknowledge + close.
+	OnPeer func(conn net.Conn, r *bufio.Reader, peerDevice string)
 }
 
 // NewServer validates the address and starts listening.
@@ -227,50 +229,90 @@ func (s *Server) handle(conn net.Conn) {
 	fmt.Fprintf(s.warn, "sync: authenticated peer %s (device %s)\n", conn.RemoteAddr(), their.DeviceID)
 	if s.OnPeer != nil {
 		conn.SetDeadline(time.Time{})
-		s.OnPeer(conn, their.DeviceID)
+		s.OnPeer(conn, r, their.DeviceID)
 	}
 }
 
 // Ping dials a peer, completes the mutual handshake, and returns the
-// authenticated responder device id (the N5 membership proof; N6 keeps the
-// connection for reconciliation).
+// authenticated responder device id (the N5 membership proof). It closes the
+// connection; N6's Dial keeps it open for reconciliation.
 func Ping(addr string, ident Identity, trust Trust) (string, error) {
-	conn, err := net.DialTimeout("tcp", addr, config.SyncHelloTimeout)
+	conn, peerDevice, r, err := dial(addr, ident, trust)
 	if err != nil {
 		return "", err
 	}
-	defer conn.Close()
+	conn.Close()
+	_ = r
+	return peerDevice, nil
+}
+
+// Conn is an authenticated peer connection: the live net.Conn plus the
+// buffered reader the handshake left mid-stream (N6 reconciliation reads
+// through it so no bytes are lost).
+type Conn struct {
+	net.Conn
+	PeerDevice string
+	R          *bufio.Reader
+}
+
+// Dial completes the mutual handshake (identical to Ping) but returns the
+// LIVE authenticated connection for N6 reconciliation. The caller owns the
+// connection and must Close it. The deadline set during the handshake is
+// cleared before returning.
+func Dial(addr string, ident Identity, trust Trust) (*Conn, error) {
+	conn, peerDevice, r, err := dial(addr, ident, trust)
+	if err != nil {
+		return nil, err
+	}
+	conn.SetDeadline(time.Time{})
+	return &Conn{Conn: conn, PeerDevice: peerDevice, R: r}, nil
+}
+
+// dial performs the three-message mutual handshake and hands back the still-
+// open connection and its reader. On any failure it closes the connection.
+func dial(addr string, ident Identity, trust Trust) (net.Conn, string, *bufio.Reader, error) {
+	conn, err := net.DialTimeout("tcp", addr, config.SyncHelloTimeout)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			conn.Close()
+		}
+	}()
 	conn.SetDeadline(time.Now().Add(config.SyncHelloTimeout))
 	r := bufio.NewReader(conn)
 
 	nonceMine, err := newNonce()
 	if err != nil {
-		return "", err
+		return nil, "", nil, err
 	}
 	// 1. our hello
 	if err := writeMsg(conn, hello{V: 1, CairnID: ident.CairnID, DeviceID: ident.DeviceID, Nonce: nonceMine}); err != nil {
-		return "", err
+		return nil, "", nil, err
 	}
 	// 2. responder's signed hello — verify THEM first
 	their, err := readMsg(r)
 	if err != nil {
-		return "", fmt.Errorf("peer closed during handshake (are we enrolled?): %w", err)
+		return nil, "", nil, fmt.Errorf("peer closed during handshake (are we enrolled?): %w", err)
 	}
 	if err := verifyPeer(trust, ident.CairnID, their,
 		transcript(ident.CairnID, their.DeviceID, their.Nonce, nonceMine)); err != nil {
-		return "", fmt.Errorf("responder failed authentication: %w", err)
+		return nil, "", nil, fmt.Errorf("responder failed authentication: %w", err)
 	}
 	// 3. our proof
 	sig := ed25519.Sign(ident.Priv, transcript(ident.CairnID, ident.DeviceID, nonceMine, their.Nonce))
 	if err := writeMsg(conn, hello{V: 1, CairnID: ident.CairnID, DeviceID: ident.DeviceID, Sig: base64.StdEncoding.EncodeToString(sig)}); err != nil {
-		return "", err
+		return nil, "", nil, err
 	}
 	verdict, err := readMsg(r)
 	if err != nil {
-		return "", fmt.Errorf("peer dropped the connection after our proof (refused?): %w", err)
+		return nil, "", nil, fmt.Errorf("peer dropped the connection after our proof (refused?): %w", err)
 	}
 	if !verdict.OK {
-		return "", errors.New("peer REFUSED this device (not enrolled, or revoked)")
+		return nil, "", nil, errors.New("peer REFUSED this device (not enrolled, or revoked)")
 	}
-	return their.DeviceID, nil
+	ok = true
+	return conn, their.DeviceID, r, nil
 }

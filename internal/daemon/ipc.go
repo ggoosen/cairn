@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -65,6 +66,9 @@ type Request struct {
 
 	// derivatives (N4)
 	DerivativeID string `json:"derivative_id,omitempty"`
+
+	// N6 sync: optional explicit peer address ("" = every configured peer)
+	Peer string `json:"peer,omitempty"`
 
 	// durable subscriptions (N3)
 	Subscribe      *SubscribeRequest `json:"subscribe,omitempty"`
@@ -483,6 +487,51 @@ func (d *Daemon) dispatch(req Request) Response {
 			return fail(err)
 		}
 		return Response{OK: true, Status: map[string]any{"embedded": n}}
+
+	case "sync-now":
+		if err := d.writable(); err != nil {
+			return fail(err)
+		}
+		d.mu.Lock()
+		peers := append([]string(nil), d.loaded.Device.SyncPeers...)
+		d.mu.Unlock()
+		if req.Peer != "" {
+			peers = []string{req.Peer}
+		}
+		if len(peers) == 0 {
+			return fail(errors.New("no sync peers configured (set sync_peers in the device config, or pass an address)"))
+		}
+		total := 0
+		errsBy := map[string]any{}
+		for _, addr := range peers {
+			n, err := d.SyncWith(addr)
+			if err != nil {
+				errsBy[addr] = err.Error()
+				continue
+			}
+			total += n
+		}
+		st := map[string]any{"ingested": total, "peers": len(peers)}
+		if len(errsBy) > 0 {
+			st["errors"] = errsBy
+		}
+		return Response{OK: true, Status: st}
+
+	case "sync-status":
+		fr, err := d.Frontiers()
+		if err != nil {
+			return fail(err)
+		}
+		frs := make([]map[string]any, 0, len(fr))
+		for _, f := range fr {
+			frs = append(frs, map[string]any{
+				"origin": f.DeviceID + "/" + strconv.Itoa(f.Generation), "next_seq": f.NextSeq,
+			})
+		}
+		d.mu.Lock()
+		peers := append([]string(nil), d.loaded.Device.SyncPeers...)
+		d.mu.Unlock()
+		return Response{OK: true, Status: map[string]any{"frontiers": frs, "peers": peers, "bootstrap": d.bootstrapMode}}
 
 	case "peek":
 		info, err := d.proj.MessageInfo(req.MessageID)

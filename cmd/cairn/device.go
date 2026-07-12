@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ggoosen/cairn/internal/config"
+	"github.com/ggoosen/cairn/internal/daemon"
 	"github.com/ggoosen/cairn/internal/fsx"
 	"github.com/ggoosen/cairn/internal/identity"
 	"github.com/ggoosen/cairn/internal/peer"
@@ -161,6 +162,41 @@ func newSyncCmd(dirFlag *string) *cobra.Command {
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "authenticated: peer %s accepted this device, and proved it is enrolled device %s\n", args[0], peerDevice)
 			return nil
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "now [host:port]",
+		Short: "Reconcile with peers now (N6): frontier exchange + missing-range transfer, both directions",
+		Long:  "Runs one bidirectional reconciliation. With no argument, sweeps every configured sync peer; with an address, reconciles that peer only. Mutations go through the running daemon (single writer).",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req := daemon.Request{Op: "sync-now"}
+			if len(args) == 1 {
+				req.Peer = args[0]
+			}
+			resp, err := call(dirFlag, req)
+			if err != nil {
+				return err
+			}
+			if !resp.OK {
+				return fmt.Errorf("%s", resp.Error)
+			}
+			return printJSON(cmd, resp.Status)
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "status",
+		Short: "Show per-origin sync frontiers and configured peers (N6)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := call(dirFlag, daemon.Request{Op: "sync-status"})
+			if err != nil {
+				return err
+			}
+			if !resp.OK {
+				return fmt.Errorf("%s", resp.Error)
+			}
+			return printJSON(cmd, resp.Status)
 		},
 	})
 	groupGuard(cmd)

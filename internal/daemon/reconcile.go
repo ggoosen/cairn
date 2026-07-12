@@ -1,0 +1,675 @@
+package daemon
+
+// N6 reconciliation + text replication (buildpack N6; spec §6.2; R29/R30).
+//
+// After the peer.Server handshake authenticates a connection (R27), the two
+// nodes speak this newline-delimited JSON protocol over the SAME connection:
+//
+//	frontier      — each side's per-origin highest-contiguous frontier
+//	get_range     — "send me [from,to) of this origin" (a PULL)
+//	push_records  — "here are [from,to) of this origin" (a PUSH; ingest)
+//	records       — the response to get_range
+//	ack           — the response to push_records (peer's new frontier)
+//	done          — initiator finished; responder returns
+//
+// The INITIATOR (SyncWith) drives BOTH directions over one connection, so a
+// single dial fully converges both nodes: it pushes origins the peer is behind
+// on and pulls origins it is itself behind on. The responder (serveSync) only
+// answers. Ingest is idempotent by (origin, sequence): a record at or below
+// our frontier is a no-op; every record is hash+signature verified BEFORE it
+// is appended or indexed (spec §6.2). Durable-log internals (framing, signing,
+// sealing) are untouched — foreign-origin ingest reuses the public log.Append,
+// which enforces contiguity, chaining, framing, fsync, and sealing exactly as
+// the local write path does.
+//
+// Text-replication policy (buildpack N6): canonical + eager message bodies
+// replicate to all full nodes (shipped on both PULL and PUSH); ephemeral
+// bodies ship only on a live PUSH (currently-connected peer) and are never
+// backfilled via a PULL response.
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/ggoosen/cairn/internal/config"
+	"github.com/ggoosen/cairn/internal/event"
+	cairnlog "github.com/ggoosen/cairn/internal/log"
+	"github.com/ggoosen/cairn/internal/object"
+	"github.com/ggoosen/cairn/internal/peer"
+)
+
+// originRef names one append chain on the wire.
+type originRef struct {
+	DeviceID   string `json:"device_id"`
+	Generation int    `json:"generation"`
+}
+
+func (o originRef) log() cairnlog.Origin {
+	return cairnlog.Origin{DeviceID: o.DeviceID, Generation: o.Generation}
+}
+func refOf(o cairnlog.Origin) originRef {
+	return originRef{DeviceID: o.DeviceID, Generation: o.Generation}
+}
+
+// originFrontier is one origin's highest-contiguous position (next expected
+// sequence + the current chain head id).
+type originFrontier struct {
+	originRef
+	NextSeq     int64  `json:"next_seq"`
+	LastEventID string `json:"last_event_id,omitempty"`
+}
+
+// syncMsg is one reconciliation message.
+type syncMsg struct {
+	Type     string            `json:"type"`
+	Frontier []originFrontier  `json:"frontier,omitempty"`
+	Origin   *originRef        `json:"origin,omitempty"`
+	FromSeq  int64             `json:"from_seq,omitempty"`
+	ToSeq    int64             `json:"to_seq,omitempty"` // exclusive
+	Records  [][]byte          `json:"records,omitempty"`
+	Bodies   map[string][]byte `json:"bodies,omitempty"` // body_hash → text bytes
+	Bulk     bool              `json:"bulk,omitempty"`   // R30 bulk catch-up marker
+	Err      string            `json:"err,omitempty"`
+}
+
+func writeSync(w io.Writer, m syncMsg) error {
+	blob, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(blob, '\n'))
+	return err
+}
+
+func readSync(r *bufio.Reader) (*syncMsg, error) {
+	line, err := r.ReadBytes('\n')
+	if err != nil {
+		return nil, err
+	}
+	var m syncMsg
+	if err := json.Unmarshal(line, &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// activeOrigin is this node's own writable origin.
+func (d *Daemon) activeOrigin() cairnlog.Origin {
+	return cairnlog.Origin{DeviceID: d.loaded.Device.DeviceID, Generation: d.loaded.Device.OriginGeneration}
+}
+
+// Frontiers snapshots the per-origin frontier under the writer lock. The
+// active origin's position comes from the live append handle; every foreign
+// origin has a cached append handle (opened at recover / lazily on ingest).
+func (d *Daemon) Frontiers() ([]originFrontier, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.frontiersLocked()
+}
+
+func (d *Daemon) frontiersLocked() ([]originFrontier, error) {
+	out := []originFrontier{}
+	if d.lg != nil {
+		out = append(out, originFrontier{
+			originRef:   refOf(d.activeOrigin()),
+			NextSeq:     d.lg.NextSeq(),
+			LastEventID: d.lg.LastEventID(),
+		})
+	}
+	for o, lg := range d.logs {
+		out = append(out, originFrontier{
+			originRef:   refOf(o),
+			NextSeq:     lg.NextSeq(),
+			LastEventID: lg.LastEventID(),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].DeviceID != out[j].DeviceID {
+			return out[i].DeviceID < out[j].DeviceID
+		}
+		return out[i].Generation < out[j].Generation
+	})
+	return out, nil
+}
+
+// foreignLog returns the append handle for a foreign origin, opening (and
+// caching) it on first use. A brand-new origin (a peer's, never seen) opens
+// fresh at sequence 1. Caller holds d.mu.
+func (d *Daemon) foreignLog(o cairnlog.Origin) (*cairnlog.Log, error) {
+	if o == d.activeOrigin() {
+		return nil, errors.New("refusing an append handle for our OWN active origin via replication")
+	}
+	if lg, ok := d.logs[o]; ok {
+		return lg, nil
+	}
+	lg, _, err := cairnlog.Open(d.fs, d.dir, o, d.trust.Verifier(), nil)
+	if err != nil {
+		return nil, err
+	}
+	d.logs[o] = lg
+	return lg, nil
+}
+
+// replBody is one text object referenced by an event, with its class.
+type replBody struct {
+	hash  string
+	class string
+}
+
+// bodiesForRepl returns the message-body objects an event references (spec
+// §5 text classes). N6 replicates message.publish / message.reply bodies and
+// revise_body revision bodies; attachments/derivative text are N7 (lazy blob
+// fetch + local re-derivation). Unknown event types reference no text bodies.
+func bodiesForRepl(env *event.Envelope) []replBody {
+	var out []replBody
+	switch env.EventType {
+	case "message.publish", "message.reply":
+		var pl struct {
+			BodyHash  string `json:"body_hash"`
+			TextClass string `json:"text_class"`
+		}
+		if json.Unmarshal(env.Payload, &pl) == nil && pl.BodyHash != "" {
+			out = append(out, replBody{hash: pl.BodyHash, class: pl.TextClass})
+		}
+	case "revise_body":
+		var pl struct {
+			Revisions []struct {
+				BodyHash  string `json:"body_hash"`
+				TextClass string `json:"text_class"`
+			} `json:"revisions"`
+			TextClass string `json:"text_class"`
+		}
+		if json.Unmarshal(env.Payload, &pl) == nil {
+			for _, r := range pl.Revisions {
+				if r.BodyHash != "" {
+					cls := r.TextClass
+					if cls == "" {
+						cls = pl.TextClass
+					}
+					out = append(out, replBody{hash: r.BodyHash, class: cls})
+				}
+			}
+		}
+	}
+	return out
+}
+
+func replicatesToFullNode(class string) bool {
+	// canonical + eager text replicate to all full nodes (buildpack N6).
+	// An empty class defaults to canonical (the daemon's publish default).
+	return class == object.ClassCanonical || class == object.ClassEager || class == ""
+}
+
+// readRange reads verified records [from,to) of an origin from its segment
+// files, plus the body objects they reference under the replication policy.
+// includeEphemeral ships ephemeral bodies too (a live PUSH to a connected
+// peer); a PULL response never backfills ephemeral text. Caller holds d.mu.
+func (d *Daemon) readRange(o cairnlog.Origin, from, to int64, includeEphemeral bool) ([][]byte, map[string][]byte, error) {
+	if to <= from {
+		return nil, nil, nil
+	}
+	dir := cairnlog.SegmentDir(d.dir, o.DeviceID, o.Generation)
+	entries, err := d.fs.ReadDir(dir)
+	if err != nil {
+		return nil, nil, err
+	}
+	var firsts []int64
+	for _, e := range entries {
+		if fs, ok := parseSegSeq(e.Name()); ok {
+			firsts = append(firsts, fs)
+		}
+	}
+	sort.Slice(firsts, func(i, j int) bool { return firsts[i] < firsts[j] })
+
+	records := [][]byte{}
+	bodies := map[string][]byte{}
+	verify := d.trust.Verifier()
+	for _, first := range firsts {
+		// records in this segment cover [first, first+count)
+		recs, err := cairnlog.ReadSegment(d.fs, filepath.Join(dir, cairnlog.SegmentName(first)))
+		if err != nil {
+			return nil, nil, fmt.Errorf("reading segment %d of origin %s/%d: %w", first, o.DeviceID, o.Generation, err)
+		}
+		last := first + int64(len(recs)) // exclusive
+		if last <= from || first >= to {
+			continue // no overlap
+		}
+		for i, rec := range recs {
+			seq := first + int64(i)
+			if seq < from || seq >= to {
+				continue
+			}
+			records = append(records, rec)
+			env, verr := verify(rec)
+			if verr != nil {
+				// our own on-disk records are already verified; a failure here
+				// is corruption we must not silently ship.
+				return nil, nil, fmt.Errorf("origin %s/%d seq %d fails verification on read: %w", o.DeviceID, o.Generation, seq, verr)
+			}
+			for _, b := range bodiesForRepl(env) {
+				if !replicatesToFullNode(b.class) && !(includeEphemeral && b.class == object.ClassEphemeral) {
+					continue
+				}
+				if _, have := bodies[b.hash]; have {
+					continue
+				}
+				if data, err := d.store.Get(b.hash); err == nil {
+					bodies[b.hash] = data
+				}
+				// a missing local body is not fatal: the peer indexes what it
+				// can and re-fetches lazily (N7). Ephemeral may have expired.
+			}
+		}
+	}
+	return records, bodies, nil
+}
+
+// ingestRecords verifies and appends a contiguous run of foreign-origin
+// records (idempotent by sequence), storing any shipped body objects first
+// (durability ordering: objects → event → index). It returns how many were
+// newly appended. Caller holds d.mu. Records for OUR active origin are refused
+// (equivocation is N8, never silently ingested).
+func (d *Daemon) ingestRecords(recs [][]byte, bodies map[string][]byte) (int, error) {
+	if len(recs) == 0 {
+		return 0, nil
+	}
+	verify := d.trust.Verifier()
+	appended := 0
+	for _, rec := range recs {
+		env, err := verify(rec)
+		if err != nil {
+			return appended, fmt.Errorf("rejecting unverifiable replicated record (hash/sig): %w", err)
+		}
+		o := cairnlog.Origin{DeviceID: env.OriginDeviceID, Generation: env.OriginGeneration}
+		if o == d.activeOrigin() {
+			if env.OriginSequence < d.lg.NextSeq() {
+				continue // a copy of our own event — idempotent no-op
+			}
+			return appended, fmt.Errorf("peer presented event at seq %d for OUR active origin %s/%d — possible fork (N8); refusing",
+				env.OriginSequence, o.DeviceID, o.Generation)
+		}
+		lg, err := d.foreignLog(o)
+		if err != nil {
+			return appended, err
+		}
+		next := lg.NextSeq()
+		if env.OriginSequence < next {
+			continue // already have it (at-least-once → idempotent)
+		}
+		if env.OriginSequence > next {
+			// a gap: the caller must deliver contiguously from our frontier.
+			return appended, fmt.Errorf("replication gap on origin %s/%d: have up to %d, got %d",
+				o.DeviceID, o.Generation, next-1, env.OriginSequence)
+		}
+		// objects before event (rulings §3 durability ordering)
+		for _, b := range bodiesForRepl(env) {
+			if data, ok := bodies[b.hash]; ok && !d.store.Exists(b.hash) {
+				if _, err := d.store.Put(data); err != nil {
+					return appended, fmt.Errorf("storing replicated body %s: %w", b.hash, err)
+				}
+			}
+		}
+		if err := lg.Append(rec, env); err != nil {
+			return appended, fmt.Errorf("appending replicated event %s: %w", env.EventID, err)
+		}
+		d.applyProjection(env, rec)
+		appended++
+	}
+	return appended, nil
+}
+
+// serveSync is the responder side of one authenticated connection: answer the
+// initiator's frontier/get_range/push_records requests until it says done or
+// the connection closes. It NEVER holds the writer lock across network I/O.
+func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
+	for {
+		req, err := readSync(r)
+		if err != nil {
+			return // connection closed / initiator done
+		}
+		switch req.Type {
+		case "frontier":
+			fr, err := d.Frontiers()
+			if err != nil {
+				writeSync(conn, syncMsg{Type: "error", Err: err.Error()})
+				return
+			}
+			if err := writeSync(conn, syncMsg{Type: "frontier", Frontier: fr}); err != nil {
+				return
+			}
+		case "get_range":
+			if req.Origin == nil {
+				writeSync(conn, syncMsg{Type: "error", Err: "get_range without origin"})
+				return
+			}
+			d.mu.Lock()
+			recs, bodies, err := d.readRange(req.Origin.log(), req.FromSeq, req.ToSeq, false)
+			d.mu.Unlock()
+			if err != nil {
+				fmt.Fprintf(d.warn, "sync: serving range %s/%d [%d,%d) to %s failed: %v\n",
+					req.Origin.DeviceID, req.Origin.Generation, req.FromSeq, req.ToSeq, peerDevice, err)
+				writeSync(conn, syncMsg{Type: "error", Err: err.Error()})
+				return
+			}
+			if err := writeSync(conn, syncMsg{Type: "records", Origin: req.Origin, Records: recs, Bodies: bodies}); err != nil {
+				return
+			}
+		case "push_records":
+			d.mu.Lock()
+			n, err := d.ingestRecords(req.Records, req.Bodies)
+			var fr []originFrontier
+			if err == nil {
+				fr, _ = d.frontiersLocked()
+			}
+			d.mu.Unlock()
+			if err != nil {
+				fmt.Fprintf(d.warn, "sync: ingest from %s failed: %v\n", peerDevice, err)
+				writeSync(conn, syncMsg{Type: "error", Err: err.Error()})
+				return
+			}
+			if n > 0 {
+				fmt.Fprintf(d.warn, "sync: ingested %d event(s) from %s\n", n, peerDevice)
+			}
+			if err := writeSync(conn, syncMsg{Type: "ack", Frontier: fr}); err != nil {
+				return
+			}
+		case "done":
+			return
+		default:
+			writeSync(conn, syncMsg{Type: "error", Err: "unknown sync message " + req.Type})
+			return
+		}
+	}
+}
+
+// SyncWith dials a peer, authenticates (R27), and runs one full bidirectional
+// reconciliation: it pushes every origin the peer trails on and pulls every
+// origin it trails on. Returns the number of events it ingested.
+func (d *Daemon) SyncWith(addr string) (int, error) {
+	d.mu.Lock()
+	if d.lg == nil && !d.readOnly {
+		d.mu.Unlock()
+		return 0, errors.New("daemon not ready")
+	}
+	ident := d.syncIdentity()
+	trust := d.trust
+	d.mu.Unlock()
+	if trust == nil {
+		return 0, errors.New("no mesh trust")
+	}
+
+	pc, err := peer.Dial(addr, ident, trust)
+	if err != nil {
+		return 0, err
+	}
+	defer pc.Close()
+
+	// 1. frontier exchange
+	if err := writeSync(pc, syncMsg{Type: "frontier"}); err != nil {
+		return 0, err
+	}
+	resp, err := readSync(pc.R)
+	if err != nil {
+		return 0, fmt.Errorf("peer closed before frontier: %w", err)
+	}
+	if resp.Type == "error" {
+		return 0, fmt.Errorf("peer error: %s", resp.Err)
+	}
+	if resp.Type != "frontier" {
+		return 0, fmt.Errorf("expected frontier, got %q", resp.Type)
+	}
+	peerFr := map[cairnlog.Origin]originFrontier{}
+	for _, f := range resp.Frontier {
+		peerFr[f.log()] = f
+	}
+
+	mine, err := d.Frontiers()
+	if err != nil {
+		return 0, err
+	}
+	myFr := map[cairnlog.Origin]originFrontier{}
+	for _, f := range mine {
+		myFr[f.log()] = f
+	}
+
+	// deterministic origin order across both directions
+	seen := map[cairnlog.Origin]bool{}
+	var origins []cairnlog.Origin
+	for o := range myFr {
+		if !seen[o] {
+			seen[o] = true
+			origins = append(origins, o)
+		}
+	}
+	for o := range peerFr {
+		if !seen[o] {
+			seen[o] = true
+			origins = append(origins, o)
+		}
+	}
+	sort.Slice(origins, func(i, j int) bool {
+		if origins[i].DeviceID != origins[j].DeviceID {
+			return origins[i].DeviceID < origins[j].DeviceID
+		}
+		return origins[i].Generation < origins[j].Generation
+	})
+
+	ingested := 0
+	for _, o := range origins {
+		myNext := int64(config.FirstSequence)
+		if f, ok := myFr[o]; ok {
+			myNext = f.NextSeq
+		}
+		peerNext := int64(config.FirstSequence)
+		if f, ok := peerFr[o]; ok {
+			peerNext = f.NextSeq
+		}
+		// PULL: we trail the peer on this origin.
+		if myNext < peerNext {
+			n, err := d.pullOrigin(pc, o, myNext, peerNext)
+			if err != nil {
+				return ingested, err
+			}
+			ingested += n
+		}
+		// PUSH: the peer trails us on this origin.
+		if peerNext < myNext {
+			if err := d.pushOrigin(pc, o, peerNext, myNext); err != nil {
+				return ingested, err
+			}
+		}
+	}
+	writeSync(pc, syncMsg{Type: "done"})
+	return ingested, nil
+}
+
+// pullOrigin requests [from,to) of an origin from the peer in batches,
+// re-reading our frontier after each batch (ingest advances it). R30: a large
+// deficit is logged as a bulk catch-up.
+func (d *Daemon) pullOrigin(pc *peer.Conn, o cairnlog.Origin, from, to int64) (int, error) {
+	batch := int64(config.SyncRangeBatch)
+	if to-from > int64(d.bulkThreshold()) {
+		// R30: a far-behind node is caught up by streaming whole sealed
+		// segments rather than per-event ranges — use a segment-sized batch.
+		batch = int64(config.SegmentSealEvents)
+		fmt.Fprintf(d.warn, "sync: bulk catch-up — pulling %d events of origin %s/%d (streaming segments)\n",
+			to-from, o.DeviceID, o.Generation)
+	}
+	ingested := 0
+	next := from
+	ref := refOf(o)
+	for next < to {
+		hi := next + batch
+		if hi > to {
+			hi = to
+		}
+		if err := writeSync(pc, syncMsg{Type: "get_range", Origin: &ref, FromSeq: next, ToSeq: hi}); err != nil {
+			return ingested, err
+		}
+		resp, err := readSync(pc.R)
+		if err != nil {
+			return ingested, fmt.Errorf("peer closed during range transfer: %w", err)
+		}
+		if resp.Type == "error" {
+			return ingested, fmt.Errorf("peer error on range: %s", resp.Err)
+		}
+		if resp.Type != "records" {
+			return ingested, fmt.Errorf("expected records, got %q", resp.Type)
+		}
+		if len(resp.Records) == 0 {
+			break // peer has nothing more for this window
+		}
+		d.mu.Lock()
+		n, err := d.ingestRecords(resp.Records, resp.Bodies)
+		var advanced int64 = -1
+		if err == nil {
+			if lg, ok := d.logs[o]; ok {
+				advanced = lg.NextSeq()
+			}
+		}
+		d.mu.Unlock()
+		if err != nil {
+			return ingested, err
+		}
+		ingested += n
+		if advanced <= next {
+			break // no forward progress (defensive against a stuck peer)
+		}
+		next = advanced
+	}
+	return ingested, nil
+}
+
+// pushOrigin streams [from,to) of an origin to the peer in batches. It reads
+// the peer's ack frontier after each batch and stops when the peer has caught
+// up. Ephemeral bodies are shipped (live PUSH to a connected peer).
+func (d *Daemon) pushOrigin(pc *peer.Conn, o cairnlog.Origin, from, to int64) error {
+	bulk := to-from > int64(d.bulkThreshold())
+	batch := int64(config.SyncRangeBatch)
+	if bulk {
+		// R30: segment-sized batches when the peer is far behind.
+		batch = int64(config.SegmentSealEvents)
+		fmt.Fprintf(d.warn, "sync: bulk catch-up — pushing %d events of origin %s/%d (streaming segments)\n",
+			to-from, o.DeviceID, o.Generation)
+	}
+	next := from
+	ref := refOf(o)
+	for next < to {
+		hi := next + batch
+		if hi > to {
+			hi = to
+		}
+		d.mu.Lock()
+		recs, bodies, err := d.readRange(o, next, hi, true)
+		d.mu.Unlock()
+		if err != nil {
+			return err
+		}
+		if len(recs) == 0 {
+			break
+		}
+		if err := writeSync(pc, syncMsg{Type: "push_records", Origin: &ref, FromSeq: next, ToSeq: hi, Records: recs, Bodies: bodies, Bulk: bulk}); err != nil {
+			return err
+		}
+		resp, err := readSync(pc.R)
+		if err != nil {
+			return fmt.Errorf("peer closed during push: %w", err)
+		}
+		if resp.Type == "error" {
+			return fmt.Errorf("peer error on push: %s", resp.Err)
+		}
+		if resp.Type != "ack" {
+			return fmt.Errorf("expected ack, got %q", resp.Type)
+		}
+		next = hi
+	}
+	return nil
+}
+
+// antiEntropyLoop runs a reconcile sweep on the R29 timer AND on every
+// push-on-append kick (debounced), until ctx is done.
+func (d *Daemon) antiEntropyLoop(ctx context.Context) {
+	ticker := time.NewTicker(config.SyncAntiEntropyInterval)
+	defer ticker.Stop()
+	// an initial sweep so a just-started node converges without waiting a tick
+	d.SyncAllPeers()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			d.SyncAllPeers()
+		case <-d.syncKick:
+			// debounce a burst of appends into one sweep
+			t := time.NewTimer(config.SyncPushDebounce)
+			select {
+			case <-ctx.Done():
+				t.Stop()
+				return
+			case <-t.C:
+			}
+			// drain any kicks that arrived during the debounce window
+			select {
+			case <-d.syncKick:
+			default:
+			}
+			d.SyncAllPeers()
+		}
+	}
+}
+
+// SyncAllPeers runs one reconcile against every configured peer, logging
+// per-peer outcomes. Peers that are offline/unreachable are logged and left
+// for the next sweep (at-least-once convergence).
+func (d *Daemon) SyncAllPeers() {
+	d.mu.Lock()
+	peers := append([]string(nil), d.loaded.Device.SyncPeers...)
+	d.mu.Unlock()
+	for _, addr := range peers {
+		n, err := d.SyncWith(addr)
+		if err != nil {
+			fmt.Fprintf(d.warn, "sync: reconcile with %s did not complete: %v\n", addr, err)
+			continue
+		}
+		if n > 0 {
+			fmt.Fprintf(d.warn, "sync: reconcile with %s ingested %d event(s)\n", addr, n)
+		}
+	}
+}
+
+func (d *Daemon) bulkThreshold() int {
+	if d.syncBulkThreshold > 0 {
+		return d.syncBulkThreshold
+	}
+	return config.SyncBulkCatchupThreshold
+}
+
+// SetSyncBulkThresholdForTest lowers the R30 bulk-catch-up threshold so the
+// segment-streaming path is exercisable without a 10k-event fixture. TEST HOOK.
+func (d *Daemon) SetSyncBulkThresholdForTest(n int) {
+	d.mu.Lock()
+	d.syncBulkThreshold = n
+	d.mu.Unlock()
+}
+
+// parseSegSeq extracts the first sequence from a "seg_00000001.seg" name.
+func parseSegSeq(name string) (int64, bool) {
+	if !strings.HasPrefix(name, "seg_") || !strings.HasSuffix(name, ".seg") {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(name, "seg_"), ".seg"), 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}

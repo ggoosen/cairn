@@ -1188,3 +1188,109 @@ Run the real ceremony on your tailnet (full runbook: DOGFOOD.md §11):
    then `cairn sync ping <tailnet-ip>:9700` — expect mutual auth success.
 6. Negative probe: from any un-enrolled machine on the tailnet, the same
    ping must be REFUSED and logged on this machine's daemon stderr.
+
+## N6 — Reconciliation + text replication — COMPLETE
+
+Status: all buildpack acceptance criteria pass (full suite `make test` +
+`make vet` + `make verify` green). Durable-log internals untouched —
+foreign-origin ingest reuses the public `log.Open`/`log.Append` (contiguity,
+chaining, framing, fsync, sealing all enforced by the existing write path).
+Not an operator-checkpoint milestone (N5 was; N8 is next). Authority: RULINGS
+R38 appended (interprets §6.2 / R29 / R30 / R37).
+
+- **Reconciliation protocol** (`internal/daemon/reconcile.go`): over each
+  N5-authenticated connection, a newline-delimited JSON exchange — frontier →
+  get_range / push_records → records / ack → done. The INITIATOR (`SyncWith`)
+  drives BOTH directions in one dial (pushes origins the peer trails, pulls
+  origins it trails), so a single reconcile fully converges both nodes; the
+  responder (`serveSync`, wired to `peer.Server.OnPeer`) only answers and
+  never holds the writer lock across network I/O.
+- **`peer.Dial`** returns the LIVE authenticated connection (Ping now wraps
+  it and closes); `OnPeer` gained the buffered reader so reconciliation reads
+  the exact post-handshake byte stream.
+- **Foreign-origin ingest**: each origin gets an append handle (opened at
+  recover, or lazily on first ingest — a brand-new peer origin opens fresh at
+  seq 1). Every record is hash+signature verified against mesh trust BEFORE
+  append; ingest is idempotent by (origin, sequence). Events for THIS node's
+  active origin beyond what it holds are refused as a possible fork (N8),
+  never silently ingested.
+- **Text replication (R38 scope)**: message.publish/reply bodies and
+  revise_body revision bodies ship with the events (objects before event —
+  durability ordering preserved). canonical + eager on both pull and push;
+  ephemeral only on a live push, never backfilled. Attachments/derivative
+  text are N7. The >64 KiB non-inline canonical body in drill 1 proves the
+  real body-OBJECT crosses the wire (not just the inline event).
+- **Cadence (R29)**: push-on-append kicks a debounced sweep of every
+  configured `sync_peers`; anti-entropy timer sweeps every 5 min. New device
+  config field `sync_peers` (device-local, per-device networking). Constants
+  (config-revisable): SyncAntiEntropyInterval 5m, SyncPushDebounce 250ms,
+  SyncRangeBatch 512, SyncBulkCatchupThreshold 10k, SyncProtocolVersion 1.
+- **Bulk catch-up (R30)**: a receiver > threshold behind on an origin is
+  caught up with segment-sized batches, logged as a bulk catch-up.
+- **Joined-node bootstrap (R37 + R38)**: a freshly-joined node (no local
+  genesis) — or one whose genesis-bearing foreign origin was lost — boots on
+  grant-chain bootstrap trust and becomes daemon-operational; the daemon now
+  creates the portable scaffold (events/objects/exports/views/.cairn) on
+  first start so replicated data has somewhere to land. MeshTrust resumes the
+  moment the local chain resolves. `// RULING-NEEDED:` at daemon.recover for
+  the retain-vs-delete-the-crutch interpretation.
+- **CLI**: `cairn sync now [host:port]` (reconcile now — all peers or one)
+  and `cairn sync status` (per-origin frontiers + configured peers), both via
+  daemon IPC (single writer). New IPC ops sync-now (admin) / sync-status
+  (read).
+
+### Acceptance criteria → evidence (`TestN6TwoNodeConvergence`, 6 drills)
+The two nodes are the N5 enrolment pair (A init + root offline; B joined) —
+the only convergeable configuration (R34).
+1. *Normal operation* — A publishes 3 small + 1 >64 KiB canonical body; B
+   pulls all incl. the big body OBJECT; B publishes 2; A pulls them.
+2. *One node offline for 100+ events* — A publishes 120 while B is silent;
+   one reconcile catches B up (120/120).
+3. *kill-9 mid-sync on the RECEIVER* — B's A-origin tail truncated (torn/lost
+   frames); restart repairs the tail (frontier regresses, asserted on the
+   LOG not the projection); resync re-fetches to A's frontier.
+4. *kill-9 mid-sync on the SENDER* — A's B-origin tail truncated; restart
+   repairs; A re-pulls B's origin to full frontier.
+5. *Deliberately deleted segment on the receiver* — B's whole copy of A's
+   origin removed; restart regresses the frontier to 1; resync re-fetches +
+   verifies back to A's frontier, corpus intact.
+6. *Reindex BOTH nodes → identical canonical results* — projections rebuilt
+   purely from the log; the canonical/eager search snapshot is byte-identical
+   across A and B; deep doctor clean on both.
+
+Plus `TestN6AntiEntropyLoopAndIdempotency` (R29: initial-sweep pull +
+push-on-append converge with NO explicit SyncWith; a redundant reconcile
+ingests 0) and `TestN6BulkCatchup` (R30: lowered threshold trips the
+segment-streaming path; converges 40/40).
+
+### Deviations / notes
+- **Frontier is highest-contiguous only** (R38): `log.Append` enforces
+  contiguity, so a node can only hold a contiguous prefix; range transfer
+  always starts at the receiver's frontier. Non-contiguous "known gaps"
+  (§6.2 wording) are not separately tracked — conservative and consistent.
+- **Text-only in N6**: attachments/derivative text deferred to N7 (lazy blob
+  fetch + local re-derivation), per the buildpack N6/N7 split.
+- **Cross-origin key admission during LIVE sync**: a record signed by a
+  device whose device.add has not yet replicated locally is refused until the
+  admitting origin replicates (resolves across sweeps, fixpoint). Not hit by
+  the two-node acceptance (both devices mutually known pre-sync). Flagged for
+  N9 hardening.
+- **Test hook**: `Daemon.SetSyncBulkThresholdForTest` lowers the R30
+  threshold so the bulk path is exercisable without a 10k fixture.
+- **Loopback binding** under CAIRN_SYNC_ALLOW_LOOPBACK=1 for tests; the
+  tailnet-range guard (N5) is unchanged. Real two-machine convergence rides
+  the operator's tailnet (N5 runbook already executed the ceremony leg).
+
+### Author rulings needed
+- **Bootstrap-trust retain-vs-delete** (R38, marked in code): R37 says N6
+  should "delete the crutch"; we retain grant-chain bootstrap trust as a
+  root-verified resilience fallback used only when the local chain is
+  unresolvable. Confirm the broader reading.
+- (Open items unchanged: M0 root-key storage; M5 resolve semantics.)
+
+### Test results (2026-07-13)
+`make test` — all packages green (daemon incl. the 3 N6 tests + the full
+N1–N5 suite unchanged); `make vet` clean; `make verify` OK (untagged
+compile-guard + tagged suite).
+
+Next: **N7 — blob replication + durability acknowledgement.**

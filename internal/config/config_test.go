@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +23,7 @@ func TestPortableConfigRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if *out != *in {
+	if !reflect.DeepEqual(out, in) {
 		t.Fatalf("round trip mismatch: %+v != %+v", out, in)
 	}
 }
@@ -44,7 +45,7 @@ func TestDeviceConfigRoundTripAndPerms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if *out != *in {
+	if !reflect.DeepEqual(out, in) {
 		t.Fatalf("round trip mismatch: %+v != %+v", out, in)
 	}
 	fi, err := os.Stat(filepath.Join(dir, DeviceConfigName))
