@@ -38,10 +38,16 @@ type BodyFetch func(hash string) (text []byte, ok bool)
 
 // Projection is the open SQLite database.
 type Projection struct {
-	db        *sql.DB
-	path      string
-	bodyFetch BodyFetch
+	db         *sql.DB
+	path       string
+	bodyFetch  BodyFetch
+	parkLogger func(ParkedEvent) // FIX-F8.3: invoked AT park time (loudness)
 }
+
+// SetParkLogger registers the loud-park callback (RULINGS.md R4.3): the
+// daemon logs event id, type, origin/seq, error, and the doctor pointer the
+// moment an event is parked — not only when doctor/reindex is run later.
+func (p *Projection) SetParkLogger(fn func(ParkedEvent)) { p.parkLogger = fn }
 
 // Open opens (creating if necessary) the projection database.
 func Open(path string, bodyFetch BodyFetch) (*Projection, error) {
@@ -152,6 +158,15 @@ func (p *Projection) Apply(env *event.Envelope, _ []byte) error {
 			env.EventID, env.OriginDeviceID, env.OriginGeneration, env.OriginSequence,
 			env.EventType, perr.Error(), time.Now().UTC().Format(config.WallTimeFormat)); err != nil {
 			return err
+		}
+		if p.parkLogger != nil {
+			p.parkLogger(ParkedEvent{
+				EventID:   env.EventID,
+				EventType: env.EventType,
+				Origin:    fmt.Sprintf("%s/%d", env.OriginDeviceID, env.OriginGeneration),
+				Sequence:  env.OriginSequence,
+				Error:     perr.Error(),
+			})
 		}
 	}
 	if _, err := tx.Exec(`RELEASE payload`); err != nil {

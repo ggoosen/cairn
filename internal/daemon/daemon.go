@@ -193,6 +193,11 @@ func Start(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 	d.proj = proj
+	// FIX-F8.3 (R4.3 "logged loudly"): announce parking the moment it happens
+	proj.SetParkLogger(func(pe projection.ParkedEvent) {
+		fmt.Fprintf(d.warn, "PARKED EVENT: %s (%s, origin %s seq %d) failed projection: %s — the stream continues; run `cairn doctor` for details\n",
+			pe.EventID, pe.EventType, pe.Origin, pe.Sequence, pe.Error)
+	})
 
 	tel, err := telemetry.Open(telemetry.Path(opts.Dir))
 	if err != nil {

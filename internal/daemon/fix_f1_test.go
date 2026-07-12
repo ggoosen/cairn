@@ -126,7 +126,12 @@ func TestF1LinkUnknownTopicRejectedPreAck(t *testing.T) {
 // doctor flags the parked event.
 func TestF1UnprojectableEventIsParkedNotFatal(t *testing.T) {
 	dir := initCairn(t)
-	d := startDaemon(t, dir)
+	var warn strings.Builder
+	d, err := daemon.Start(daemon.Options{Dir: dir, Warn: &warn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
 	if _, err := d.Publish(daemon.PublishRequest{Actor: "operator", Body: "before the poison"}); err != nil {
 		t.Fatal(err)
 	}
@@ -154,6 +159,13 @@ func TestF1UnprojectableEventIsParkedNotFatal(t *testing.T) {
 	parked, err := d.Projection().ParkedEvents()
 	if err != nil || len(parked) != 1 || parked[0].EventID != poisonID {
 		t.Fatalf("poison not parked: %v %v", parked, err)
+	}
+	// FIX-F8.3: the daemon logged LOUDLY at park time — event id, type,
+	// origin/seq, error, and the doctor pointer
+	for _, want := range []string{"PARKED EVENT", poisonID, "topic.link.add", "cairn doctor"} {
+		if !strings.Contains(warn.String(), want) {
+			t.Fatalf("park-time log missing %q:\n%s", want, warn.String())
+		}
 	}
 	d.Close()
 
