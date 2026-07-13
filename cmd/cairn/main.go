@@ -97,5 +97,6 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newSavedCmd(&dir))
 	root.AddCommand(newRankStatsCmd(&dir))
 	root.AddCommand(newMapCmd(&dir))
+	root.AddCommand(newCompactCmd(&dir))
 	return root
 }

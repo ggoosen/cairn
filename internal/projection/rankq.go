@@ -382,6 +382,46 @@ type ExplanationRow struct {
 	FinalRank      int
 }
 
+// CompactionStats reports the corpus reduced to its CURRENT effective state
+// (spec §7 "compacted to current state"): how many events/revisions/assertions
+// collapse into how few live entities (P2-6).
+type CompactionStats struct {
+	TotalEvents         int
+	TotalRevisions      int
+	LiveMessages        int // non-retracted messages (one head revision each)
+	RetractedMessages   int
+	SupersededRevisions int // revisions no longer any message's head
+	ActiveTopicLinks    int
+	RemovedTopicLinks   int
+	ActivePins          int
+	ActiveSubscriptions int
+}
+
+// Compaction computes the current-state compaction stats.
+func (p *Projection) Compaction() (CompactionStats, error) {
+	var c CompactionStats
+	q := func(sql string, dst *int) error { return p.db.QueryRow(sql).Scan(dst) }
+	for _, pair := range []struct {
+		sql string
+		dst *int
+	}{
+		{`SELECT count(*) FROM events`, &c.TotalEvents},
+		{`SELECT count(*) FROM revisions`, &c.TotalRevisions},
+		{`SELECT count(*) FROM messages WHERE retracted=0`, &c.LiveMessages},
+		{`SELECT count(*) FROM messages WHERE retracted=1`, &c.RetractedMessages},
+		{`SELECT count(*) FROM revisions r WHERE r.revision_id NOT IN (SELECT head_revision_id FROM messages)`, &c.SupersededRevisions},
+		{`SELECT count(*) FROM topic_links WHERE removed=0`, &c.ActiveTopicLinks},
+		{`SELECT count(*) FROM topic_links WHERE removed=1`, &c.RemovedTopicLinks},
+		{`SELECT count(DISTINCT object_hash) FROM pins WHERE removed=0`, &c.ActivePins},
+		{`SELECT count(*) FROM subscriptions WHERE disabled=0`, &c.ActiveSubscriptions},
+	} {
+		if err := q(pair.sql, pair.dst); err != nil {
+			return c, err
+		}
+	}
+	return c, nil
+}
+
 // NavTopic / NavThread summarise the corpus for the local navigation map
 // (P2-5). All counts exclude retracted/removed rows.
 type NavTopic struct {

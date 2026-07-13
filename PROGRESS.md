@@ -1807,3 +1807,19 @@ Local derived state, regenerated on demand.
 - `cairn map [--agent]` (capRead) + IPC `map`.
 - Test: `TestP25MapAndRollup` (rollup totals, topics ordered by count, thread
   surfaced). Full suite + vet green.
+
+### P2-6 — compaction views (§12; §7 "compacted to current state") — DONE (2026-07-13)
+
+A condensed snapshot of the corpus reduced to what is TRUE NOW, with a headline
+of how much event history collapsed away.
+
+- `projection.Compaction()`: current-state counts (live messages, active topic
+  links/pins/subscriptions) + compacted-away counts (superseded revisions,
+  retracted messages, removed links) + totals (events, revisions).
+- `daemon.GenerateCompaction(agent)` (`compaction.go`): renders
+  `views/<agent>/compaction.md` (pure `renderCompaction`) — headline
+  "N events → M live entities (ratio ×)", current state, compacted-away.
+  Structural metadata only (sentinel-safe). Overwrite-by-remove + atomic write.
+- `cairn compact [--agent]` (capRead) + IPC `compact`.
+- Test: `TestP26CompactionView` (revise+retract → ratio, live count, retracted
+  count reported). Full suite + vet green.

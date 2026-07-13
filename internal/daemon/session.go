@@ -49,6 +49,7 @@ var opCapability = map[string]string{
 	"saved-add": capAdmin, "saved-remove": capAdmin,
 	"rank-stats": capAdmin, // P2-3b calibration (analysis, operator-tier)
 	"map":        capRead,  // P2-5 local navigation view
+	"compact":    capRead,  // P2-6 current-state compaction view
 
 	"publish":          capSend,
 	"stage-attachment": capSend, // G6: streamed attachment staging accompanies a publish

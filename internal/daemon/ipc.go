@@ -678,6 +678,15 @@ func (d *Daemon) dispatch(req Request) Response {
 			"path": res.Path, "total_messages": res.TotalMessages,
 			"total_topics": res.TotalTopics, "pinned_objects": res.PinnedObjects}}
 
+	case "compact":
+		res, err := d.GenerateCompaction(req.AgentView)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Status: map[string]any{
+			"path": res.Path, "events": res.Events,
+			"live_entities": res.LiveEntities, "ratio": res.Ratio}}
+
 	case "rank-stats":
 		stats, err := d.RankStats()
 		if err != nil {
