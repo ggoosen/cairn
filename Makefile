@@ -3,9 +3,21 @@
 # these targets or pass -tags sqlite_fts5 manually.
 GOTAGS := -tags sqlite_fts5
 
-.PHONY: build test test-short vet verify all
+.PHONY: build test test-short vet verify all install
 
 all: vet test build
+
+# FIX-G4: install the built binary. macOS AMFI KILLS a code-signed binary that
+# is overwritten in place (cost the operator a debugging cycle), so we REMOVE
+# then copy — never `cp` over a running/installed binary.
+PREFIX ?= /usr/local
+BINDIR ?= $(PREFIX)/bin
+install: build
+	@mkdir -p "$(BINDIR)"
+	rm -f "$(BINDIR)/cairn"
+	cp bin/cairn "$(BINDIR)/cairn"
+	@echo "installed cairn -> $(BINDIR)/cairn (remove-before-copy; AMFI-safe)"
+	@echo "next: cairn daemon --install   # launchd (macOS) / systemd --user (Linux)"
 
 # FIX-F4: the plain (untagged) build must FAIL AT COMPILE TIME with an
 # instructive error; the tagged suite must be green.

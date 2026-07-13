@@ -73,7 +73,8 @@ func newUUID() string {
 }
 
 func newDaemonCmd(dirFlag *string) *cobra.Command {
-	return &cobra.Command{
+	var install, uninstall bool
+	cmd := &cobra.Command{
 		Use:   "daemon",
 		Short: "Run the resident single-writer daemon (log, projection, outbox, housekeeping, IPC)",
 		Args:  cobra.NoArgs,
@@ -81,6 +82,16 @@ func newDaemonCmd(dirFlag *string) *cobra.Command {
 			dir, err := config.PortableDir(*dirFlag)
 			if err != nil {
 				return err
+			}
+			// FIX-G4: manage the daemon as a user service instead of running it.
+			if install && uninstall {
+				return fmt.Errorf("--install and --uninstall are mutually exclusive")
+			}
+			if uninstall {
+				return uninstallService(cmd.OutOrStdout())
+			}
+			if install {
+				return installService(dir, cmd.OutOrStdout())
 			}
 			d, err := daemon.Start(daemon.Options{Dir: dir, Warn: cmd.ErrOrStderr()})
 			if err != nil {
@@ -116,6 +127,9 @@ func newDaemonCmd(dirFlag *string) *cobra.Command {
 			return d.Run(ctx, processOutbox)
 		},
 	}
+	cmd.Flags().BoolVar(&install, "install", false, "install + start the daemon as a user service (launchd on macOS, systemd --user on Linux)")
+	cmd.Flags().BoolVar(&uninstall, "uninstall", false, "stop + remove the installed daemon user service")
+	return cmd
 }
 
 func newSendCmd(dirFlag *string) *cobra.Command {

@@ -595,11 +595,11 @@ func (d *Daemon) dispatch(req Request) Response {
 func Call(deviceDir string, req Request) (*Response, error) {
 	sockBytes, err := os.ReadFile(socketPathFile(deviceDir))
 	if err != nil {
-		return nil, errors.New("daemon is not running (no socket registration); start it with `cairn daemon`")
+		return nil, errors.New("daemon not running — start with `cairn daemon` or install with `cairn daemon --install`")
 	}
 	conn, err := net.DialTimeout("unix", string(sockBytes), 2*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("daemon is not reachable (%v); start it with `cairn daemon`", err)
+		return nil, fmt.Errorf("daemon not running (%v) — start with `cairn daemon` or install with `cairn daemon --install`", err)
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(30 * time.Second))

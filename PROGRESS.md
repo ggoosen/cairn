@@ -1549,3 +1549,23 @@ bare-enrolled node had no supported way to persist `--allow-unencrypted`
 the key; override warns + writes) and `TestG3JoinGatesEncryptionAndPersistsOverride`
 (refuses before the device-key write; override warns + persists the device-local
 override). Full suite + vet green; `internal/log` untouched.
+
+### G4 — F10: service install + deploy hygiene — DONE (2026-07-13)
+
+- `cairn daemon --install` / `--uninstall` (`cmd/cairn/service.go`): launchd
+  user agent on macOS (primary — RunAtLoad+KeepAlive, logs to
+  ~/Library/Logs/cairn.log), systemd `--user` unit on Linux (best-effort). WSL
+  caveat handled: if `systemctl --user` is unavailable we still write the unit
+  and tell the operator to enable systemd (`/etc/wsl.conf [boot] systemd=true`)
+  or run `cairn daemon` manually. Never a root/system service (cairn is
+  single-writer per user, device-local).
+- `make install` target: **removes the target before copying** — macOS AMFI
+  kills a code-signed binary overwritten in place (the documented lost cycle).
+- Dead-socket error (`daemon.Call`) now reads "daemon not running — start with
+  `cairn daemon` or install with `cairn daemon --install`" (both the
+  no-registration and unreachable branches), replacing the raw socket error.
+
+**Tests:** `TestG4LaunchdPlist`, `TestG4SystemdUnit` (pin the rendered unit
+files; the install/uninstall side effects touch the real login session and are
+operator-verified per the runbook, not in CI). Full suite + vet green;
+`internal/log` untouched.
