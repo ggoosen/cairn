@@ -1765,3 +1765,29 @@ replicated, not an event, survives reindex; mutable JSON, single-writer).
   `cairn saved add|list|run|rm` CLI.
 - Test: `TestP24SavedSearches` (add/replace/list/run/remove + reject bad name +
   persistence across restart). Full suite + vet green.
+
+### P2-3b — calibration harness (§9.3) — DONE (2026-07-13)
+
+Offline, inspectable, NOT learned online — it RECOMMENDS weights; adopting a
+change stays a human edit to constants.go.
+
+- Pure engine `internal/rank/calibrate.go`: `Episode`/`CalibCandidate`/
+  `WeightVector`; `Evaluate` (Success@5 + MRR of the found result); `SimplexGrid`
+  (weights summing to 1 at a step, over active terms); `HoldOutByTask` (split by
+  TASK, never random query); `Calibrate` (grid-search on train, validate winner
+  on holdout — `Improves` only on a strict holdout beat). Fully unit-tested.
+- Daemon `calibrate.go`: `CalibrationEpisodes` (join telemetry `found` outcomes
+  with logged why_ranked components), `RankStats` (per-term weighted-contribution
+  distribution), `Calibrate` (grid over the active profile; needs ≥8 episodes,
+  warns <30 per §9.3).
+- `cairn rank-stats [--calibrate]` (capAdmin); IPC returns the distribution and,
+  with --calibrate, a recommendation carrying an explicit "not applied" note.
+- Data plumbing: `projection.ExplanationsForInteraction`,
+  `telemetry.FoundEpisodes` + `AllInteractionIDs`.
+- Tests: `internal/rank` evaluate/grid/holdout/calibrate (incl. the honest
+  no-improvement case); `TestP23bCalibrationHarness` (episodes assemble; stats
+  report; calibrate returns a recommendation, no false improvement). Full suite
+  + vet green.
+
+This closes the P2 ranking chapter: profile (P2-3) + calibration (P2-3b), both
+opt-in / advisory until you review and adopt.

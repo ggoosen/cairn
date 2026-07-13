@@ -382,6 +382,26 @@ type ExplanationRow struct {
 	FinalRank      int
 }
 
+// ExplanationsForInteraction returns every stored why_ranked record for one
+// interaction (P2-3b calibration replay reads the whole candidate set).
+func (p *Projection) ExplanationsForInteraction(interactionID string) ([]ExplanationRow, error) {
+	rows, err := p.db.Query(`SELECT message_id, components_json, final_rank FROM rank_explanations
+		WHERE interaction_id=? ORDER BY final_rank`, interactionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ExplanationRow
+	for rows.Next() {
+		var r ExplanationRow
+		if err := rows.Scan(&r.MessageID, &r.ComponentsJSON, &r.FinalRank); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // Explanation fetches a stored why_ranked record.
 func (p *Projection) Explanation(interactionID, messageID string) (profile, componentsJSON string, finalRank int, err error) {
 	err = p.db.QueryRow(`SELECT profile, components_json, final_rank FROM rank_explanations

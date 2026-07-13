@@ -669,6 +669,33 @@ func (d *Daemon) dispatch(req Request) Response {
 			"degradation": d.DegradationLevel().String(), // P2-1 (spec §8.2)
 		}}
 
+	case "rank-stats":
+		stats, err := d.RankStats()
+		if err != nil {
+			return fail(err)
+		}
+		st := map[string]any{"terms": stats}
+		if req.Query == "calibrate" { // --calibrate flag reuses Query
+			rec, n, cerr := d.Calibrate(d.rankProfileSearch(), 0.05, 4)
+			st["episodes"] = n
+			if cerr != nil {
+				st["calibration_note"] = cerr.Error()
+			}
+			if rec != nil {
+				st["calibration"] = map[string]any{
+					"baseline":         rec.Baseline,
+					"baseline_holdout": rec.BaselineHoldout,
+					"best":             rec.Best,
+					"best_train":       rec.BestTrain,
+					"best_holdout":     rec.BestHoldout,
+					"improves":         rec.Improves,
+					"grid_size":        rec.GridSize,
+					"note":             "RECOMMENDATION ONLY — weights are not changed; edit internal/config/constants.go if you adopt this after review",
+				}
+			}
+		}
+		return Response{OK: true, Status: st}
+
 	case "saved-add":
 		if err := d.SavedAdd(req.SavedName, req.Query); err != nil {
 			return fail(err)

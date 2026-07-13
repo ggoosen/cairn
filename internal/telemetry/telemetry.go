@@ -220,6 +220,56 @@ func (s *Store) DemandByMessage() (Demand, error) {
 	return d, frows.Err()
 }
 
+// FoundEpisode is one calibration episode's telemetry side (P2-3b): an
+// interaction whose operator outcome was `found`, with the task it belonged to
+// and the message they found useful.
+type FoundEpisode struct {
+	InteractionID  string
+	TaskID         string
+	FoundMessageID string
+}
+
+// AllInteractionIDs lists every recorded interaction id (P2-3b rank-stats walks
+// them to aggregate per-term contribution distributions).
+func (s *Store) AllInteractionIDs() ([]string, error) {
+	rows, err := s.db.Query(`SELECT interaction_id FROM interactions`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// FoundEpisodes lists interactions with a `found` outcome (the genuine
+// retrieval episodes calibration replays, spec §9.3).
+func (s *Store) FoundEpisodes() ([]FoundEpisode, error) {
+	rows, err := s.db.Query(`
+		SELECT interaction_id, COALESCE(task_id,''), outcome_message_id
+		FROM interactions
+		WHERE outcome='found' AND outcome_message_id IS NOT NULL AND outcome_message_id<>''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FoundEpisode
+	for rows.Next() {
+		var e FoundEpisode
+		if err := rows.Scan(&e.InteractionID, &e.TaskID, &e.FoundMessageID); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // RecordOutcome binds an outcome to an interaction_id (rulings §10: outcome
 // commands REQUIRE the interaction id).
 func (s *Store) RecordOutcome(interactionID, outcome, messageID string, at time.Time) error {
