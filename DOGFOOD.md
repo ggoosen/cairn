@@ -26,13 +26,24 @@ Without this, cairn runs lexical-only (fully functional; `retrieval_mode`
 says so). To enable semantic search with the pinned `all-MiniLM-L6-v2`:
 
 ```sh
-python3 -m venv ~/cairn/.cairn/embed-venv
-~/cairn/.cairn/embed-venv/bin/pip install sentence-transformers
+# parity across macOS and Linux (FIX-G5): one script provisions the pinned venv
+scripts/cairn-embed-bootstrap.sh ~/cairn
 # restart the daemon, then backfill:
 cairn reindex --semantic
 ```
 
+Equivalent manual steps (any platform):
+
+```sh
+python3 -m venv ~/cairn/.cairn/embed-venv
+~/cairn/.cairn/embed-venv/bin/pip install sentence-transformers
+```
+
 (Or point `CAIRN_EMBED_PYTHON` at any python with sentence-transformers.)
+
+If no venv is provisioned, the daemon now says so LOUDLY at every startup
+(R45): `embeddings: no embed venv found (semantic search disabled ...)`. A
+node running lexical-only is never a silent surprise again.
 
 ## 3. Wire the three agent surfaces
 

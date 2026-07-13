@@ -1569,3 +1569,25 @@ override). Full suite + vet green; `internal/log` untouched.
 files; the install/uninstall side effects touch the real login session and are
 operator-verified per the runbook, not in CI). Full suite + vet green;
 `internal/log` untouched.
+
+### G5 — embeddings on Linux + loud lexical-only startup (R45) — DONE (2026-07-13)
+
+**Defect:** NODE-B (Linux) ran lexical-only with no embedder and said nothing.
+The venv path is already cross-platform, so the real gaps were (a) no parity
+bootstrap and (b) the silent fallback (`embed.Detect` even swallowed a
+provisioned-but-broken venv's error).
+
+**Fix:**
+- `scripts/cairn-embed-bootstrap.sh`: one script provisions the pinned
+  `all-MiniLM-L6-v2` venv on macOS AND Linux (parity), pre-downloads the model.
+- `embed.DetectVerbose(dir) (Embedder, reason)`: surfaces WHY it fell back
+  (no venv / venv failed to start) instead of swallowing it; `Detect` wraps it.
+- Daemon startup logs the embedding state on EVERY platform (R45): a loud
+  lexical-only line with the remedy, or a positive "semantic search enabled
+  (<model>)" confirmation for cross-node parity checks.
+- DOGFOOD §2 points at the bootstrap script and documents the loud line.
+
+**Tests:** `TestG5DetectVerboseAlwaysExplains` (a nil embedder always carries a
+remedy-bearing reason). **Linux embedder LOAD itself is N9 operator-verifiable
+only** (this build machine is macOS arm64); the code path + bootstrap are in
+place. Full suite + vet green; `internal/log` untouched.

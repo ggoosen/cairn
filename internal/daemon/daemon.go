@@ -248,7 +248,18 @@ func Start(opts Options) (*Daemon, error) {
 	}
 
 	if opts.Embedder == nil {
-		opts.Embedder = embed.Detect(opts.Dir)
+		var reason string
+		opts.Embedder, reason = embed.DetectVerbose(opts.Dir)
+		// R45 (FIX-G5): never fall back to lexical-only SILENTLY. Say so at
+		// startup, on every platform, with the remedy. A loaded embedder is
+		// also announced so the operator can confirm cross-node parity.
+		if w := opts.Warn; w != nil {
+			if opts.Embedder == nil {
+				fmt.Fprintf(w, "embeddings: %s\n", reason)
+			} else {
+				fmt.Fprintf(w, "embeddings: semantic search enabled (%s)\n", opts.Embedder.ModelID())
+			}
+		}
 	}
 	d := &Daemon{
 		fs:       opts.FS,

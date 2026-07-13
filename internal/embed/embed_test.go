@@ -2,6 +2,7 @@ package embed
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/ggoosen/cairn/internal/config"
@@ -50,5 +51,24 @@ func TestBagOfWordsDeterministicUnitVectors(t *testing.T) {
 func TestCosineMismatchedDims(t *testing.T) {
 	if Cosine([]float32{1}, []float32{1, 0}) != -1 {
 		t.Fatal("dim mismatch must be sentinel -1")
+	}
+}
+
+// FIX-G5 (R45): DetectVerbose never returns a nil embedder with an empty
+// reason — a lexical-only fallback must always explain itself (the daemon logs
+// it loudly at startup). With no venv provisioned it returns (nil, remedy).
+func TestG5DetectVerboseAlwaysExplains(t *testing.T) {
+	t.Setenv("CAIRN_EMBED_PYTHON", "") // force "no venv" regardless of host
+	e, reason := DetectVerbose(t.TempDir())
+	if e != nil {
+		t.Skip("host has a discoverable embed venv; skipping the no-venv assertion")
+	}
+	if reason == "" {
+		t.Fatal("R45 VIOLATION: lexical-only fallback returned an empty reason (silent)")
+	}
+	for _, want := range []string{"lexical-only", "cairn-embed-bootstrap.sh", "reindex --semantic"} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("reason missing remedy substring %q: %q", want, reason)
+		}
 	}
 }

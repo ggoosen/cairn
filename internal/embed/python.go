@@ -103,10 +103,25 @@ func (p *Python) Close() error {
 // real-model worker when provisioned, else nil (lexical_only). Tests use
 // BagOfWords explicitly.
 func Detect(portableDir string) Embedder {
-	if interp := PythonInterpreter(portableDir); interp != "" {
-		if p, err := NewPython(interp); err == nil {
-			return p
-		}
+	e, _ := DetectVerbose(portableDir)
+	return e
+}
+
+// DetectVerbose is Detect plus a human-readable reason when it returns nil
+// (FIX-G5 / R45: a core subsystem that declines to start must say so, loudly,
+// with the remedy — this feeds the daemon's startup log on every platform,
+// macOS and Linux alike). A provisioned-but-broken venv surfaces its error
+// instead of being swallowed. The reason is "" when a real embedder loaded.
+func DetectVerbose(portableDir string) (Embedder, string) {
+	interp := PythonInterpreter(portableDir)
+	if interp == "" {
+		return nil, "no embed venv found (semantic search disabled; retrieval is lexical-only). " +
+			"Provision it with scripts/cairn-embed-bootstrap.sh, or point CAIRN_EMBED_PYTHON at a python with sentence-transformers, then `cairn reindex --semantic`."
 	}
-	return nil
+	p, err := NewPython(interp)
+	if err != nil {
+		return nil, fmt.Sprintf("embed venv at %s failed to start (%v); retrieval is lexical-only. "+
+			"Re-provision with scripts/cairn-embed-bootstrap.sh, then `cairn reindex --semantic`.", interp, err)
+	}
+	return p, ""
 }
