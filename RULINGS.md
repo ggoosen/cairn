@@ -532,3 +532,60 @@ nothing until resolved; the durable log is never mutated by detection.
   losing branch are not auto-reissued; they remain in quarantine for manual
   recovery. A losing message whose body is neither inline nor locally present
   (a clone-only blob) is skipped with a note (its frame stays quarantined).
+
+## R42 — Ephemeral bodies are never inlined (schema wins over §5)
+
+`text_class: ephemeral` ⇒ `body_bytes` MUST be absent from the publish event.
+Validation rejects an ephemeral publish carrying inline bytes **pre-ack**
+(per the F1 general rule: rejection before acknowledgement, never after).
+Ephemeral bodies live only as content-addressed objects, fetched on demand
+from a connected holder, and are genuinely purged at TTL.
+
+**Why:** rulings §5 permits inlining ≤64 KiB bodies inside `signing_bytes`
+for recovery acceleration; R29 forbids ephemeral backfill. The publish event
+replicates to all full nodes as chain data regardless of text class, so an
+inline ≤64 KiB ephemeral body makes the ephemeral guarantee structurally
+unenforceable — the content is searchable on every synced node from the inline
+copy, and TTL deletion can never scrub it. The two rulings collided; the
+schema constraint wins. The inline optimization remains available for
+canonical / eager-searchable text classes only.
+
+**Historical events** already carrying inline ephemeral bytes (this test mesh
+has them): the projection MUST treat them as ephemeral-with-object-absent —
+exclude the inline body from indexing/search on non-origin nodes — and doctor
+treats them under R43. The immutable log is never rewritten; a migration note
+in PROGRESS.md records the transition.
+
+## R43 — A missing ephemeral object is informational on every node
+
+A missing ephemeral object is **informational on every node**, not only the
+origin. `cairn doctor` MUST NOT fail (exit 1) because an ephemeral body was
+withheld (peer offline at send time), never fetched, or expired at TTL. It
+reports the condition and exits 0. This corrects the prior behaviour where a
+synced non-origin node's doctor failed forever with "referenced object missing
+(class ephemeral)" until expiry — which broke the DoD gate "doctor reports
+clean" on every synced non-origin node. A missing *canonical* body object
+remains a PROBLEM; only ephemeral is downgraded to informational.
+
+## R44 — Sync listener defaults to auto (tailnet-only), never silent
+
+The sync listener defaults to **auto**: on startup the daemon detects a
+tailnet interface and binds `<tailnet-ip>:9700`. If no tailnet interface
+exists it binds nothing — **and says so** (see R45). `sync_listen` may still
+pin an explicit address; `sync_listen = "off"` disables the listener
+deliberately. The listener MUST NEVER bind `0.0.0.0`. `cairn sync status`
+reports the listener state (address bound, or the reason none was).
+
+**Why:** `sync_listen` previously had no default, was never set by `init`, had
+no CLI flag (device-TOML hand-edit only), and when unset the daemon bound
+nothing and logged nothing — a core subsystem silently declining to start.
+
+## R45 — No core subsystem declines to start silently (general rule)
+
+**Any core subsystem that declines to start MUST log it prominently at every
+startup**, with the reason and the remedy. Silence is never an acceptable state
+for a disabled core function. This is the general rule behind three observed
+instances: the daemon that wasn't running with no CLI hint; the embedder
+falling back to lexical-only silently; the sync listener binding nothing
+silently. When implementing any startup path, audit it for other
+silent-declines and give each the same prominent, remedy-bearing log line.
