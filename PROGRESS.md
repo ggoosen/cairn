@@ -1679,3 +1679,28 @@ hardening landed, P1 is code-complete.
   kill-9 mid-blob-transfer) stay green under the N6/N7 suites.
 - **DEFERRED (operator):** the crossed two-auditor live audit; `cairn
   adopt-standalone` (R34, buildpack "if time permits") — tracked in P2-PLAN.md.
+
+## P2 — retrieval quality (spec §12)
+
+Roadmap + task tracker: `P2-PLAN.md`. No buildpack existed; milestones derived
+from spec §12/§8/§9. P1 code-complete first (N9-H above).
+
+### P2-1 — async maintenance worker + degradation ladder (§8.2) — DONE (2026-07-13)
+
+The degradation ladder that sheds DERIVED work under load — send() never
+blocks, a message is never lost, only enrichment lags.
+
+- `internal/maintenance` (pure, fully unit-tested): `Level` (the 7 §8.2 rungs),
+  `Debt` (embedding backlog + disk pressure/critical/quota), `Assess(debt,
+  thresholds) → Level`. Backlog drives rungs 1–4 (delay auto-links → summaries →
+  embeddings → serve lexical-only); disk/quota drive rungs 5–7; the result is
+  the most-degraded rung any signal demands.
+- Config thresholds (`Ladder*`) — backlog counts + disk free-byte margins.
+- Daemon wiring (`internal/daemon/maintenance.go`): each enricher pass samples
+  debt (`proj.CountPendingEmbeddings` + `freeDiskBytes` via `syscall.Statfs`),
+  records the level, logs transitions (R45-style), and GATES the rungs —
+  embeddings skipped at ≥rung3, derivatives/auto-links at ≥rung1, summaries at
+  ≥rung2. `cairn status` now reports `degradation`.
+- Tests: `internal/maintenance` table tests (rung order + disk precedence) and
+  `TestP21DegradationLadderWired` (daemon plumbs backlog → level → gating →
+  status). Full suite + vet green; `internal/log` untouched.

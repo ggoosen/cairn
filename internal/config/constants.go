@@ -324,7 +324,7 @@ const (
 	// ephemeral = origin only (1); normal = at least this many nodes;
 	// important / pinned = all non-revoked member nodes (computed at runtime).
 	DurabilityDefault   = "normal"
-	DurabilityNormalMin = 2                // "normal ≥ 2 nodes (default)"
+	DurabilityNormalMin = 2                 // "normal ≥ 2 nodes (default)"
 	DurabilityRegistry  = "durability.json" // under .cairn/ (derived, cache-class)
 
 	// N8 fork detection (spec §6.4; R33). Equivocation = same origin+gen+seq,
@@ -350,6 +350,26 @@ const (
 	// (rulings §6: async; a just-sent message is briefly lexical_only).
 	EnrichInterval = 2 * time.Second
 	EnrichBatch    = 64
+
+	// P2-1 degradation ladder (spec §8.2). The maintenance worker sheds
+	// enrichment rungs in order as the embedding backlog ("debt") grows —
+	// send() NEVER blocks, enrichment merely lags. Thresholds are the pending-
+	// embedding counts at which each rung engages (tunable from dogfood data).
+	// Rung order: 1 delay auto-links → 2 delay summaries → 3 delay embeddings →
+	// 4 serve lexical-only (flagged). Rungs 5–7 (blob/disk/quota) are a separate
+	// axis keyed off disk pressure, not the backlog.
+	LadderDebtDelayLinks      = 200   // rung 1
+	LadderDebtDelaySummaries  = 1000  // rung 2
+	LadderDebtDelayEmbeddings = 5000  // rung 3
+	LadderDebtLexicalOnly = 20000 // rung 4
+
+	// Disk-pressure margins (rungs 5–7). Free space below each engages the
+	// corresponding rung: pressure → delay blob replication; critical → reject
+	// oversized/low-priority blobs; quota → reject small low-priority text (the
+	// emergency reserve for small HIGH-priority text is honored separately).
+	LadderDiskPressureFreeBytes = 2 << 30   // 2 GiB
+	LadderDiskCriticalFreeBytes = 512 << 20 // 512 MiB
+	LadderDiskQuotaFreeBytes    = 64 << 20  // 64 MiB
 
 	// OutboxReadySuffix marks an atomically-renamed-in bundle directory;
 	// receipts and rejections use the fixed names below.

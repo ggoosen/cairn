@@ -157,6 +157,17 @@ func (p *Projection) PendingEmbeddings(limit int) ([]PendingEmbedding, error) {
 	return out, rows.Err()
 }
 
+// CountPendingEmbeddings returns how many revisions are indexed but not yet
+// embedded — the maintenance worker's primary "debt" signal (P2-1, spec §8.2).
+func (p *Projection) CountPendingEmbeddings() (int, error) {
+	var n int
+	err := p.db.QueryRow(`
+		SELECT count(*) FROM revisions r
+		LEFT JOIN enrichment e ON e.revision_id = r.revision_id
+		WHERE COALESCE(e.embedded, 0) = 0`).Scan(&n)
+	return n, err
+}
+
 // HeadVectors returns message_id → head-revision vector for one model
 // (brute-force cosine happens in the caller; P0 candidate sets ≪ 5k —
 // rulings §7 sanctions the fallback).

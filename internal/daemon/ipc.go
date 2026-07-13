@@ -659,9 +659,10 @@ func (d *Daemon) dispatch(req Request) Response {
 		}
 		d.mu.Unlock()
 		return Response{OK: true, Status: map[string]any{
-			"cairn_id":  d.loaded.Portable.CairnID,
-			"device_id": d.loaded.Device.DeviceID,
-			"next_seq":  next,
+			"cairn_id":    d.loaded.Portable.CairnID,
+			"device_id":   d.loaded.Device.DeviceID,
+			"next_seq":    next,
+			"degradation": d.DegradationLevel().String(), // P2-1 (spec §8.2)
 		}}
 
 	default:

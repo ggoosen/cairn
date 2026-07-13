@@ -201,15 +201,25 @@ func (d *Daemon) Run(ctx context.Context, processOutbox func() error) error {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if _, err := d.EnrichOnce(config.EnrichBatch); err != nil {
-					fmt.Fprintf(d.warn, "WARNING: enricher: %v\n", err)
+				// P2-1: assess the degradation ladder (spec §8.2) and shed
+				// enrichment rungs in order under debt — derivatives/auto-links
+				// first, then summaries, then embeddings. send() is never gated.
+				lvl := d.assessDegradation()
+				if !lvl.SkipEmbeddings() {
+					if _, err := d.EnrichOnce(config.EnrichBatch); err != nil {
+						fmt.Fprintf(d.warn, "WARNING: enricher: %v\n", err)
+					}
 				}
-				// N4: derivatives + summary checks share the enricher cadence
-				if _, err := d.DeriveOnce(config.EnrichBatch); err != nil {
-					fmt.Fprintf(d.warn, "WARNING: derivatives: %v\n", err)
+				if !lvl.SkipAutoLinks() {
+					// N4: derivatives + summary checks share the enricher cadence
+					if _, err := d.DeriveOnce(config.EnrichBatch); err != nil {
+						fmt.Fprintf(d.warn, "WARNING: derivatives: %v\n", err)
+					}
 				}
-				if _, err := d.SummaryCheckOnce(config.EnrichBatch); err != nil {
-					fmt.Fprintf(d.warn, "WARNING: summary check: %v\n", err)
+				if !lvl.SkipSummaries() {
+					if _, err := d.SummaryCheckOnce(config.EnrichBatch); err != nil {
+						fmt.Fprintf(d.warn, "WARNING: summary check: %v\n", err)
+					}
 				}
 			}
 		}

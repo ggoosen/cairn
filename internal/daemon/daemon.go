@@ -29,6 +29,7 @@ import (
 	"github.com/ggoosen/cairn/internal/fsx"
 	"github.com/ggoosen/cairn/internal/identity"
 	cairnlog "github.com/ggoosen/cairn/internal/log"
+	"github.com/ggoosen/cairn/internal/maintenance"
 	"github.com/ggoosen/cairn/internal/object"
 	"github.com/ggoosen/cairn/internal/peer"
 	"github.com/ggoosen/cairn/internal/projection"
@@ -81,6 +82,9 @@ type Daemon struct {
 
 	syncListen string // R44/R45: human-readable listener state (guarded by mu)
 	manualSync bool   // G7.1: a background `sync now` sweep is in flight (guarded by mu)
+
+	degradeLevel     maintenance.Level      // P2-1: current degradation rung (guarded by mu)
+	ladderThresholds maintenance.Thresholds // P2-1: ladder thresholds (default from config; test-overridable)
 
 	syncBulkThreshold int           // N6: overrides config.SyncBulkCatchupThreshold in tests
 	syncKick          chan struct{} // N6: push-on-append nudges the anti-entropy sweep (R29)
@@ -297,6 +301,8 @@ func Start(opts Options) (*Daemon, error) {
 		syncKick: make(chan struct{}, 1),
 		durab:    loadDurability(opts.FS, opts.Dir),
 		forks:    loadForks(opts.Dir),
+
+		ladderThresholds: maintenance.DefaultThresholds(),
 	}
 	if devPriv != nil {
 		d.keyID = event.KeyID(devPriv.Public().(ed25519.PublicKey))
