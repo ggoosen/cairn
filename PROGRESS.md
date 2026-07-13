@@ -1727,3 +1727,26 @@ node; only bounded S feeds ranking (P2-3 will consume it).
 Deferred within P2 (feed forward to P2-3): the 10% exploration quota and
 principal-cluster demal weighting are ranking-time concerns, applied when S
 enters the P2 profile.
+
+### P2-3 — full additive ranking profile (§9.1) — DONE (2026-07-13)
+
+The P2 "full model" ranking alongside the P0 profiles, opt-in until §9.3
+calibration validates its weights (CAIRN_RANK_PROFILE=p2).
+
+- `internal/rank`: `weightSet` refactor (backward-compatible — P0 profiles are
+  byte-identical); new `ProfileSearchP2`/`ProfileDigestP2` with the §9.1
+  weights (search 0.75R+0.08S+0.04F+0.10I+0.03N; digest 0.45R+0.15S+0.20F+
+  0.15I+0.05N). Candidate gains S/I/N inputs; Components + `Profile.Weights()`
+  expose them for why_ranked. `NoveltyFromExposure` (2^(−impressions/half)).
+- Daemon (`salience.go` + `retrieve.go`): `P2Inputs()` computes per-message S
+  (salience, P2-2) + N (novelty from exposure); Intent from pin/priority-
+  confirm. Search + digest select the profile via the opt-in and populate
+  S/I/N; why_ranked records now carry S/I/N + their weights (P2 only —
+  `fillP2Components`), so calibration replay has every number.
+- Tests: `internal/rank` P2 profile ordering + exact additive score + P0
+  unchanged; `TestP23FullProfileWiredAndExplained` (P2 search persists a
+  search-P2 explanation carrying S/I/N; salience flows through). Full suite +
+  vet green.
+
+Deferred: P2-3b calibration harness (§9.3) — its own milestone (offline replay
++ weight grids + `cairn rank-stats`).

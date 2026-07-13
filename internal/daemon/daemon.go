@@ -85,6 +85,7 @@ type Daemon struct {
 
 	degradeLevel     maintenance.Level      // P2-1: current degradation rung (guarded by mu)
 	ladderThresholds maintenance.Thresholds // P2-1: ladder thresholds (default from config; test-overridable)
+	rankP2           bool                   // P2-3: use the full P2 additive ranking profile (opt-in; guarded by mu)
 
 	syncBulkThreshold int           // N6: overrides config.SyncBulkCatchupThreshold in tests
 	syncKick          chan struct{} // N6: push-on-append nudges the anti-entropy sweep (R29)
@@ -303,6 +304,7 @@ func Start(opts Options) (*Daemon, error) {
 		forks:    loadForks(opts.Dir),
 
 		ladderThresholds: maintenance.DefaultThresholds(),
+		rankP2:           os.Getenv("CAIRN_RANK_PROFILE") == "p2", // P2-3 opt-in until §9.3 calibration
 	}
 	if devPriv != nil {
 		d.keyID = event.KeyID(devPriv.Public().(ed25519.PublicKey))

@@ -53,6 +53,16 @@ func Salience(fetches, impressions, refInDegree, signalWeight int) float64 {
 	return clamp01(s)
 }
 
+// NoveltyFromExposure is the P2 novelty term N ∈ (0,1]: 2^(−impressions/half).
+// A never-shown item is maximally novel (1.0); heavy prior exposure decays it
+// toward 0. This is the local backing for the §9.2 exploration intent.
+func NoveltyFromExposure(impressions int) float64 {
+	if impressions <= 0 {
+		return 1.0
+	}
+	return math.Pow(2, -float64(impressions)/config.NoveltyExposureHalf)
+}
+
 func clamp01(x float64) float64 {
 	if x < 0 {
 		return 0

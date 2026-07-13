@@ -55,19 +55,36 @@ type RankedResult struct {
 // componentsRecord is the stored why_ranked arithmetic (decimal strings).
 type componentsRecord struct {
 	R       string `json:"R"`
+	S       string `json:"S,omitempty"` // P2 salience
 	F       string `json:"F"`
 	Peff    string `json:"P_eff"`
+	I       string `json:"I,omitempty"` // P2 operator intent
+	N       string `json:"N,omitempty"` // P2 novelty
 	RRF     string `json:"RRF"`
 	LexRank int    `json:"lex_rank"`
 	VecRank int    `json:"vec_rank"`
 	Score   string `json:"score"`
 	Weights struct {
 		R string `json:"R"`
+		S string `json:"S,omitempty"`
 		F string `json:"F"`
 		P string `json:"P"`
+		I string `json:"I,omitempty"`
+		N string `json:"N,omitempty"`
 	} `json:"weights"`
 	CreatedAt string `json:"created_at"`
 	Mandatory string `json:"mandatory,omitempty"`
+}
+
+// fillP2Components adds the S/I/N component + weight strings when the profile is
+// P2 (kept out of the P0 record so existing explanations are byte-identical).
+func fillP2Components(rec *componentsRecord, s rank.Scored, profile rank.Profile) {
+	if !profile.IsP2() {
+		return
+	}
+	w := profile.Weights()
+	rec.S, rec.I, rec.N = rank.Dec(s.S), rank.Dec(s.I), rank.Dec(s.N)
+	rec.Weights.S, rec.Weights.I, rec.Weights.N = rank.Dec(w.S), rank.Dec(w.I), rank.Dec(w.N)
 }
 
 // Search: FTS top-100 + vector top-100 → RRF k=60 → percentile → P0 search
@@ -115,6 +132,14 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 	if err != nil {
 		return nil, err
 	}
+	profile := d.rankProfileSearch()
+	// P2-3: the full additive profile also needs S (salience) + N (novelty) per
+	// candidate; I (intent) comes from per-message pin/priority-confirm. P0
+	// leaves them zero (ignored by its weights).
+	var p2 map[string]P2Input
+	if profile.IsP2() {
+		p2, _ = d.P2Inputs()
+	}
 	cands := make([]rank.Candidate, 0, len(ids))
 	for _, id := range ids {
 		c := union[id]
@@ -126,14 +151,19 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 		c.CreatedAt = parseWall(row.CreatedAt)
 		c.Priority = row.Priority
 		c.Suspended = row.PinActive || row.PriorityConf
+		if profile.IsP2() {
+			c.Salience = p2[id].Salience
+			c.Novelty = p2[id].Novelty
+			c.Intent = intentFromRow(row.PinActive, row.PriorityConf)
+		}
 		cands = append(cands, *c)
 	}
 
-	scored := rank.Rank(cands, rank.ProfileSearch, d.now())
+	scored := rank.Rank(cands, profile, d.now())
 	if len(scored) > opts.K {
 		scored = scored[:opts.K]
 	}
-	out, err := d.finishRetrieval(scored, rows, rank.ProfileSearch, mode, opts.BudgetChars)
+	out, err := d.finishRetrieval(scored, rows, profile, mode, opts.BudgetChars)
 	if err != nil {
 		return nil, err
 	}
@@ -222,6 +252,7 @@ func (d *Daemon) finishRetrieval(scored []rank.Scored, rows map[string]projectio
 		rec.Score = rank.Dec(s.Score)
 		wR, wF, wP := profileWeights(profile)
 		rec.Weights.R, rec.Weights.F, rec.Weights.P = rank.Dec(wR), rank.Dec(wF), rank.Dec(wP)
+		fillP2Components(&rec, s, profile)
 		rec.CreatedAt = row.CreatedAt
 		rec.Mandatory = s.Mandatory
 		blob, err := json.Marshal(rec)
@@ -236,11 +267,12 @@ func (d *Daemon) finishRetrieval(scored []rank.Scored, rows map[string]projectio
 	return out, nil
 }
 
+// profileWeights returns the (R, F, P) weights for the P0 why_ranked lines. For
+// P2 profiles P is 0 and the S/I/N terms carry the weight (recorded separately
+// by fillP2Components); R and F come from the profile's public weights.
 func profileWeights(p rank.Profile) (float64, float64, float64) {
-	if p == rank.ProfileDigest {
-		return config.DigestWeightR, config.DigestWeightF, config.DigestWeightP
-	}
-	return config.SearchWeightR, config.SearchWeightF, config.SearchWeightP
+	w := p.Weights()
+	return w.R, w.F, w.P
 }
 
 func topKCosine(heads map[string][]float32, q []float32, k int) []string {
@@ -386,13 +418,18 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 	if err != nil {
 		return nil, err
 	}
+	digestProfile := d.rankProfileDigest()
+	var p2 map[string]P2Input
+	if digestProfile.IsP2() {
+		p2, _ = d.P2Inputs()
+	}
 	cands := make([]rank.Candidate, 0, len(candIDs))
 	for _, id := range candIDs {
 		row, ok := rows[id]
 		if !ok {
 			continue
 		}
-		cands = append(cands, rank.Candidate{
+		c := rank.Candidate{
 			MessageID: id,
 			EventID:   row.CreatedEventID,
 			CreatedAt: parseWall(row.CreatedAt),
@@ -401,14 +438,20 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 			LexRank:   lexRank[id],
 			VecRank:   vecRank[id],
 			Mandatory: mandatory[id],
-		})
+		}
+		if digestProfile.IsP2() {
+			c.Salience = p2[id].Salience
+			c.Novelty = p2[id].Novelty
+			c.Intent = intentFromRow(row.PinActive, row.PriorityConf)
+		}
+		cands = append(cands, c)
 	}
 
 	var scored []rank.Scored
 	if uniform {
-		scored = rank.RankUniformR(cands, rank.ProfileDigest, d.now())
+		scored = rank.RankUniformR(cands, digestProfile, d.now())
 	} else {
-		scored = rank.Rank(cands, rank.ProfileDigest, d.now())
+		scored = rank.Rank(cands, digestProfile, d.now())
 	}
 
 	interactionID := d.newUUID()
@@ -465,14 +508,15 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 		rec.R, rec.F, rec.Peff, rec.RRF = rank.Dec(s.R), rank.Dec(s.F), rank.Dec(s.Peff), rank.Dec(s.RRF)
 		rec.LexRank, rec.VecRank = s.Components.LexRank, s.Components.VecRank
 		rec.Score = rank.Dec(s.Score)
-		wR, wF, wP := profileWeights(rank.ProfileDigest)
+		wR, wF, wP := profileWeights(digestProfile)
 		rec.Weights.R, rec.Weights.F, rec.Weights.P = rank.Dec(wR), rank.Dec(wF), rank.Dec(wP)
+		fillP2Components(&rec, s, digestProfile)
 		rec.CreatedAt = rows[s.MessageID].CreatedAt
 		rec.Mandatory = s.Mandatory
 		blob, _ := json.Marshal(rec)
 		expl = append(expl, projection.ExplanationRow{MessageID: s.MessageID, ComponentsJSON: string(blob), FinalRank: i + 1})
 	}
-	if err := d.proj.SaveExplanations(interactionID, string(rank.ProfileDigest), expl); err != nil {
+	if err := d.proj.SaveExplanations(interactionID, string(digestProfile), expl); err != nil {
 		return nil, err
 	}
 	dout := &DigestOutput{

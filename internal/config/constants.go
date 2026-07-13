@@ -124,6 +124,28 @@ const (
 	// the P2 profiles so the constant has one home.
 	PenaltyCap = 0.15
 
+	// P2 full additive profiles (spec §9.1):
+	//   search = 0.75·R + 0.08·S + 0.04·F + 0.10·I + 0.03·N
+	//   digest = 0.45·R + 0.15·S + 0.20·F + 0.15·I + 0.05·N
+	// S=salience (§9.2), I=operator intent, N=novelty. No linear P term — in P2
+	// declared priority is a CAP on contribution, not an additive feature.
+	SearchP2WeightR = 0.75
+	SearchP2WeightS = 0.08
+	SearchP2WeightF = 0.04
+	SearchP2WeightI = 0.10
+	SearchP2WeightN = 0.03
+
+	DigestP2WeightR = 0.45
+	DigestP2WeightS = 0.15
+	DigestP2WeightF = 0.20
+	DigestP2WeightI = 0.15
+	DigestP2WeightN = 0.05
+
+	// NoveltyExposureHalf: novelty = 2^(−impressions/half) — a rarely-shown
+	// item reads as novel; heavy prior exposure decays it toward 0. Backs the
+	// §9.2 "10% exploration quota for new items" intent locally.
+	NoveltyExposureHalf = 8.0
+
 	// DeclaredPriorityMax: declared_priority ∈ [0,3]; P = declared/3.
 	DeclaredPriorityMax = 3
 )

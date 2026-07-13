@@ -20,17 +20,51 @@ import (
 type Profile string
 
 const (
-	ProfileSearch Profile = "search-P0"
-	ProfileDigest Profile = "digest-P0"
+	ProfileSearch   Profile = "search-P0"
+	ProfileDigest   Profile = "digest-P0"
+	ProfileSearchP2 Profile = "search-P2"
+	ProfileDigestP2 Profile = "digest-P2"
 )
 
-func (p Profile) weights() (wR, wF, wP float64, halfLife time.Duration) {
+// weightSet holds every additive term's weight. P0 profiles set S/I/N to 0 and
+// carry a P (priority) term; P2 profiles set P to 0 and carry S/I/N (§9.1).
+type weightSet struct {
+	R, S, F, P, I, N float64
+	halfLife         time.Duration
+}
+
+// IsP2 reports whether the profile uses the full additive model.
+func (p Profile) IsP2() bool { return p == ProfileSearchP2 || p == ProfileDigestP2 }
+
+func (p Profile) weights() weightSet {
 	switch p {
 	case ProfileDigest:
-		return config.DigestWeightR, config.DigestWeightF, config.DigestWeightP, config.DigestFreshnessHalfLife
+		return weightSet{R: config.DigestWeightR, F: config.DigestWeightF, P: config.DigestWeightP, halfLife: config.DigestFreshnessHalfLife}
+	case ProfileSearchP2:
+		return weightSet{R: config.SearchP2WeightR, S: config.SearchP2WeightS, F: config.SearchP2WeightF, I: config.SearchP2WeightI, N: config.SearchP2WeightN, halfLife: config.SearchFreshnessHalfLife}
+	case ProfileDigestP2:
+		return weightSet{R: config.DigestP2WeightR, S: config.DigestP2WeightS, F: config.DigestP2WeightF, I: config.DigestP2WeightI, N: config.DigestP2WeightN, halfLife: config.DigestFreshnessHalfLife}
 	default:
-		return config.SearchWeightR, config.SearchWeightF, config.SearchWeightP, config.SearchFreshnessHalfLife
+		return weightSet{R: config.SearchWeightR, F: config.SearchWeightF, P: config.SearchWeightP, halfLife: config.SearchFreshnessHalfLife}
 	}
+}
+
+// PublicWeights exposes a profile's additive term weights for why_ranked
+// persistence (§9.4 — every number must be recomputable). P0 profiles report
+// S=I=N=0; P2 profiles report P=0.
+type PublicWeights struct{ R, S, F, P, I, N float64 }
+
+// Weights returns the profile's term weights.
+func (p Profile) Weights() PublicWeights {
+	w := p.weights()
+	return PublicWeights{R: w.R, S: w.S, F: w.F, P: w.P, I: w.I, N: w.N}
+}
+
+// score computes the additive score for one candidate's components under a
+// weight set. The P (priority) term is decayed effective_P; in P2 wP=0 so
+// priority does not add linearly (it caps elsewhere).
+func (w weightSet) score(c Components) float64 {
+	return w.R*c.R + w.S*c.S + w.F*c.F + w.P*c.Peff + w.I*c.I + w.N*c.N
 }
 
 // Candidate is one message entering ranking. LexRank/VecRank are 1-based
@@ -44,6 +78,13 @@ type Candidate struct {
 	LexRank   int
 	VecRank   int
 
+	// P2 additive inputs (§9.1/§9.2), already normalized to [0,1]; P0 profiles
+	// ignore them. Salience is P2-2's S; Intent is operator intent; Novelty is
+	// the exploration/diversity term.
+	Salience float64
+	Intent   float64
+	Novelty  float64
+
 	Mandatory string // "" | "recipient" | "pin" — inclusion class, not a score bonus
 }
 
@@ -52,8 +93,11 @@ type Candidate struct {
 // projection's rank_explanations table).
 type Components struct {
 	R       float64
+	S       float64 // P2 salience (§9.2)
 	F       float64
 	Peff    float64
+	I       float64 // P2 operator intent
+	N       float64 // P2 novelty
 	RRF     float64
 	LexRank int
 	VecRank int
@@ -99,7 +143,7 @@ func Freshness(age time.Duration, halfLife time.Duration) float64 {
 // Percentile R is over the union: R = (#candidates with strictly smaller
 // RRF) / (n−1); single candidate ⇒ R=1. RRF ties share the same percentile.
 func Rank(cands []Candidate, profile Profile, now time.Time) []Scored {
-	wR, wF, wP, halfLife := profile.weights()
+	w := profile.weights()
 	n := len(cands)
 	scored := make([]Scored, n)
 
@@ -124,14 +168,17 @@ func Rank(cands []Candidate, profile Profile, now time.Time) []Scored {
 		}
 		comp := Components{
 			R:       r,
-			F:       Freshness(age, halfLife),
+			S:       c.Salience,
+			F:       Freshness(age, w.halfLife),
 			Peff:    EffectiveP(c.Priority, age, c.Suspended),
+			I:       c.Intent,
+			N:       c.Novelty,
 			RRF:     rrfs[i],
 			LexRank: c.LexRank,
 			VecRank: c.VecRank,
 			Profile: profile,
 		}
-		comp.Score = wR*comp.R + wF*comp.F + wP*comp.Peff
+		comp.Score = w.score(comp)
 		scored[i] = Scored{Candidate: c, Components: comp}
 	}
 
@@ -155,7 +202,7 @@ func Rank(cands []Candidate, profile Profile, now time.Time) []Scored {
 // digest-without-interest-query rule (rulings §7: no query ⇒ R=1.0; the
 // digest degrades to freshness+priority ordering).
 func RankUniformR(cands []Candidate, profile Profile, now time.Time) []Scored {
-	wR, wF, wP, halfLife := profile.weights()
+	w := profile.weights()
 	scored := make([]Scored, len(cands))
 	for i, c := range cands {
 		age := now.Sub(c.CreatedAt)
@@ -164,13 +211,16 @@ func RankUniformR(cands []Candidate, profile Profile, now time.Time) []Scored {
 		}
 		comp := Components{
 			R:       1.0,
-			F:       Freshness(age, halfLife),
+			S:       c.Salience,
+			F:       Freshness(age, w.halfLife),
 			Peff:    EffectiveP(c.Priority, age, c.Suspended),
+			I:       c.Intent,
+			N:       c.Novelty,
 			LexRank: c.LexRank,
 			VecRank: c.VecRank,
 			Profile: profile,
 		}
-		comp.Score = wR*comp.R + wF*comp.F + wP*comp.Peff
+		comp.Score = w.score(comp)
 		scored[i] = Scored{Candidate: c, Components: comp}
 	}
 	sort.SliceStable(scored, func(a, b int) bool {
