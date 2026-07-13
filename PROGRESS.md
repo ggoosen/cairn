@@ -1525,3 +1525,27 @@ auto-no-tailnet / explicit; asserts never-0.0.0.0 and never-silent) and
 **Accept (unverifiable here — needs a real tailnet machine for N9):** a stock
 daemon on a tailnet machine binds tailnet-only with zero config; on a
 non-tailnet machine it logs "no tailnet interface found — sync disabled".
+
+### G3 — encryption gate on the enrol/join key-write path — DONE (2026-07-13)
+
+**Defect:** `device enroll` / `join` wrote a device PRIVATE KEY without calling
+the encryption gate (the gate only fired at runtime startup) — a P0 invariant
+violation (keys never land on unencrypted storage). Additionally a
+bare-enrolled node had no supported way to persist `--allow-unencrypted`
+(init-only), forcing a device-TOML hand-edit.
+
+**Fix (regression-test-first — `internal/identity/fix_g3_test.go`):**
+- `identity.GateEncryption(dir, checker, allow, out)`: exported gate WITH the
+  operator override (EnsureEncrypted stays fail-closed for restore).
+- `CreateEnrollRequest(EnrollRequestOptions{…})`: gates the volume holding the
+  staged key BEFORE the write; `AllowUnencrypted` warns and proceeds.
+- `Join(JoinOptions{…})`: gates device-local state BEFORE the key write, and
+  PERSISTS `AllowUnencrypted` into the written DeviceConfig (per-startup warning
+  parity with init — no TOML hand-edit).
+- `cairn device enroll --allow-unencrypted` / `cairn device join
+  --allow-unencrypted` flags added.
+
+**Tests:** `TestG3EnrollGatesEncryptionBeforeKeyWrite` (refuses before staging
+the key; override warns + writes) and `TestG3JoinGatesEncryptionAndPersistsOverride`
+(refuses before the device-key write; override warns + persists the device-local
+override). Full suite + vet green; `internal/log` untouched.

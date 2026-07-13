@@ -56,9 +56,28 @@ func enrollStagingDir(requestID string) (string, error) {
 	return filepath.Join(base, "enroll-pending", requestID), nil
 }
 
+// EnrollRequestOptions parameterizes the new-node enrolment request.
+type EnrollRequestOptions struct {
+	DisplayName      string
+	OutPath          string
+	AllowUnencrypted bool // FIX-G3: operator override for an unencrypted volume
+	Checker          VolumeChecker
+	Now              func() time.Time
+	Out              io.Writer
+}
+
 // CreateEnrollRequest generates the new node's device keypair (private key
-// staged locally, never in the request) and writes the request file.
-func CreateEnrollRequest(displayName, outPath string, now time.Time) (*EnrollRequest, error) {
+// staged locally, never in the request) and writes the request file. FIX-G3:
+// the encryption gate fires BEFORE the private key is written to staging — a
+// device key never lands on unencrypted storage.
+func CreateEnrollRequest(opts EnrollRequestOptions) (*EnrollRequest, error) {
+	if opts.Now == nil {
+		opts.Now = time.Now
+	}
+	if opts.Out == nil {
+		opts.Out = io.Discard
+	}
+	now := opts.Now()
 	reqUUID, err := uuid.NewV7()
 	if err != nil {
 		return nil, err
@@ -69,7 +88,7 @@ func CreateEnrollRequest(displayName, outPath string, now time.Time) (*EnrollReq
 	}
 	req := &EnrollRequest{
 		RequestID:    reqUUID.String(),
-		DisplayName:  displayName,
+		DisplayName:  opts.DisplayName,
 		DevicePubkey: base64.StdEncoding.EncodeToString(pub),
 		RequestedAt:  now.UTC().Format(config.WallTimeFormat),
 		ExpiresAt:    now.Add(config.EnrollRequestTTL).UTC().Format(config.WallTimeFormat),
@@ -81,6 +100,10 @@ func CreateEnrollRequest(displayName, outPath string, now time.Time) (*EnrollReq
 	if err := os.MkdirAll(staging, config.DirPerm); err != nil {
 		return nil, err
 	}
+	// FIX-G3: gate the volume holding the staged key BEFORE writing it.
+	if err := GateEncryption(staging, opts.Checker, opts.AllowUnencrypted, opts.Out); err != nil {
+		return nil, err
+	}
 	if err := SaveKey(filepath.Join(staging, config.DeviceKeyName), priv); err != nil {
 		return nil, err
 	}
@@ -88,7 +111,7 @@ func CreateEnrollRequest(displayName, outPath string, now time.Time) (*EnrollReq
 	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(outPath, blob, 0o600); err != nil {
+	if err := os.WriteFile(opts.OutPath, blob, 0o600); err != nil {
 		return nil, err
 	}
 	return req, nil
@@ -384,11 +407,25 @@ func VerifyGrantChain(grant *JoinGrant) (*Trust, error) {
 // N6 replication delivers real segments.
 const bootstrapChainName = "bootstrap-chain.json"
 
-// Join installs the approved identity on the new node.
-func Join(grantPath, dir string, out io.Writer) error {
+// JoinOptions parameterizes installing the approved identity on the new node.
+type JoinOptions struct {
+	GrantPath        string
+	Dir              string // portable dir
+	AllowUnencrypted bool   // FIX-G3: operator override, persisted device-local
+	Checker          VolumeChecker
+	Out              io.Writer
+}
+
+// Join installs the approved identity on the new node. FIX-G3: the encryption
+// gate fires BEFORE the private key is written to device-local state, and
+// --allow-unencrypted is persisted into the device config so the per-startup
+// warning fires (parity with init; no device-TOML hand-edit).
+func Join(opts JoinOptions) error {
+	out := opts.Out
 	if out == nil {
 		out = io.Discard
 	}
+	grantPath, dir := opts.GrantPath, opts.Dir
 	blob, err := os.ReadFile(grantPath)
 	if err != nil {
 		return err
@@ -443,6 +480,10 @@ func Join(grantPath, dir string, out io.Writer) error {
 	if err := os.MkdirAll(deviceDir, config.DirPerm); err != nil {
 		return err
 	}
+	// FIX-G3: gate the volume holding device-local state BEFORE writing the key.
+	if err := GateEncryption(deviceDir, opts.Checker, opts.AllowUnencrypted, out); err != nil {
+		return err
+	}
 	if err := SaveKey(filepath.Join(deviceDir, config.DeviceKeyName), priv); err != nil {
 		return err
 	}
@@ -452,6 +493,7 @@ func Join(grantPath, dir string, out io.Writer) error {
 		DeviceID:         grant.DeviceID,
 		OriginGeneration: config.FirstGeneration,
 		CreatedAt:        grant.CreatedAt,
+		AllowUnencrypted: opts.AllowUnencrypted, // FIX-G3: persist override (per-startup warning)
 		SyncListen:       config.SyncListenAuto, // R44: joined nodes auto-detect the tailnet too
 	}
 	if err := device.SaveDevice(deviceDir); err != nil {

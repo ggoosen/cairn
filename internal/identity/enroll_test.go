@@ -49,7 +49,7 @@ func TestN5EnrolmentCeremony(t *testing.T) {
 
 	// machine B: enroll (keypair stays under baseB)
 	t.Setenv("CAIRN_DEVICE_STATE_DIR", baseB)
-	_, err = CreateEnrollRequest("macbook-air", reqPath, time.Now())
+	_, err = CreateEnrollRequest(EnrollRequestOptions{DisplayName: "macbook-air", OutPath: reqPath, Now: time.Now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestN5EnrolmentCeremony(t *testing.T) {
 	// machine B: join
 	t.Setenv("CAIRN_DEVICE_STATE_DIR", baseB)
 	dirB := filepath.Join(t.TempDir(), "cairnB")
-	if err := Join(grantPath, dirB, io.Discard); err != nil {
+	if err := Join(JoinOptions{GrantPath: grantPath, Dir: dirB, Out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
 	loadedB, err := Load(dirB)
@@ -141,7 +141,7 @@ func TestN5RequestExpiryAndTamper(t *testing.T) {
 
 	tmp := t.TempDir()
 	reqPath := filepath.Join(tmp, "req.json")
-	if _, err := CreateEnrollRequest("expired", reqPath, time.Now().Add(-2*time.Hour)); err != nil {
+	if _, err := CreateEnrollRequest(EnrollRequestOptions{DisplayName: "expired", OutPath: reqPath, Now: func() time.Time { return time.Now().Add(-2 * time.Hour) }}); err != nil {
 		t.Fatal(err)
 	}
 	// R28: expired request refused
@@ -153,7 +153,7 @@ func TestN5RequestExpiryAndTamper(t *testing.T) {
 	}
 
 	// wrong root key refused
-	if _, err := CreateEnrollRequest("fresh", reqPath, time.Now()); err != nil {
+	if _, err := CreateEnrollRequest(EnrollRequestOptions{DisplayName: "fresh", OutPath: reqPath, Now: time.Now}); err != nil {
 		t.Fatal(err)
 	}
 	_, wrongPriv, _ := GenerateKey()
@@ -180,7 +180,7 @@ func TestN5RequestExpiryAndTamper(t *testing.T) {
 	grant.Chain = grant.Chain[1:] // drop genesis
 	blob, _ := json.Marshal(grant)
 	os.WriteFile(grantPath, blob, 0o600)
-	if err := Join(grantPath, filepath.Join(t.TempDir(), "cairnB"), io.Discard); err == nil {
+	if err := Join(JoinOptions{GrantPath: grantPath, Dir: filepath.Join(t.TempDir(), "cairnB"), Out: io.Discard}); err == nil {
 		t.Fatal("tampered grant accepted")
 	}
 }

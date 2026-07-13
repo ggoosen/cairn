@@ -20,12 +20,19 @@ func newDeviceCmd(dirFlag *string) *cobra.Command {
 	cmd := &cobra.Command{Use: "device", Short: "Device membership: enrolment ceremony, revocation, listing"}
 
 	var name, out string
+	var enrollAllowUnenc bool
 	enroll := &cobra.Command{
 		Use:   "enroll",
 		Short: "NEW NODE: generate a device key and write the enrolment request (private key never leaves this machine)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			req, err := identity.CreateEnrollRequest(name, out, time.Now())
+			req, err := identity.CreateEnrollRequest(identity.EnrollRequestOptions{
+				DisplayName:      name,
+				OutPath:          out,
+				AllowUnencrypted: enrollAllowUnenc,
+				Now:              time.Now,
+				Out:              cmd.OutOrStdout(),
+			})
 			if err != nil {
 				return err
 			}
@@ -38,6 +45,8 @@ func newDeviceCmd(dirFlag *string) *cobra.Command {
 	}
 	enroll.Flags().StringVar(&name, "name", "", "display name for the new device")
 	enroll.Flags().StringVar(&out, "out", "enroll-request.json", "request file to write")
+	enroll.Flags().BoolVar(&enrollAllowUnenc, "allow-unencrypted", false,
+		"operator override: stage the device key on an unencrypted/unknown volume (warns; the persisted override is set at join)")
 	cmd.AddCommand(enroll)
 
 	var rootKey, grantOut string
@@ -62,6 +71,7 @@ func newDeviceCmd(dirFlag *string) *cobra.Command {
 	approve.Flags().StringVar(&grantOut, "grant", "join-grant.json", "grant file to write (carry back to the new node)")
 	cmd.AddCommand(approve)
 
+	var joinAllowUnenc bool
 	join := &cobra.Command{
 		Use:   "join <grant-file>",
 		Short: "NEW NODE: verify the grant chain from genesis and install the approved identity",
@@ -71,9 +81,16 @@ func newDeviceCmd(dirFlag *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return identity.Join(args[0], dir, cmd.OutOrStdout())
+			return identity.Join(identity.JoinOptions{
+				GrantPath:        args[0],
+				Dir:              dir,
+				AllowUnencrypted: joinAllowUnenc,
+				Out:              cmd.OutOrStdout(),
+			})
 		},
 	}
+	join.Flags().BoolVar(&joinAllowUnenc, "allow-unencrypted", false,
+		"operator override: install the device key on an unencrypted/unknown volume (persisted device-local; warns on every start)")
 	cmd.AddCommand(join)
 
 	var revokeKey, reason string

@@ -91,7 +91,7 @@ func TestN5TwoNodeCeremonyAndRefusals(t *testing.T) {
 
 	// ---- machine B: enroll -------------------------------------------------
 	t.Setenv("CAIRN_DEVICE_STATE_DIR", baseB)
-	if _, err := identity.CreateEnrollRequest("macbook-air", reqPath, time.Now()); err != nil {
+	if _, err := identity.CreateEnrollRequest(identity.EnrollRequestOptions{DisplayName: "macbook-air", OutPath: reqPath, Now: time.Now}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -108,7 +108,7 @@ func TestN5TwoNodeCeremonyAndRefusals(t *testing.T) {
 	// ---- machine B: join ----------------------------------------------------
 	t.Setenv("CAIRN_DEVICE_STATE_DIR", baseB)
 	dirB := filepath.Join(t.TempDir(), "cairnB")
-	if err := identity.Join(grantPath, dirB, io.Discard); err != nil {
+	if err := identity.Join(identity.JoinOptions{GrantPath: grantPath, Dir: dirB, Out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
 	loadedB, err := identity.Load(dirB)

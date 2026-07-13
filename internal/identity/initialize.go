@@ -232,6 +232,22 @@ func EnsureEncrypted(dir string, checker VolumeChecker, out io.Writer) error {
 	return checkEncryption(dir, checker, false, out)
 }
 
+// GateEncryption is the exported encryption gate WITH the operator override
+// (unlike EnsureEncrypted, which fails closed). It enforces the P0 invariant
+// that device key material never lands on unencrypted storage: callers that
+// write a private key (init, enroll, join — FIX-G3) MUST call it on the volume
+// holding the key BEFORE the write. allow=true warns loudly and proceeds;
+// allow=false refuses on anything but an encrypted volume.
+func GateEncryption(dir string, checker VolumeChecker, allow bool, out io.Writer) error {
+	if checker == nil {
+		checker = SystemVolumeChecker{}
+	}
+	if out == nil {
+		out = io.Discard
+	}
+	return checkEncryption(dir, checker, allow, out)
+}
+
 // checkEncryption enforces rulings §9: unknown/indeterminate FAILS CLOSED;
 // the override warns loudly whenever used.
 func checkEncryption(dir string, checker VolumeChecker, allow bool, out io.Writer) error {

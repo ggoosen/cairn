@@ -130,7 +130,7 @@ func setupN6Pair(t *testing.T) n6Pair {
 	}
 
 	t.Setenv("CAIRN_DEVICE_STATE_DIR", baseB)
-	if _, err := identity.CreateEnrollRequest("wsl2-box", reqPath, time.Now()); err != nil {
+	if _, err := identity.CreateEnrollRequest(identity.EnrollRequestOptions{DisplayName: "wsl2-box", OutPath: reqPath, Now: time.Now}); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("CAIRN_DEVICE_STATE_DIR", baseA)
@@ -144,7 +144,7 @@ func setupN6Pair(t *testing.T) n6Pair {
 	_ = grant
 	t.Setenv("CAIRN_DEVICE_STATE_DIR", baseB)
 	dirB := filepath.Join(t.TempDir(), "cairnB")
-	if err := identity.Join(grantPath, dirB, io.Discard); err != nil {
+	if err := identity.Join(identity.JoinOptions{GrantPath: grantPath, Dir: dirB, Out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
 	loadedB, err := identity.Load(dirB)
