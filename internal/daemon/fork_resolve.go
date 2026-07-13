@@ -168,7 +168,8 @@ func ResolveFork(opts ResolveForkOptions) (string, error) {
 			"recovered_from_event_id": le.env.EventID,
 			"fork_resolution_id":      resolutionID,
 		}
-		if len(body) <= config.InlineBodyLimit {
+		// R42: never inline an ephemeral body, even on reissue.
+		if len(body) <= config.InlineBodyLimit && textClass != object.ClassEphemeral {
 			payload["body_bytes"] = string(body)
 		}
 		if err := appendSigned(lg, &event.Envelope{

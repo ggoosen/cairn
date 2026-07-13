@@ -21,6 +21,7 @@ import (
 
 	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/event"
+	"github.com/ggoosen/cairn/internal/object"
 )
 
 //go:embed schema.sql
@@ -321,7 +322,7 @@ func (p *Projection) applyPayload(tx *sql.Tx, env *event.Envelope) error {
 				return err
 			}
 		}
-		return p.indexRevision(tx, pl.RevisionID, pl.BodyHash, pl.BodyBytes)
+		return p.indexRevision(tx, pl.RevisionID, pl.BodyHash, pl.BodyBytes, pl.TextClass)
 
 	case "message.revise_body":
 		var pl struct {
@@ -334,9 +335,9 @@ func (p *Projection) applyPayload(tx *sql.Tx, env *event.Envelope) error {
 		if len(pl.Revisions) == 0 {
 			return errors.New("revise_body with no revisions")
 		}
-		var mime string
-		if err := tx.QueryRow(`SELECT r.body_mime FROM revisions r JOIN messages m ON m.head_revision_id = r.revision_id AND m.message_id=?`,
-			pl.MessageID).Scan(&mime); err != nil {
+		var mime, msgClass string
+		if err := tx.QueryRow(`SELECT r.body_mime, m.text_class FROM revisions r JOIN messages m ON m.head_revision_id = r.revision_id AND m.message_id=?`,
+			pl.MessageID).Scan(&mime, &msgClass); err != nil {
 			return fmt.Errorf("revise_body for unknown message %s: %w", pl.MessageID, err)
 		}
 		for _, rev := range pl.Revisions {
@@ -351,7 +352,7 @@ func (p *Projection) applyPayload(tx *sql.Tx, env *event.Envelope) error {
 					return err
 				}
 			}
-			if err := p.indexRevision(tx, rev.RevisionID, rev.BodyHash, rev.BodyBytes); err != nil {
+			if err := p.indexRevision(tx, rev.RevisionID, rev.BodyHash, rev.BodyBytes, msgClass); err != nil {
 				return err
 			}
 		}
@@ -697,7 +698,15 @@ func (p *Projection) indexDerivative(tx *sql.Tx, derivativeID, textHash string) 
 // indexRevision inserts the revision body into the contentless FTS index
 // (synchronous lexical enrichment — rulings §6) and records enrichment
 // state. A missing body (expired ephemeral) is recorded, never fatal.
-func (p *Projection) indexRevision(tx *sql.Tx, revisionID, bodyHash, inline string) error {
+func (p *Projection) indexRevision(tx *sql.Tx, revisionID, bodyHash, inline, textClass string) error {
+	// R42: an ephemeral body is indexed ONLY from a locally-present object,
+	// never from the inline copy. On the origin the object is local (indexed);
+	// on a non-origin node it was withheld (not indexed) — which keeps the
+	// ephemeral guarantee enforceable and makes historical events that still
+	// carry inline ephemeral bytes index as ephemeral-with-object-absent.
+	if textClass == object.ClassEphemeral {
+		inline = ""
+	}
 	body := []byte(inline)
 	if len(body) == 0 {
 		var ok bool

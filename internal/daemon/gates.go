@@ -80,17 +80,24 @@ func VerifyObjects(fsys fsx.FS, portableDir string, now time.Time) (problems, in
 			}
 			continue
 		}
-		created, err := time.Parse(time.RFC3339Nano, r.created)
-		ttl := config.EphemeralTTLDefault
-		if pc, cerr := config.LoadPortable(portableDir); cerr == nil {
-			ttl = pc.EphemeralTTL()
+		// R43: a missing EPHEMERAL object is informational on EVERY node, not
+		// only the origin — it may have been withheld (peer offline at send
+		// time), never fetched, or expired at TTL. Never a doctor failure
+		// (exit 1). A missing canonical/eager object IS a problem.
+		if r.class == object.ClassEphemeral {
+			created, cerr := time.Parse(time.RFC3339Nano, r.created)
+			ttl := config.EphemeralTTLDefault
+			if pc, lerr := config.LoadPortable(portableDir); lerr == nil {
+				ttl = pc.EphemeralTTL()
+			}
+			if cerr == nil && now.Sub(created) > ttl {
+				infos = append(infos, fmt.Sprintf("ephemeral object %s (%s) expired (TTL); event preserved", r.hash, where))
+			} else {
+				infos = append(infos, fmt.Sprintf("ephemeral object %s (%s) absent (withheld or not yet fetched); event preserved", r.hash, where))
+			}
+			continue
 		}
-		expired := err == nil && r.class == object.ClassEphemeral && now.Sub(created) > ttl
-		if expired {
-			infos = append(infos, fmt.Sprintf("ephemeral object %s (%s) expired (TTL); event preserved", r.hash, where))
-		} else {
-			problems = append(problems, fmt.Sprintf("referenced object %s missing (class %q, referenced by %s) — not explainable by ephemeral expiry", r.hash, r.class, where))
-		}
+		problems = append(problems, fmt.Sprintf("referenced object %s missing (class %q, referenced by %s)", r.hash, r.class, where))
 	}
 	return problems, infos, nil
 }

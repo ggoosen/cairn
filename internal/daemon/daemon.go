@@ -632,7 +632,12 @@ func (d *Daemon) Publish(req PublishRequest) (*PublishResult, error) {
 		"body_hash": hash, "body_len": len(body), "body_mime": req.BodyMime,
 		"text_class": decision.Effective, "declared_priority": req.DeclaredPriority,
 	}
-	if len(body) <= config.InlineBodyLimit {
+	// R42: ephemeral bodies are NEVER inlined. An inline ≤64 KiB body
+	// replicates as chain data to every full node, making the ephemeral
+	// guarantee structurally unenforceable (searchable on peers, un-purgeable
+	// at TTL). Ephemeral lives only as an object; the inline optimization
+	// stays available for canonical / eager-searchable classes.
+	if len(body) <= config.InlineBodyLimit && decision.Effective != object.ClassEphemeral {
 		payload["body_bytes"] = req.Body
 	}
 	if threadID != "" {
@@ -708,6 +713,12 @@ func (d *Daemon) Publish(req PublishRequest) (*PublishResult, error) {
 
 	env, rec, err := d.buildEvent(eventType, "message", msgID, payload, req)
 	if err != nil {
+		return nil, err
+	}
+	// R42 pre-ack guard (F1: reject before acknowledgement, never after): an
+	// ephemeral publish must not carry inline body_bytes. Our own path never
+	// builds one; this makes the invariant enforced, not merely observed.
+	if err := ValidateNoInlineEphemeral(env); err != nil {
 		return nil, err
 	}
 	if err := d.lg.Append(rec, env); err != nil {
@@ -912,6 +923,27 @@ func (d *Daemon) SimpleEvent(eventType, objectType, objectID string, payload map
 	d.applyProjection(env, rec)
 	d.kickSync()
 	return env.EventID, nil
+}
+
+// ValidateNoInlineEphemeral enforces R42: a message.publish / message.reply
+// event whose text_class is ephemeral MUST NOT carry inline body_bytes.
+// Inlining replicates the body as chain data to every full node, making the
+// ephemeral guarantee (never backfilled, purged at TTL) structurally
+// unenforceable. Applied pre-ack on the creation path (F1). Non-publish events
+// and canonical/eager inline bodies pass unchanged.
+func ValidateNoInlineEphemeral(env *event.Envelope) error {
+	switch env.EventType {
+	case "message.publish", "message.reply":
+		var pl struct {
+			TextClass string `json:"text_class"`
+			BodyBytes string `json:"body_bytes"`
+		}
+		if json.Unmarshal(env.Payload, &pl) == nil &&
+			pl.TextClass == object.ClassEphemeral && pl.BodyBytes != "" {
+			return fmt.Errorf("rejected before ack: ephemeral publish carries inline body_bytes (R42: ephemeral bodies live only as objects)")
+		}
+	}
+	return nil
 }
 
 // Housekeep runs one ephemeral-TTL sweep (refs from the projection).

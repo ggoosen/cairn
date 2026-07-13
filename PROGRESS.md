@@ -1451,3 +1451,44 @@ and repair machinery before N9 hardening. Points to review:
    consider running the REAL sandbox-clone drill on the tailnet before N9.
 3. The N5 two-machine ceremony leg (DOGFOOD §11) and the N7 durability leg are
    still operator tasks that can ride alongside the review.
+
+## Pre-N9 fixes (G1–G7) — from the two live network verifications of a036060
+
+Work order: `docs/cairn-pre-n9-fix-workorder.md`. Rulings R42–R45 landed in
+RULINGS.md first (FIX-F5 process rule). `internal/log/` stayed out of bounds.
+
+### G1 — ephemeral bodies are never inlined (R42/R43) — DONE (2026-07-13)
+
+**Defect:** bodies ≤64 KiB were stored as signed inline `body_bytes` inside the
+publish event, which replicates as chain data to every full node regardless of
+text class. Net effect on a peer offline at send time: the ephemeral CONTENT
+was searchable from the inline copy, and that peer's `cairn doctor` FAILED
+(exit 1) forever ("referenced object missing (class ephemeral)") until expiry —
+breaking purgeability (TTL never scrubbed the inline copy) and the DoD gate
+"doctor reports clean" on every synced non-origin node.
+
+**Fix (regression-test-first — `internal/daemon/fix_g1_test.go`, red→green):**
+- `daemon.go` + `fork_resolve.go`: never inline `body_bytes` when the effective
+  text_class is ephemeral (inline optimization kept for canonical/eager only).
+- `daemon.ValidateNoInlineEphemeral` guards the publish path pre-ack (F1): an
+  ephemeral publish carrying inline bytes is rejected before acknowledgement.
+- `projection.indexRevision` now takes the text_class; an ephemeral revision is
+  indexed ONLY from a locally-present object, never from an inline copy — so the
+  origin (object local) indexes, a non-origin (object withheld) does not.
+- `gates.go VerifyObjects` (R43): a missing ephemeral object is INFORMATIONAL on
+  every node (withheld / never-fetched / expired), never a problem; a missing
+  canonical/eager object is still a problem.
+
+**Migration note (R42, historical events with inline ephemeral bytes):** the
+immutable log is NEVER rewritten. This test mesh's pre-G1 events still carry
+inline ephemeral `body_bytes` in their frames. The projection now ignores those
+inline bytes for ephemeral text_class (indexed as ephemeral-with-object-absent
+on non-origin nodes) and doctor treats a missing ephemeral object under R43.
+A `cairn reindex --lexical` on a node that indexed a legacy inline ephemeral
+from an earlier build will DROP it from FTS (the object is absent on non-origin
+nodes), which is the intended convergence to the R42 guarantee.
+
+**Tests:** `TestG1EphemeralNotInlinedTwoNode` (offline-send → pull → search=0,
+fetch fails, doctor clean on B; origin A still indexes its own ephemeral) and
+`TestG1EphemeralInlineRejectedPreAck`. Full suite + vet green; `internal/log`
+untouched.
