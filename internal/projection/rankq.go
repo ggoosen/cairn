@@ -168,6 +168,49 @@ func (p *Projection) CountPendingEmbeddings() (int, error) {
 	return n, err
 }
 
+// ReferenceInDegree returns each message's reference-graph in-degree — the
+// count of non-retracted messages that reply to it (P2 salience, spec §9.2).
+func (p *Projection) ReferenceInDegree() (map[string]int, error) {
+	out := map[string]int{}
+	rows, err := p.db.Query(`
+		SELECT reply_to_message_id, count(*) FROM messages
+		WHERE reply_to_message_id IS NOT NULL AND retracted=0
+		GROUP BY reply_to_message_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}
+
+// OperatorSignalWeight returns each message's summed operator-signal weight
+// (P2 salience §9.2 operator-signals term; NULL weight counts as 1).
+func (p *Projection) OperatorSignalWeight() (map[string]int, error) {
+	out := map[string]int{}
+	rows, err := p.db.Query(`SELECT message_id, COALESCE(sum(COALESCE(weight,1)),0) FROM signals GROUP BY message_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}
+
 // HeadVectors returns message_id → head-revision vector for one model
 // (brute-force cosine happens in the caller; P0 candidate sets ≪ 5k —
 // rulings §7 sanctions the fallback).

@@ -128,6 +128,31 @@ const (
 	DeclaredPriorityMax = 3
 )
 
+// ---------------------------------------------------------------------------
+// P2 salience inputs (spec §9.2) — LOCAL, telemetry-derived. Raw impressions
+// never leave the node; only bounded salience feeds ranking.
+// ---------------------------------------------------------------------------
+
+const (
+	// Demand posterior: fetch_rate = (fetches+α)/(impressions+α+β), α=1, β=4
+	// (Beta prior mean 0.20). Below SalienceMinImpressions qualified
+	// impressions no NEGATIVE judgment is made — demand floors at the prior.
+	SalienceDemandAlpha    = 1.0
+	SalienceDemandBeta     = 4.0
+	SaliencePriorMean      = 0.20 // = α/(α+β)
+	SalienceMinImpressions = 5
+
+	// Reference-graph + operator-signal saturation half-constants: the input
+	// count at which the saturating term 1−2^(−count/k) reaches 0.5.
+	SalienceRefHalf    = 3.0 // reply/citation in-degree
+	SalienceSignalHalf = 5.0 // summed operator-signal weight
+
+	// Bounded blend of the three inputs into S ∈ [0,1] (weights sum to 1).
+	SalienceWeightDemand = 0.50
+	SalienceWeightRef    = 0.30
+	SalienceWeightSignal = 0.20
+)
+
 const (
 	SearchFreshnessHalfLife = 90 * 24 * time.Hour
 	DigestFreshnessHalfLife = 72 * time.Hour
@@ -361,7 +386,7 @@ const (
 	LadderDebtDelayLinks      = 200   // rung 1
 	LadderDebtDelaySummaries  = 1000  // rung 2
 	LadderDebtDelayEmbeddings = 5000  // rung 3
-	LadderDebtLexicalOnly = 20000 // rung 4
+	LadderDebtLexicalOnly     = 20000 // rung 4
 
 	// Disk-pressure margins (rungs 5–7). Free space below each engages the
 	// corresponding rung: pressure → delay blob replication; critical → reject

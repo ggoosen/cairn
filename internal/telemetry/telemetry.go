@@ -172,6 +172,54 @@ func (s *Store) Principal(interactionID string) (string, error) {
 	return p.String, nil
 }
 
+// Demand is the P2 salience demand signal (spec §9.2) per message: how many
+// times it was shown (impressions) vs how many DISTINCT operator tasks found it
+// (fetches — re-find across separate tasks is strong evidence; one orchestration
+// run is one demand cluster). Both maps are keyed by message_id.
+type Demand struct {
+	Impressions map[string]int
+	Fetches     map[string]int
+}
+
+// DemandByMessage aggregates the local interaction log into the demand signal.
+func (s *Store) DemandByMessage() (Demand, error) {
+	d := Demand{Impressions: map[string]int{}, Fetches: map[string]int{}}
+	rows, err := s.db.Query(`SELECT message_id, count(*) FROM impressions GROUP BY message_id`)
+	if err != nil {
+		return d, err
+	}
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			rows.Close()
+			return d, err
+		}
+		d.Impressions[id] = n
+	}
+	rows.Close()
+	// a "fetch" = a `found` outcome; strength is DISTINCT operator tasks, so an
+	// item re-found across separate tasks counts once per task.
+	frows, err := s.db.Query(`
+		SELECT outcome_message_id, count(DISTINCT COALESCE(NULLIF(task_id,''), interaction_id))
+		FROM interactions
+		WHERE outcome='found' AND outcome_message_id IS NOT NULL AND outcome_message_id<>''
+		GROUP BY outcome_message_id`)
+	if err != nil {
+		return d, err
+	}
+	defer frows.Close()
+	for frows.Next() {
+		var id string
+		var n int
+		if err := frows.Scan(&id, &n); err != nil {
+			return d, err
+		}
+		d.Fetches[id] = n
+	}
+	return d, frows.Err()
+}
+
 // RecordOutcome binds an outcome to an interaction_id (rulings §10: outcome
 // commands REQUIRE the interaction id).
 func (s *Store) RecordOutcome(interactionID, outcome, messageID string, at time.Time) error {

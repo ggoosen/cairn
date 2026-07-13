@@ -1704,3 +1704,26 @@ blocks, a message is never lost, only enrichment lags.
 - Tests: `internal/maintenance` table tests (rung order + disk precedence) and
   `TestP21DegradationLadderWired` (daemon plumbs backlog → level → gating →
   status). Full suite + vet green; `internal/log` untouched.
+
+### P2-2 — salience inputs (§9.2) — DONE (2026-07-13)
+
+Local, telemetry-derived salience S ∈ [0,1] — raw impressions never leave the
+node; only bounded S feeds ranking (P2-3 will consume it).
+
+- Pure math `internal/rank/salience.go`: `DemandPosterior(fetches,impressions)`
+  = (f+α)/(imp+α+β), α=1,β=4 (prior mean 0.20) with the min-5-impressions floor
+  (no negative judgment on thin evidence); `Salience(...)` blends demand +
+  saturated reference in-degree + saturated operator-signal weight into a
+  clamped S. Config `Salience*` constants.
+- Data: `telemetry.DemandByMessage` (impressions + DISTINCT-task `found`
+  outcomes — re-find across tasks is strong); `projection.ReferenceInDegree`
+  (reply edges) + `OperatorSignalWeight` (signals.weight sum).
+- Daemon `SalienceScores()` / `SalienceFor(id)` combine the three via the pure
+  math over the union of signalled messages.
+- Tests: `internal/rank` posterior + bounded-monotone tests;
+  `TestP22SalienceCombinesDemandRefAndSignals` (a shown+found+replied+signalled
+  message outranks an ignored one; all scores in [0,1]). Full suite + vet green.
+
+Deferred within P2 (feed forward to P2-3): the 10% exploration quota and
+principal-cluster demal weighting are ranking-time concerns, applied when S
+enters the P2 profile.
