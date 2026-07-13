@@ -1659,3 +1659,23 @@ All seven work-order items landed, one commit each (`FIX-G1`…`FIX-G7`), atop
 the R42–R45 rulings commit. `make verify` green throughout; `internal/log`
 never touched. Items needing a real multi-node/tailnet/Linux environment are
 flagged for the N9 auditors: G2 (stock tailnet bind), G5 (Linux embedder load).
+
+## N9 — Hardening + crossed audit — CODE-COMPLETE (2026-07-13)
+
+Buildpack N9 has two halves. The **hardening** half (buildable) is done; the
+**crossed two-auditor live audit** needs two humans + real tailnet machines +
+the operator rig restoration, so it is DEFERRED to the operator. With the
+hardening landed, P1 is code-complete.
+
+- **N9-H — network fault matrix** (`internal/daemon/n9_hardening_test.go`,
+  `TestN9NetworkHardening`): the rows the N6/N7/N8 drills did not already cover —
+  (1) **bidirectional partition/rejoin** (both sides write while partitioned →
+  one reconcile converges both origins, frontiers identical); (2)
+  **duplicate-delivery flood** (12× re-run of the same reconcile → corpus and
+  frontier unchanged: at-least-once delivery is exactly-once by sequence); (3)
+  **revoked-mid-sync** (A root-revokes B offline, restarts → B is refused at the
+  authenticated listener (R27) and A never ingests B's post-revocation event).
+  Already-covered rows (kill-9 on receiver/sender mid-sync, deleted segment,
+  kill-9 mid-blob-transfer) stay green under the N6/N7 suites.
+- **DEFERRED (operator):** the crossed two-auditor live audit; `cairn
+  adopt-standalone` (R34, buildpack "if time permits") — tracked in P2-PLAN.md.
