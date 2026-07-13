@@ -46,9 +46,10 @@ var opCapability = map[string]string{
 	"search": capRead, "digest": capRead, "peek": capRead, "fetch": capRead,
 	"why-ranked": capRead, "status": capRead, "source-ref": capRead,
 
-	"publish": capSend,
-	"signal":  capSignal,
-	"outcome": capOutcome,
+	"publish":          capSend,
+	"stage-attachment": capSend, // G6: streamed attachment staging accompanies a publish
+	"signal":           capSignal,
+	"outcome":          capOutcome,
 
 	"retract": capAdmin, "topic-create": capAdmin, "topic-ensure": capAdmin,
 	"link": capAdmin, "unlink": capAdmin, "pin": capAdmin, "unpin": capAdmin,

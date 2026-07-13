@@ -39,6 +39,12 @@ type Request struct {
 
 	Publish *PublishRequest `json:"publish,omitempty"`
 
+	// G6: streamed attachment staging. The daemon reads AttachMeta.ByteLen raw
+	// bytes off the connection AFTER this JSON header line (not inlined/base64),
+	// stores the object, and returns its hash — so large/multiple attachments
+	// never inflate one IPC request past IPCMaxRequestBytes.
+	AttachMeta *AttachMeta `json:"attach_meta,omitempty"`
+
 	// simple mutations
 	MessageID  string `json:"message_id,omitempty"`
 	Reason     string `json:"reason,omitempty"`
@@ -105,6 +111,16 @@ type Response struct {
 	Sub        *SubscribeResult             `json:"subscription,omitempty"`
 	Derivs     []projection.DerivativeRow   `json:"derivatives,omitempty"`
 	Summary    *projection.SummaryRow       `json:"summary,omitempty"`
+	Staged     *StagedAttachment            `json:"staged,omitempty"` // G6: stage-attachment result
+}
+
+// StagedAttachment is the stage-attachment reply: the stored object's hash and
+// metadata, referenced by a subsequent publish (G6).
+type StagedAttachment struct {
+	ObjectHash string `json:"object_hash"`
+	ByteLen    int    `json:"byte_len"`
+	Mime       string `json:"mime,omitempty"`
+	Filename   string `json:"filename,omitempty"`
 }
 
 // SocketPath returns the daemon's unix socket location: short, deterministic
@@ -165,7 +181,60 @@ func (d *Daemon) handleConn(conn net.Conn) {
 		writeResponse(conn, Response{Error: "bad request json: " + err.Error()})
 		return
 	}
+	// G6: stage-attachment streams the raw attachment bytes on THIS connection,
+	// immediately after the JSON header line — never inlined in the request.
+	if req.Op == "stage-attachment" {
+		writeResponse(conn, d.stageAttachment(req, r))
+		return
+	}
 	writeResponse(conn, d.dispatch(req))
+}
+
+// stageAttachment reads exactly AttachMeta.ByteLen raw bytes off the connection
+// (following the JSON header line), stores the content-addressed object, and
+// returns its hash. Same capSend gate as publish; the bytes never inflate the
+// JSON request, so many/large attachments cannot breach IPCMaxRequestBytes.
+func (d *Daemon) stageAttachment(req Request, r *bufio.Reader) Response {
+	if req.AttachMeta == nil {
+		return Response{Error: "stage-attachment without attach_meta"}
+	}
+	n := req.AttachMeta.ByteLen
+	if n <= 0 {
+		return Response{Error: "stage-attachment with non-positive byte_len"}
+	}
+	if n > config.DeriveMaxBytes {
+		return Response{Error: fmt.Sprintf("attachment is %d bytes (cap %d) — refused before ack", n, config.DeriveMaxBytes)}
+	}
+	// capability gate (parity with dispatch): a handle needs capSend.
+	if req.Session != "" {
+		sess, prof, err := d.sessions.resolve(req.Session, d.now())
+		if err != nil {
+			return Response{Error: "capability: " + err.Error()}
+		}
+		if need := capabilityFor("stage-attachment"); !prof.Allows(need) {
+			return Response{Error: fmt.Sprintf("capability: profile %q does not allow %q — refused before ack", sess.Profile, need)}
+		}
+	}
+	if err := d.writable(); err != nil {
+		return Response{Error: err.Error()}
+	}
+	buf := make([]byte, n)
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return Response{Error: fmt.Sprintf("reading %d attachment bytes: %v", n, err)}
+	}
+	d.mu.Lock()
+	hash, err := d.store.Put(buf)
+	d.mu.Unlock()
+	if err != nil {
+		return Response{Error: fmt.Sprintf("storing attachment: %v", err)}
+	}
+	mime := req.AttachMeta.Mime
+	if mime == "" {
+		mime = sniffMime(buf)
+	}
+	return Response{OK: true, Staged: &StagedAttachment{
+		ObjectHash: hash, ByteLen: n, Mime: mime, Filename: req.AttachMeta.Filename,
+	}}
 }
 
 func readLine(r *bufio.Reader, max int) ([]byte, error) {
@@ -622,4 +691,62 @@ func Call(deviceDir string, req Request) (*Response, error) {
 		return &resp, errors.New(resp.Error)
 	}
 	return &resp, nil
+}
+
+// StageAttachment streams one attachment file to the daemon over IPC (G6): the
+// JSON header line, then the raw bytes — so the bytes never inflate a JSON
+// request past IPCMaxRequestBytes. It stat-checks the size client-side FIRST
+// and fails cleanly (no transmission) if it exceeds the cap, instead of the old
+// `broken pipe`. Returns the staged object's hash for a subsequent publish.
+func StageAttachment(deviceDir, session, path string) (*StagedAttachment, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > int64(config.DeriveMaxBytes) {
+		return nil, fmt.Errorf("attachment %s is %d bytes (cap %d = 16 MiB) — not sent", filepath.Base(path), info.Size(), config.DeriveMaxBytes)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	sockBytes, err := os.ReadFile(socketPathFile(deviceDir))
+	if err != nil {
+		return nil, errors.New("daemon not running — start with `cairn daemon` or install with `cairn daemon --install`")
+	}
+	conn, err := net.DialTimeout("unix", string(sockBytes), 2*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("daemon not running (%v) — start with `cairn daemon` or install with `cairn daemon --install`", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	header, err := json.Marshal(Request{
+		Op:      "stage-attachment",
+		Session: session,
+		AttachMeta: &AttachMeta{
+			Filename: filepath.Base(path),
+			ByteLen:  len(data),
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if _, err := conn.Write(append(header, '\n')); err != nil {
+		return nil, err
+	}
+	if _, err := conn.Write(data); err != nil {
+		return nil, err
+	}
+	respLine, err := readLine(bufio.NewReaderSize(conn, 64<<10), config.IPCMaxRequestBytes)
+	if err != nil {
+		return nil, err
+	}
+	var resp Response
+	if err := json.Unmarshal(respLine, &resp); err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, errors.New(resp.Error)
+	}
+	return resp.Staged, nil
 }

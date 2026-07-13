@@ -526,12 +526,27 @@ type PublishRequest struct {
 	Durability string `json:"durability,omitempty"`
 }
 
+// AttachMeta is the header for a streamed attachment stage (G6): filename +
+// mime hint + exact byte length. The raw bytes follow the JSON request line on
+// the same connection.
+type AttachMeta struct {
+	Filename string `json:"filename,omitempty"`
+	Mime     string `json:"mime,omitempty"`
+	ByteLen  int    `json:"byte_len"`
+}
+
 // AttachmentIn carries one attachment's bytes into Publish (base64 over
 // IPC via encoding/json's []byte handling).
 type AttachmentIn struct {
 	Data     []byte `json:"data"`
 	Filename string `json:"filename,omitempty"`
 	Mime     string `json:"mime,omitempty"` // optional hint; content is SNIFFED regardless
+
+	// G6: a pre-staged attachment references its object by hash (streamed via
+	// stage-attachment) instead of carrying inline bytes. When set with empty
+	// Data, the publish path uses the existing object rather than Put-ing bytes.
+	ObjectHash string `json:"object_hash,omitempty"`
+	ByteLen    int    `json:"byte_len,omitempty"`
 }
 
 // SourceRef is the ingest provenance payload (schema §message.publish).
@@ -651,6 +666,25 @@ func (d *Daemon) Publish(req PublishRequest) (*PublishResult, error) {
 	}
 	var attachments []attachOut
 	for i, a := range req.Attachments {
+		// G6: a pre-staged attachment (streamed via stage-attachment) arrives as
+		// an object hash, not inline bytes. Use the already-stored object.
+		if a.ObjectHash != "" && len(a.Data) == 0 {
+			data, err := d.store.Get(a.ObjectHash)
+			if err != nil {
+				return nil, fmt.Errorf("attachment %d references unstaged object %s: %w", i, a.ObjectHash, err)
+			}
+			if len(data) > config.DeriveMaxBytes {
+				return nil, fmt.Errorf("attachment %d is %d bytes (cap %d)", i, len(data), config.DeriveMaxBytes)
+			}
+			mime := a.Mime
+			if mime == "" {
+				mime = sniffMime(data)
+			}
+			attachments = append(attachments, attachOut{
+				ObjectHash: a.ObjectHash, ByteLen: len(data), Mime: mime, Filename: a.Filename,
+			})
+			continue
+		}
 		if len(a.Data) == 0 {
 			return nil, fmt.Errorf("attachment %d is empty", i)
 		}

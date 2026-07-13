@@ -1591,3 +1591,30 @@ provisioned-but-broken venv's error).
 remedy-bearing reason). **Linux embedder LOAD itself is N9 operator-verifiable
 only** (this build machine is macOS arm64); the code path + bootstrap are in
 place. Full suite + vet green; `internal/log` untouched.
+
+### G6 — attachment size: 16 MiB, streamed over IPC — DONE (2026-07-13)
+
+**Decision (operator):** the real attachment ceiling is **16 MiB**
+(`MaxRecordBytes` / `DeriveMaxBytes`); attachments are **streamed over IPC**,
+not inlined.
+
+**Defect:** the CLI inlined attachments (base64) into ONE publish IPC request
+bounded by `IPCMaxRequestBytes` (32 MiB), so a large or multi-attachment send
+breached the JSON cap and failed with `broken pipe` BEFORE the clean 16 MiB
+size check ever ran.
+
+**Fix:**
+- New `stage-attachment` IPC op: the CLI writes a JSON header line then STREAMS
+  the raw bytes on the same connection; the daemon reads exactly `byte_len`
+  bytes, `store.Put`s the object, and returns its hash. Bytes never inflate a
+  JSON request → many/large attachments can't breach `IPCMaxRequestBytes`.
+  capSend-gated (parity with publish); size re-checked server-side too.
+- `AttachmentIn` gains `object_hash`: the publish path uses a pre-staged object
+  instead of Put-ing inline bytes (inline path retained for the daemon API).
+- `daemon.StageAttachment` client helper stat-checks the file size FIRST and
+  fails cleanly ("… is N bytes (cap 16 MiB) — not sent") with NO transmission.
+- `cairn send --attach` streams every attachment; `--help` states the 16 MiB cap.
+
+**Tests:** `TestG6AttachmentStreamedAndCapEnforced` (normal attachment streams
+end-to-end; a >16 MiB attachment fails with the clean cap message, never
+`broken pipe`). Full suite + vet green; `internal/log` untouched.

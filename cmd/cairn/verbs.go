@@ -41,6 +41,35 @@ func call(dirFlag *string, req daemon.Request) (*daemon.Response, error) {
 	return daemon.Call(clientDir, req)
 }
 
+// stageAttachments streams each --attach file to the daemon (G6): the size is
+// checked client-side FIRST (clean error, no `broken pipe`), then the raw bytes
+// are streamed over IPC and referenced by object hash in the publish request.
+func stageAttachments(dirFlag *string, paths []string) ([]daemon.AttachmentIn, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	dir, err := config.PortableDir(*dirFlag)
+	if err != nil {
+		return nil, err
+	}
+	clientDir, err := daemon.ClientDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	session := os.Getenv(config.SessionEnvVar)
+	out := make([]daemon.AttachmentIn, 0, len(paths))
+	for _, p := range paths {
+		st, err := daemon.StageAttachment(clientDir, session, p)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, daemon.AttachmentIn{
+			ObjectHash: st.ObjectHash, ByteLen: st.ByteLen, Mime: st.Mime, Filename: st.Filename,
+		})
+	}
+	return out, nil
+}
+
 func printJSON(cmd *cobra.Command, v any) error {
 	blob, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -150,15 +179,13 @@ func newSendCmd(dirFlag *string) *cobra.Command {
 				body = string(blob)
 			}
 			req.Body = body
-			for _, path := range attach {
-				data, err := os.ReadFile(path)
-				if err != nil {
-					return err
-				}
-				req.Attachments = append(req.Attachments, daemon.AttachmentIn{
-					Data: data, Filename: filepath.Base(path),
-				})
+			// G6: stream each attachment over IPC (size pre-checked client-side;
+			// bytes never inline the publish JSON) and reference it by hash.
+			staged, err := stageAttachments(dirFlag, attach)
+			if err != nil {
+				return err
 			}
+			req.Attachments = staged
 			req.AutoCreateTopics = true // operator CLI path (FIX-F1 ruling 1)
 			op := "publish"
 			if emergency {
@@ -180,7 +207,7 @@ func newSendCmd(dirFlag *string) *cobra.Command {
 	cmd.Flags().StringVar(&req.ThreadID, "thread", "", "thread id")
 	cmd.Flags().StringSliceVar(&req.Topics, "topic", nil, "initial topic link(s) by name or id (auto-creates unknown names)")
 	cmd.Flags().StringSliceVar(&req.Recipients, "to", nil, "explicit recipient agent view(s)")
-	cmd.Flags().StringSliceVar(&attach, "attach", nil, "attach file(s); content-addressed, made searchable via deterministic derivatives (N4)")
+	cmd.Flags().StringSliceVar(&attach, "attach", nil, "attach file(s) up to 16 MiB each; streamed over IPC, content-addressed, made searchable via deterministic derivatives (N4)")
 	cmd.Flags().StringVar(&req.SenderSummary, "summary", "", "sender summary (an UNTRUSTED claim; the receiver verifies it against the body)")
 	cmd.Flags().StringVar(&req.Durability, "durability", "", "attachment blob durability: ephemeral|normal(default)|important|pinned (N7)")
 	return cmd
