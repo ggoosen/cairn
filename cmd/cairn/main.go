@@ -94,5 +94,6 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newDeviceCmd(&dir))
 	root.AddCommand(newSyncCmd(&dir))
 	root.AddCommand(newForkCmd(&dir))
+	root.AddCommand(newSavedCmd(&dir))
 	return root
 }

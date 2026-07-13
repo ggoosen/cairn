@@ -62,6 +62,9 @@ type Request struct {
 	// exports
 	Path string `json:"path,omitempty"`
 
+	// P2-4 saved searches
+	SavedName string `json:"saved_name,omitempty"`
+
 	// telemetry / reserve
 	Outcome string         `json:"outcome,omitempty"`
 	Search2 *SearchOptions `json:"search_opts,omitempty"`
@@ -112,6 +115,7 @@ type Response struct {
 	Derivs     []projection.DerivativeRow   `json:"derivatives,omitempty"`
 	Summary    *projection.SummaryRow       `json:"summary,omitempty"`
 	Staged     *StagedAttachment            `json:"staged,omitempty"` // G6: stage-attachment result
+	Saved      []SavedSearch                `json:"saved,omitempty"`  // P2-4 saved-search list
 }
 
 // StagedAttachment is the stage-attachment reply: the stored object's hash and
@@ -664,6 +668,35 @@ func (d *Daemon) dispatch(req Request) Response {
 			"next_seq":    next,
 			"degradation": d.DegradationLevel().String(), // P2-1 (spec §8.2)
 		}}
+
+	case "saved-add":
+		if err := d.SavedAdd(req.SavedName, req.Query); err != nil {
+			return fail(err)
+		}
+		return Response{OK: true}
+
+	case "saved-list":
+		list, err := d.SavedList()
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Saved: list}
+
+	case "saved-remove":
+		if err := d.SavedRemove(req.SavedName); err != nil {
+			return fail(err)
+		}
+		return Response{OK: true}
+
+	case "saved-run":
+		out, err := d.SavedRun(req.SavedName, SearchOptions{
+			K: req.K, BudgetChars: req.BudgetChars, IncludeRetracted: req.IncludeRetracted,
+			TaskID: req.Actor, Principal: principal,
+		})
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Search: out}
 
 	default:
 		return fail(fmt.Errorf("unknown op %q", req.Op))

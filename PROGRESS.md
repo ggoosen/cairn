@@ -1750,3 +1750,18 @@ calibration validates its weights (CAIRN_RANK_PROFILE=p2).
 
 Deferred: P2-3b calibration harness (§9.3) — its own milestone (offline replay
 + weight grids + `cairn rank-stats`).
+
+### P2-4 — saved searches (§12) — DONE (2026-07-13)
+
+Named, re-runnable queries — a device-local operator convenience (not
+replicated, not an event, survives reindex; mutable JSON, single-writer).
+
+- `internal/daemon/savedsearch.go`: `SavedSearch{Name,Query,CreatedAt}`;
+  `SavedAdd` (validated name, idempotent replace), `SavedList` (name-sorted),
+  `SavedRemove`, `SavedRun` (executes through the normal `Search`). Stored at
+  `<device>/saved-searches.json`, overwrite-by-remove then atomic write (the
+  write-once `WriteFileAtomic` is for immutable objects only).
+- IPC ops `saved-add|list|remove|run` (list/run capRead, add/remove capAdmin);
+  `cairn saved add|list|run|rm` CLI.
+- Test: `TestP24SavedSearches` (add/replace/list/run/remove + reject bad name +
+  persistence across restart). Full suite + vet green.

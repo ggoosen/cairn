@@ -393,6 +393,11 @@ const (
 	ProfilesFileName   = "profiles.toml" // device-local capability profiles
 	SessionEnvVar      = "CAIRN_SESSION" // set by `cairn run` for the child
 
+	// SavedSearchesFileName: P2-4 named, re-runnable queries. Device-local
+	// operator convenience (like sessions/profiles) — not replicated, not an
+	// event; survives reindex.
+	SavedSearchesFileName = "saved-searches.json"
+
 	// EnrichInterval/EnrichBatch pace the background embedding enricher
 	// (rulings §6: async; a just-sent message is briefly lexical_only).
 	EnrichInterval = 2 * time.Second
