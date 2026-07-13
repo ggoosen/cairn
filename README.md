@@ -1,77 +1,100 @@
-# Cairn — P0 Build Pack
+# Cairn 🪨
 
-Everything Claude Code needs to build Cairn P0: a local-first,
-crash-safe message + knowledge daemon for AI agent sessions. The design
-survived five rounds of adversarial LLM review; this pack is the frozen
-output of that process.
+**A private, crash-safe message and knowledge mesh for AI agents — so your sessions stop needing you as the copy-paste courier.**
 
-## Install (fresh machine, < 10 minutes)
+Cairn gives every AI agent session on your machines a shared, searchable memory. An agent asks for what it needs and receives a **ranked, provenance-preserving answer within a hard context budget** — and can deliberately fetch the original material when it matters. Agents are never handed a raw inbox.
 
-Prereqs: Go 1.23+, git, a FileVault-encrypted Mac (or `--allow-unencrypted`).
+Like the trail-marker stones it's named for: every message is immutable once placed, readable by whoever passes next, needs no coordinator, and the meaning compounds as more are added.
+
+---
+
+## The problem
+
+If you run multiple AI agent sessions — Claude Code here, Codex there, a chat session on another machine — you already know the failure mode: **you are the message bus.** Decisions, research, files, and context move between sessions by manual copy-paste. It's slow, it's lossy, and nothing compounds: the same knowledge gets re-explained to every new session forever.
+
+## What Cairn does
+
+- **`cairn send`** — any agent publishes a message, decision, or artifact into the mesh
+- **`cairn digest --budget 1500`** — any agent gets a *ranked* rollup of what's new and relevant, hard-capped to a token/character budget
+- **`cairn search "council approval status"`** — hybrid keyword + semantic search across everything, from any session, offline
+- **`cairn fetch <id>`** — deliberately pull the full original, with provenance back to the signed source event
+- **`cairn why-ranked <id>`** — see the exact arithmetic behind every ranking. No black boxes.
+
+Agents connect through whichever door they can reach: **plain files** (drop markdown in an outbox, read a generated digest — works with literally anything), the **CLI**, or **MCP** (`cairn mcp`, for Claude Desktop / Claude Code — every result wrapped in an untrusted-content envelope with full provenance). One daemon per machine; every app and session is just a named consumer.
+
+## How it's built
+
+- **Append-only, signed event log.** Every message is an immutable Ed25519-signed event, hash-chained per origin. Edits are new revisions in a DAG; retractions are events; history always replays. Think personal blockchain, minus the consensus theater you don't need when you trust your own machines.
+- **Markdown in, markdown out.** Bodies are content-addressed objects; human-editable exports round-trip through real three-way merge. Your knowledge is never trapped in a database — backup is `zip` a folder.
+- **SQLite as a disposable projection.** FTS5 + local vector embeddings (fully offline, no API keys). Delete the index; `cairn reindex` rebuilds it byte-identically from the log.
+- **Crash-safe by construction.** Acknowledgement happens only after fsync'd durability. The test suite includes a 15-point crash matrix with simulated power loss — *zero acknowledged-event loss* is a release gate, not an aspiration.
+- **Private by architecture.** Nodes sync peer-to-peer over your own tailnet (later: [iroh](https://github.com/n0-computer/iroh)) — membership is device certificates chained to your mesh root, verified per connection, never trusted from the transport. Canonical/eager text replicates to your machines; big files fetch lazily by hash with explicit durability classes. No cloud, no third party in the data path, no public endpoints.
+- **Equivocation-aware.** A cloned device that writes divergent history is *detected* when the logs meet, frozen, quarantined (never silently deleted), and repaired through an operator ceremony that preserves both branches.
+- **Ranking that stays dumb on purpose.** Relevance + freshness + bounded priority, inspectable arithmetic, constants in one config file. Calibrated from real usage logs — never a learned black box.
+
+## Roadmap
+
+| Phase | Scope | Status |
+|---|---|---|
+| **P0** | Single-machine daemon: event log, search, ranked digests, outbox, exports, crash safety | ✅ complete |
+| **P1** | Multi-machine Tailscale mesh: signed membership, event + text + blob replication with durability classes, live fork detection, MCP server, capability enforcement, durable semantic subscriptions, deterministic attachment derivatives | 🔨 nearly complete |
+| **P2** | Retrieval quality: behavioural salience, calibrated ranking, local knowledge maps, entity/typed-edge graph projection | planned |
+| **P3** | Frictionless onboarding: iroh transport, one-time pairing invites, thin nodes for mobile | planned |
+| **P4** | Self-organising knowledge: automated filing, self-folding topic maps, salience propagation | planned |
+
+**P1 progress:** the mesh is built and passing its acceptance suites — MCP server + untrusted-content envelope (N1), capability enforcement + trusted launcher (N2), durable semantic subscriptions (N3), sandboxed attachment derivatives + receiver summary checks (N4), Tailscale transport + enrolment ceremony (N5), reconciliation + text replication (N6), blob replication + durability acknowledgement (N7), and live fork detection + network doctor (N8). The remaining gate is **N9: hardening + a crossed two-auditor network audit** before the first tagged release.
+
+Each phase gates the next on measured results — P0's engineering gates (zero acknowledged-event loss, 100% provenance, 100% budget compliance, P95 lexical-visibility < 200 ms) are green, and it must demonstrably beat copy-paste (Success@5 ≥ 70% across 30 real cross-session handoffs) before P2 ships. The event-sourced core means every later phase is a new projection over the same log: no migrations, ever.
+
+## Design pedigree
+
+The architecture was developed through five rounds of structured adversarial review across multiple frontier LLMs, with every accepted and rejected recommendation recorded in a decisions changelog. The full paper trail lives in [`docs/`](docs/) and [`RULINGS.md`](RULINGS.md): the specification (v0.3), the binding build rulings (`RULINGS.md` supersedes rulings-v0.3.1), and the historical design briefs.
+
+Kin and inspirations: [Secure Scuttlebutt](https://scuttlebutt.nz)'s per-origin signed append-only logs, [Karpathy's llm-wiki](https://gist.github.com/karpathy) pattern of flat-markdown knowledge bases navigated by index, and [iroh](https://iroh.computer)'s dial-by-public-key networking.
+
+## Status
+
+**Pre-alpha.** P0 is complete and P1 is nearly complete — the single-machine daemon and the multi-machine Tailscale mesh (replication, blob durability, capability enforcement, MCP, live fork detection) are built and passing their acceptance suites. What remains before the first tagged release is **N9: hardening under a full network fault matrix and a crossed two-auditor security audit**. Star/watch for the release. Built in Go; macOS (Apple Silicon) first, Linux best-effort.
+
+## Quickstart
 
 ```bash
 git clone https://github.com/ggoosen/cairn && cd cairn
-make build      # bin/cairn — ALWAYS build via make (or -tags sqlite_fts5);
-                # a plain `go build ./...` fails at compile time by design
+make build                       # bin/cairn — always build via make (or the
+                                 # sqlite_fts5 build tag); a plain `go build`
+                                 # fails at compile time by design
 export PATH="$PWD/bin:$PATH"
-cairn init                                   # ~/cairn + device identity + genesis
-cairn daemon &                               # the resident single writer
-cairn send "hello cairn" && cairn search hello
+
+cairn init                       # create your mesh + device identity + genesis
+cairn daemon &                   # the resident single writer
+cairn setup-agent claude-code    # mint a view for a consumer
+cairn send --topic project/x "Decided: we're using approach B because …"
+cairn digest --view claude-code --budget 1500
 ```
 
-Then read **DOGFOOD.md** for agent-surface wiring, the 30-handoff
-evaluation protocol, autostart, and backups.
+Wiring an agent is one line in its instructions file (`CLAUDE.md`, `AGENTS.md`, …):
 
-## Building the project from the pack (historical)
+> *At session start, run `cairn digest --view <name> --budget 1500`. Share decisions and findings via `cairn send`.*
 
-The original build-pack flow:
+Then read [`DOGFOOD.md`](DOGFOOD.md) for the full setup: the three agent surfaces (files, CLI, MCP), the multi-machine enrolment ceremony, blob durability, fork repair, and the 30-handoff evaluation protocol.
 
-```bash
-mkdir cairn && cd cairn
-unzip ~/Downloads/cairn-buildpack.zip -d .
-git init
-claude
-```
+## License
 
-> Read CLAUDE.md and follow its read order. Then begin Milestone M0 from
-> build/BUILD-PLAN.md. Work one milestone at a time. Maintain PROGRESS.md.
+Cairn is **source-available** under the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/).
 
-## What's in the pack
+**Plain English:**
+- ✅ **Free for personal use** — run it, modify it, self-host it, tinker, learn, share patches
+- ✅ Free for noncommercial research, education, and nonprofit use
+- ❌ **Commercial use requires a separate license.** If you want to build a product, service, or business on Cairn — including offering it as a hosted service — contact me to negotiate commercial terms.
 
-```
-CLAUDE.md                          # Claude Code's standing instructions (read first)
-README.md                          # this file
-docs/
-├── spec-v0.3.md                   # full specification (P0 scope = §12)
-├── rulings-v0.3.1.md              # BINDING build rulings — highest authority
-└── design-brief-v0.2-HISTORICAL.md# background only; never implement from this
-build/
-├── ARCHITECTURE.md                # condensed implementation architecture
-├── BUILD-PLAN.md                  # milestones M0–M8, tasks, acceptance criteria
-├── TESTING.md                     # crash/fault matrix (the zero-loss gate)
-├── schemas/p0-events.schema.json  # normative event payload schemas
-└── sql/projection.sql             # SQLite projection DDL
-```
+This isn't OSI-certified open source (noncommercial restrictions disqualify it, and I'd rather be upfront than "open-washed"). It's a deliberate trade: maximally free for individuals, while keeping commercialisation a conversation.
 
-Document precedence when anything conflicts:
-**rulings-v0.3.1 > spec-v0.3 > CLAUDE.md > build/ files.**
+**Commercial licensing:** open an issue titled `[commercial]` or reach me via the contact details on my GitHub profile.
 
-## Session tips
+## Contributing
 
-- One milestone per session works well; M1 (event log + crash tests) may
-  take two. Never let a session skip acceptance criteria.
-- If Claude Code flags `RULING-NEEDED` items in PROGRESS.md, resolve them
-  yourself or bring them back to the design conversation before they
-  compound.
-- The definition of done is `cairn gates` green on the engineering gates
-  (zero acknowledged-event loss, 100% provenance, 100% budget compliance,
-  P95 lexical visibility < 200 ms) — then the 30-handoff human evaluation
-  (M8 / DOGFOOD.md) decides whether P1 gets built.
+Issues and PRs welcome once P1 lands. Contributions are accepted under the project license; substantial contributors will be asked to sign a lightweight CLA (needed to keep dual/commercial licensing possible). The bar for merging into the event log and durability code is high — read [`build/TESTING.md`](build/TESTING.md) first; if your change touches the write path, it ships with crash-matrix coverage or it doesn't ship.
 
-## What P0 is (and is not)
+---
 
-Single machine, macOS-first, no networking. Event log + object store +
-SQLite/FTS/vector projection + ranked budget-capped digest/search + outbox
-+ exports with 3-way merge + telemetry + crash safety. No MCP, no
-subscriptions, no knowledge maps, no maintenance economy — those are
-P1–P4, and they ride on the same event log without migration.
+*Cairn: leave a stone, mark the trail, let the next traveller find the way.*
