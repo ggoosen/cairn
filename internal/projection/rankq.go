@@ -382,6 +382,74 @@ type ExplanationRow struct {
 	FinalRank      int
 }
 
+// NavTopic / NavThread summarise the corpus for the local navigation map
+// (P2-5). All counts exclude retracted/removed rows.
+type NavTopic struct {
+	Name  string
+	Count int
+}
+type NavThread struct {
+	RootID     string
+	ReplyCount int
+}
+
+// NavMap is the aggregated navigation/rollup snapshot for map.md (P2-5).
+type NavMap struct {
+	TotalMessages int
+	TotalTopics   int
+	PinnedObjects int
+	Topics        []NavTopic  // by message count desc, then name
+	Threads       []NavThread // by reply count desc, then root id
+}
+
+// NavMap computes the local map + rollup aggregation from the projection.
+func (p *Projection) NavMap(topThreads int) (NavMap, error) {
+	var m NavMap
+	if err := p.db.QueryRow(`SELECT count(*) FROM messages WHERE retracted=0`).Scan(&m.TotalMessages); err != nil {
+		return m, err
+	}
+	if err := p.db.QueryRow(`SELECT count(*) FROM topics`).Scan(&m.TotalTopics); err != nil {
+		return m, err
+	}
+	if err := p.db.QueryRow(`SELECT count(DISTINCT object_hash) FROM pins WHERE removed=0`).Scan(&m.PinnedObjects); err != nil {
+		return m, err
+	}
+	trows, err := p.db.Query(`
+		SELECT t.name, count(DISTINCT l.message_id)
+		FROM topics t LEFT JOIN topic_links l
+		  ON l.topic_id=t.topic_id AND l.removed=0
+		GROUP BY t.topic_id ORDER BY count(DISTINCT l.message_id) DESC, t.name`)
+	if err != nil {
+		return m, err
+	}
+	for trows.Next() {
+		var nt NavTopic
+		if err := trows.Scan(&nt.Name, &nt.Count); err != nil {
+			trows.Close()
+			return m, err
+		}
+		m.Topics = append(m.Topics, nt)
+	}
+	trows.Close()
+	hrows, err := p.db.Query(`
+		SELECT reply_to_message_id, count(*) FROM messages
+		WHERE reply_to_message_id IS NOT NULL AND retracted=0
+		GROUP BY reply_to_message_id
+		ORDER BY count(*) DESC, reply_to_message_id LIMIT ?`, topThreads)
+	if err != nil {
+		return m, err
+	}
+	defer hrows.Close()
+	for hrows.Next() {
+		var th NavThread
+		if err := hrows.Scan(&th.RootID, &th.ReplyCount); err != nil {
+			return m, err
+		}
+		m.Threads = append(m.Threads, th)
+	}
+	return m, hrows.Err()
+}
+
 // ExplanationsForInteraction returns every stored why_ranked record for one
 // interaction (P2-3b calibration replay reads the whole candidate set).
 func (p *Projection) ExplanationsForInteraction(interactionID string) ([]ExplanationRow, error) {

@@ -96,5 +96,6 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newForkCmd(&dir))
 	root.AddCommand(newSavedCmd(&dir))
 	root.AddCommand(newRankStatsCmd(&dir))
+	root.AddCommand(newMapCmd(&dir))
 	return root
 }

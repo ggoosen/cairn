@@ -1791,3 +1791,19 @@ change stays a human edit to constants.go.
 
 This closes the P2 ranking chapter: profile (P2-3) + calibration (P2-3b), both
 opt-in / advisory until you review and adopt.
+
+### P2-5 — local maps + rollups (§7.3 map.md, §12) — DONE (2026-07-13)
+
+A per-agent navigation view — a rollup of the corpus by topic, thread, and pin.
+Local derived state, regenerated on demand.
+
+- `projection.NavMap(topThreads)`: totals (messages/topics/pinned objects),
+  topics by message count desc, top threads by reply count — all excluding
+  retracted/removed rows.
+- `daemon.GenerateMap(agent)` (`mapview.go`): renders `views/<agent>/map.md`
+  (pure `renderMap`) — headline rollup + topic list + top threads; overwrite-by-
+  remove then atomic write. Emits only structural metadata, so the §7.3 quote
+  sentinel rule is trivially satisfied.
+- `cairn map [--agent]` (capRead) + IPC `map`.
+- Test: `TestP25MapAndRollup` (rollup totals, topics ordered by count, thread
+  surfaced). Full suite + vet green.

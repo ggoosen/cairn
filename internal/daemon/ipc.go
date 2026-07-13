@@ -669,6 +669,15 @@ func (d *Daemon) dispatch(req Request) Response {
 			"degradation": d.DegradationLevel().String(), // P2-1 (spec §8.2)
 		}}
 
+	case "map":
+		res, err := d.GenerateMap(req.AgentView)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Status: map[string]any{
+			"path": res.Path, "total_messages": res.TotalMessages,
+			"total_topics": res.TotalTopics, "pinned_objects": res.PinnedObjects}}
+
 	case "rank-stats":
 		stats, err := d.RankStats()
 		if err != nil {

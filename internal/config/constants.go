@@ -249,6 +249,8 @@ const (
 	ObjectsDirName     = "objects"
 	ExportsDirName     = "exports"
 	ViewsDirName       = "views"
+	MapFileName        = "map.md" // P2-5 local navigation view (spec §7.3)
+	MapTopThreads      = 20       // P2-5 top-N threads shown in the map rollup
 	DerivedDirName     = ".cairn" // rebuildable; excluded from backup by default
 
 	// Device-local entries. Private keys NEVER live under the portable dir.
