@@ -152,3 +152,31 @@ func TestN5ListenAddrGuard(t *testing.T) {
 		t.Errorf("loopback with env refused: %v", err)
 	}
 }
+
+// FIX-G2 (R44): DetectTailnetIP finds a tailnet CGNAT address when present and
+// declines otherwise; under CAIRN_SYNC_ALLOW_LOOPBACK it falls back to
+// loopback so the auto path is exercisable in dev/test without a real tailnet.
+// It NEVER returns an unspecified/0.0.0.0 address.
+func TestG2DetectTailnetIP(t *testing.T) {
+	// Without the dev acknowledgement and (typically) no tailnet interface in
+	// the test sandbox, detection declines rather than binding something wrong.
+	if ip, ok := DetectTailnetIP(); ok {
+		if ip == "0.0.0.0" || ip == "::" {
+			t.Fatalf("detected an unspecified address %q", ip)
+		}
+	}
+	// Dev/test fallback: loopback becomes an acceptable auto target.
+	t.Setenv("CAIRN_SYNC_ALLOW_LOOPBACK", "1")
+	ip, ok := DetectTailnetIP()
+	if !ok {
+		t.Fatal("loopback fallback not offered under CAIRN_SYNC_ALLOW_LOOPBACK")
+	}
+	if ip != "127.0.0.1" && !isTailnetIPStr(t, ip) {
+		t.Fatalf("fallback returned %q, want a tailnet ip or 127.0.0.1", ip)
+	}
+}
+
+func isTailnetIPStr(t *testing.T, s string) bool {
+	t.Helper()
+	return ValidateListenAddr(s+":9700") == nil
+}

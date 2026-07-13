@@ -1492,3 +1492,36 @@ nodes), which is the intended convergence to the R42 guarantee.
 fetch fails, doctor clean on B; origin A still indexes its own ephemeral) and
 `TestG1EphemeralInlineRejectedPreAck`. Full suite + vet green; `internal/log`
 untouched.
+
+### G2 — sync listener: sane default + never silent (R44/R45) — DONE (2026-07-13)
+
+**Defect:** `sync_listen` had no default, was never set by `init`, had no CLI
+flag (device-TOML hand-edit only), and when unset the daemon bound nothing AND
+logged nothing (the log line lived inside the `if`, no `else`) — a core
+subsystem silently declining to start.
+
+**Fix:**
+- `config/constants.go`: `SyncDefaultPort = 9700`, `SyncListenAuto`/
+  `SyncListenOff` sentinels.
+- `peer.DetectTailnetIP()`: scans interfaces for a Tailscale CGNAT address
+  (100.64.0.0/10 or fd7a:115c:a1e0::/48), IPv4 preferred; under
+  CAIRN_SYNC_ALLOW_LOOPBACK falls back to 127.0.0.1 for dev/test; never returns
+  an unspecified address. (Refactored the tailnet ranges into shared
+  `isTailnetIP` reused by `ValidateListenAddr`.)
+- `daemon.resolveSyncListen(configured, detect)`: "off" → disabled + reason;
+  ""/"auto" → detect and bind `<ip>:9700`, else disabled + reason; anything
+  else → literal address (NewServer still rejects 0.0.0.0). The daemon startup
+  block now logs EVERY outcome loudly with the remedy (R45) and records a
+  human-readable state; a failed bind is loud-but-not-fatal (the daemon still
+  serves local reads/writes).
+- `cairn sync status` now reports `listener` (bound address or the disable
+  reason).
+- `init`/enroll default `sync_listen` to "auto"; `cairn init --sync-listen`
+  flag added.
+
+**Tests:** `TestG2ResolveSyncListen` (off / auto-found / empty-defaults-auto /
+auto-no-tailnet / explicit; asserts never-0.0.0.0 and never-silent) and
+`TestG2DetectTailnetIP`. `make verify` green; `internal/log` untouched.
+**Accept (unverifiable here — needs a real tailnet machine for N9):** a stock
+daemon on a tailnet machine binds tailnet-only with zero config; on a
+non-tailnet machine it logs "no tailnet interface found — sync disabled".

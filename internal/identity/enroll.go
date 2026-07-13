@@ -452,6 +452,7 @@ func Join(grantPath, dir string, out io.Writer) error {
 		DeviceID:         grant.DeviceID,
 		OriginGeneration: config.FirstGeneration,
 		CreatedAt:        grant.CreatedAt,
+		SyncListen:       config.SyncListenAuto, // R44: joined nodes auto-detect the tailnet too
 	}
 	if err := device.SaveDevice(deviceDir); err != nil {
 		return err

@@ -12,6 +12,7 @@ func newInitCmd(dirFlag *string) *cobra.Command {
 		allowUnencrypted bool
 		displayName      string
 		adopt            bool
+		syncListen       string
 	)
 	cmd := &cobra.Command{
 		Use:   "init",
@@ -26,6 +27,7 @@ func newInitCmd(dirFlag *string) *cobra.Command {
 				Dir:              dir,
 				DisplayName:      displayName,
 				AllowUnencrypted: allowUnencrypted,
+				SyncListen:       syncListen,
 				Out:              cmd.OutOrStdout(),
 			}
 			if adopt {
@@ -40,5 +42,7 @@ func newInitCmd(dirFlag *string) *cobra.Command {
 		"operator override: proceed on an unencrypted/unknown volume (persisted device-local; warns on every start)")
 	cmd.Flags().StringVar(&displayName, "display-name", "", "display name for this device's certificate")
 	cmd.Flags().BoolVar(&adopt, "adopt", false, "adopt restored portable data lacking device-local identity: archive old history, create a NEW origin identity")
+	cmd.Flags().StringVar(&syncListen, "sync-listen", "auto",
+		`sync listener: "auto" binds the detected tailnet address:9700, "off" disables it, or pin a tailnet host:port (never 0.0.0.0)`)
 	return cmd
 }

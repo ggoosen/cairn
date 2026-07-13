@@ -132,12 +132,63 @@ func ValidateListenAddr(addr string) error {
 		}
 		return errors.New("loopback sync binding is a dev/test mode; set CAIRN_SYNC_ALLOW_LOOPBACK=1 to acknowledge")
 	}
-	ts4 := netip.MustParsePrefix("100.64.0.0/10")       // Tailscale CGNAT range
-	ts6 := netip.MustParsePrefix("fd7a:115c:a1e0::/48") // Tailscale IPv6 range
-	if ts4.Contains(ip) || ts6.Contains(ip) {
+	if isTailnetIP(ip) {
 		return nil
 	}
 	return fmt.Errorf("%s is not a tailnet address (100.64.0.0/10 or fd7a:115c:a1e0::/48) — the sync listener binds the tailnet ONLY", ip)
+}
+
+// tailnet CGNAT ranges (Tailscale): the sync listener binds these ONLY.
+var (
+	tailnetV4 = netip.MustParsePrefix("100.64.0.0/10")
+	tailnetV6 = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
+)
+
+// isTailnetIP reports whether ip is in a Tailscale CGNAT range.
+func isTailnetIP(ip netip.Addr) bool {
+	return tailnetV4.Contains(ip) || tailnetV6.Contains(ip)
+}
+
+// DetectTailnetIP scans local interfaces for a Tailscale CGNAT address
+// (100.64.0.0/10 or fd7a:115c:a1e0::/48) and returns the first found — the
+// address the AUTO sync listener binds (R44), IPv4 preferred. When no tailnet
+// interface exists it returns ("", false); under CAIRN_SYNC_ALLOW_LOOPBACK=1
+// (dev/test) it falls back to 127.0.0.1 so the auto path is exercisable
+// without a real tailnet. It NEVER returns an unspecified/0.0.0.0 address.
+func DetectTailnetIP() (string, bool) {
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		var v6 string
+		for _, a := range addrs {
+			var raw net.IP
+			switch v := a.(type) {
+			case *net.IPNet:
+				raw = v.IP
+			case *net.IPAddr:
+				raw = v.IP
+			}
+			ip, ok := netip.AddrFromSlice(raw)
+			if !ok {
+				continue
+			}
+			ip = ip.Unmap()
+			if !isTailnetIP(ip) {
+				continue
+			}
+			if ip.Is4() {
+				return ip.String(), true // prefer IPv4
+			}
+			if v6 == "" {
+				v6 = ip.String()
+			}
+		}
+		if v6 != "" {
+			return v6, true
+		}
+	}
+	if os.Getenv("CAIRN_SYNC_ALLOW_LOOPBACK") == "1" {
+		return "127.0.0.1", true
+	}
+	return "", false
 }
 
 // Server accepts authenticated peer connections.

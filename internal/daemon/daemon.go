@@ -11,9 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -77,6 +79,8 @@ type Daemon struct {
 	sessions *sessions    // N2 capability handles (guarded by mu via dispatch)
 	syncSrv  *peer.Server // N5 sync listener (nil unless configured)
 
+	syncListen string // R44/R45: human-readable listener state (guarded by mu)
+
 	syncBulkThreshold int           // N6: overrides config.SyncBulkCatchupThreshold in tests
 	syncKick          chan struct{} // N6: push-on-append nudges the anti-entropy sweep (R29)
 
@@ -103,6 +107,43 @@ func (d *Daemon) SyncAddr() string {
 		return ""
 	}
 	return d.syncSrv.Addr()
+}
+
+// SyncListenState returns the human-readable sync listener state for
+// `cairn sync status` (R44/R45): "listening on <addr>" or "disabled: <reason>".
+func (d *Daemon) SyncListenState() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.syncListen == "" {
+		return "not started"
+	}
+	return d.syncListen
+}
+
+func (d *Daemon) setSyncListenState(s string) {
+	d.mu.Lock()
+	d.syncListen = s
+	d.mu.Unlock()
+}
+
+// resolveSyncListen maps the configured sync_listen value to the address the
+// listener should bind (R44). It returns ("", reason) when the listener should
+// NOT start — the reason is logged loudly (R45) and surfaced in sync status.
+// "off" disables deliberately; "" / "auto" auto-detect a tailnet interface via
+// detect; anything else is a literal address passed through to NewServer
+// (which validates it is a tailnet address, never 0.0.0.0).
+func resolveSyncListen(configured string, detect func() (string, bool)) (addr, reason string) {
+	switch configured {
+	case config.SyncListenOff:
+		return "", `disabled (sync_listen = "off") — set sync_listen to a tailnet address or "auto" to enable`
+	case "", config.SyncListenAuto:
+		if ip, ok := detect(); ok {
+			return net.JoinHostPort(ip, strconv.Itoa(config.SyncDefaultPort)), ""
+		}
+		return "", "no tailnet interface found — sync disabled (set sync_listen to override)"
+	default:
+		return configured, ""
+	}
 }
 
 // ErrReadOnly: the mesh is a portable-only restore (spec §3.2 / RULINGS.md

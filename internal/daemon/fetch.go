@@ -145,29 +145,43 @@ func (d *Daemon) Run(ctx context.Context, processOutbox func() error) error {
 			}
 		}
 	}()
-	// N5: sync listener (tailnet-only, mutual app-layer auth — R27).
-	// Trust is the recover-time mesh snapshot; membership changes happen
-	// via OFFLINE ceremonies (approve/revoke), so a daemon restart follows.
-	if addr := d.loaded.Device.SyncListen; addr != "" && !d.readOnly {
-		srv, err := peer.NewServer(addr, peer.Identity{
+	// N5 sync listener (tailnet-only, mutual app-layer auth — R27). Trust is
+	// the recover-time mesh snapshot; membership changes happen via OFFLINE
+	// ceremonies (approve/revoke), so a daemon restart follows.
+	//
+	// R44: sync_listen defaults to AUTO — detect a tailnet interface and bind
+	// <tailnet-ip>:9700, never 0.0.0.0. "off" disables deliberately; any other
+	// value pins a literal tailnet address. R45: whatever the outcome, a core
+	// subsystem that declines to start says so LOUDLY, with the remedy —
+	// silence is never acceptable.
+	if !d.readOnly {
+		addr, reason := resolveSyncListen(d.loaded.Device.SyncListen, peer.DetectTailnetIP)
+		if addr == "" {
+			d.setSyncListenState("disabled: " + reason)
+			fmt.Fprintf(d.warn, "sync listener: %s\n", reason)
+		} else if srv, err := peer.NewServer(addr, peer.Identity{
 			CairnID:  d.loaded.Portable.CairnID,
 			DeviceID: d.loaded.Device.DeviceID,
 			Priv:     d.devPriv,
-		}, d.trust, d.warn)
-		if err != nil {
-			return fmt.Errorf("sync listener: %w", err)
+		}, d.trust, d.warn); err != nil {
+			// A bad bind is loud but not fatal (R45): the daemon still serves
+			// local reads/writes; the operator fixes sync_listen and restarts.
+			d.setSyncListenState(fmt.Sprintf("disabled: cannot bind %s (%v)", addr, err))
+			fmt.Fprintf(d.warn, "sync listener: cannot bind %s — sync disabled: %v (fix sync_listen or set it to \"auto\"/\"off\")\n", addr, err)
+		} else {
+			// N6: reconciliation runs over each authenticated connection.
+			srv.OnPeer = d.serveSync
+			fmt.Fprintf(d.warn, "sync: listening on %s (tailnet-only; membership = root-chained certs)\n", srv.Addr())
+			d.mu.Lock()
+			d.syncSrv = srv
+			d.mu.Unlock()
+			d.setSyncListenState("listening on " + srv.Addr())
+			go srv.Serve()
+			go func() {
+				<-ctx.Done()
+				srv.Close()
+			}()
 		}
-		// N6: reconciliation runs over each authenticated connection.
-		srv.OnPeer = d.serveSync
-		fmt.Fprintf(d.warn, "sync: listening on %s (tailnet-only; membership = root-chained certs)\n", srv.Addr())
-		d.mu.Lock()
-		d.syncSrv = srv
-		d.mu.Unlock()
-		go srv.Serve()
-		go func() {
-			<-ctx.Done()
-			srv.Close()
-		}()
 	}
 
 	// N6: anti-entropy sweep (R29) — dial every configured peer on a timer

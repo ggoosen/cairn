@@ -287,6 +287,15 @@ const (
 	// N5 transport + membership (R27/R28).
 	EnrollRequestTTL = 1 * time.Hour // R28: enrolment requests expire
 	SyncHelloTimeout = 10 * time.Second
+	// SyncDefaultPort — R44: the port the auto-detected tailnet listener binds
+	// (<tailnet-ip>:9700). The listener NEVER binds 0.0.0.0.
+	SyncDefaultPort = 9700
+	// SyncListenAuto / SyncListenOff are the two sentinel sync_listen values
+	// (R44): "auto" (also the empty/unset default) detects a tailnet interface
+	// and binds it; "off" disables the listener deliberately. Any other value
+	// is a literal tailnet host:port to pin.
+	SyncListenAuto = "auto"
+	SyncListenOff  = "off"
 	// SyncHelloDomain domain-separates handshake signatures from event
 	// signatures (never sign raw peer-supplied bytes).
 	SyncHelloDomain = "cairn-sync-hello-v1"

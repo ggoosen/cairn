@@ -32,6 +32,7 @@ type InitOptions struct {
 	Dir              string // resolved portable dir
 	DisplayName      string // optional device display name
 	AllowUnencrypted bool   // operator override; persisted device-local
+	SyncListen       string // R44: sync listener (default "auto"); "off" or a tailnet host:port
 	Checker          VolumeChecker
 	Now              func() time.Time
 	Out              io.Writer
@@ -147,6 +148,10 @@ func Initialize(opts InitOptions) (*InitResult, error) {
 	if err := os.WriteFile(filepath.Join(deviceDir, config.DeviceCertName), certBlob, config.FilePerm); err != nil {
 		return nil, err
 	}
+	syncListen := opts.SyncListen
+	if syncListen == "" {
+		syncListen = config.SyncListenAuto // R44: default is auto-detect the tailnet
+	}
 	devCfg := &config.DeviceConfig{
 		ConfigVersion:    config.DeviceConfigVersion,
 		CairnID:          cairnID,
@@ -154,6 +159,7 @@ func Initialize(opts InitOptions) (*InitResult, error) {
 		OriginGeneration: config.FirstGeneration,
 		CreatedAt:        now,
 		AllowUnencrypted: opts.AllowUnencrypted,
+		SyncListen:       syncListen,
 	}
 	if err := devCfg.SaveDevice(deviceDir); err != nil {
 		return nil, err
