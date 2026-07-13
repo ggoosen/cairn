@@ -1823,3 +1823,34 @@ of how much event history collapsed away.
 - `cairn compact [--agent]` (capRead) + IPC `compact`.
 - Test: `TestP26CompactionView` (revise+retract → ratio, live count, retracted
   count reported). Full suite + vet green.
+
+### P2-7 — heavy derivatives (opt-in, §8.3) — DONE (2026-07-13)
+
+The heavy-derivative FRAMEWORK — OCR/captioning/transcription territory — opt-in
+and sandboxed. Ships the interface + gating + two reference image extractors;
+real ML runtimes are pluggable behind the same interface.
+
+- `internal/derive/heavy.go`: `HeavyExtractor` interface + registry;
+  `SniffHeavy` (image PNG/JPEG/GIF/WebP, audio Ogg/WAV/MP3/FLAC — from bytes);
+  `ExtractHeavy` (size + `HeavyDeriveTimeout` caps, panic-contained, first
+  success wins, `ErrToolUnavailable` degrades to the next). Reference extractors:
+  `cairn-image-metadata` (pure-Go dimensions — always available) and
+  `tesseract-ocr` (external, opt-in, `exec.CommandContext` with empty env / no
+  network, cleanly skipped when the binary is absent). Derived text stays
+  untrusted and tied to the source hash by the existing derivative record.
+- Daemon: `extractDerivative` runs the deterministic N4 extractor, then — only
+  when opted in (`CAIRN_HEAVY_DERIVATIVES=1`) and the content is unsupported —
+  the heavy pipeline. Off by default (heavy work may shell out).
+- Tests: `internal/derive` sniff + metadata + unsupported;
+  `TestP27HeavyDerivativesOptIn` (enabled → image gains a derivative) and
+  `...DisabledByDefault` (opt-out → none). Full suite + vet + verify green.
+
+## P2 COMPLETE (2026-07-13)
+
+All P2 milestones landed (P2-1 … P2-7), each one commit with tests, `make
+verify` green throughout, `internal/log` untouched. P1 is code-complete (N9-H;
+the crossed live audit is the operator's). Deferred/advisory items flagged for
+your review: P2-3 (P2 ranking profile) + P2-3b (calibration) are OPT-IN /
+advisory until you adopt the weights; heavy-derivative ML runtimes are pluggable
+behind the shipped interface; and the operator-only items (N9 live audit, rig
+restoration, adopt-standalone, G2/G5 live checks) remain.

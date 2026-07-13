@@ -7,6 +7,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -36,6 +37,35 @@ func sniffMime(data []byte) string {
 // DeriveOnce processes up to limit attachments lacking derivatives:
 // sandboxed extraction → text object → derivative.publish (or .fail) event.
 // Every outcome is recorded, so the queue drains monotonically.
+// extractDerivative runs the deterministic (N4) extractor first; if the content
+// has no deterministic extractor (image/audio) and heavy derivatives are opted
+// in (P2-7), it runs the sandboxed heavy pipeline (OCR/metadata/…). The derived
+// text is still content-addressed and tied to the source hash by the caller.
+func (d *Daemon) extractDerivative(data []byte) (*derive.Result, error) {
+	res, err := derive.Extract(context.Background(), data)
+	if err == nil {
+		return res, nil
+	}
+	d.mu.Lock()
+	heavy := d.heavyDerive
+	d.mu.Unlock()
+	if heavy && errors.Is(err, derive.ErrUnsupported) {
+		if hres, herr := derive.ExtractHeavy(context.Background(), data); herr == nil {
+			return hres, nil
+		} else if !errors.Is(herr, derive.ErrUnsupported) {
+			return nil, herr
+		}
+	}
+	return nil, err
+}
+
+// SetHeavyDerivativesForTest toggles the P2-7 opt-in heavy-derivative pipeline.
+func (d *Daemon) SetHeavyDerivativesForTest(on bool) {
+	d.mu.Lock()
+	d.heavyDerive = on
+	d.mu.Unlock()
+}
+
 func (d *Daemon) DeriveOnce(limit int) (int, error) {
 	if d.readOnly {
 		return 0, nil
@@ -61,7 +91,7 @@ func (d *Daemon) DeriveOnce(limit int) (int, error) {
 				"error":             fmt.Sprintf("blob unavailable: %v", gerr),
 				"generated_at":      now,
 			}
-		} else if res, xerr := derive.Extract(context.Background(), data); xerr != nil {
+		} else if res, xerr := d.extractDerivative(data); xerr != nil {
 			eventType = "derivative.fail"
 			payload = map[string]any{
 				"derivative_id": derivID, "blob_hash": b.ObjectHash,

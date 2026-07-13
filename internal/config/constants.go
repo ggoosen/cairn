@@ -324,6 +324,14 @@ const (
 	DeriveMaxPages     = 200      // PDF page cap
 	DeriveTimeout      = 10 * time.Second
 
+	// P2-7 heavy derivatives (spec §8.3): OCR / captioning / transcription.
+	// OPT-IN (CAIRN_HEAVY_DERIVATIVES=1) — they may shell to external tools and
+	// cost real CPU/time; a longer timeout bounds runaway subprocesses. Same
+	// input-size cap; the derivative text is still tied to the source hash and
+	// untrusted. External tools run with NO network passed through (best-effort).
+	HeavyDeriveTimeout    = 60 * time.Second
+	HeavyExtractorVersion = "1"
+
 	// Receiver summary topical-consistency check (N4, spec §8.4): the
 	// sender summary is an untrusted claim; below this cosine vs the body
 	// the receiver marks disagreement and prefers its LOCAL extractive
