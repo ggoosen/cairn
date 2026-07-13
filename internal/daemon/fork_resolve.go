@@ -5,10 +5,11 @@ package daemon
 // branch's useful (message) events are reissued under the operator's active
 // origin — a recovery origin — each carrying recovered_from_event_id +
 // fork_resolution_id; a root-signed device.fork.resolve records the decision;
-// the fork is marked resolved. The losing branch is NEVER deleted (its frames
-// stay in quarantine forever). Revoking the cloned certificate is the
-// documented follow-up (`cairn device revoke`), because a self-clone requires
-// `cairn migrate` first — see DOGFOOD §14. Durable-log internals are untouched:
+// the cloned certificate is REVOKED in the SAME session (R41 / G7.4 — the root
+// key is out exactly once); the fork is marked resolved. The losing branch is
+// NEVER deleted (its frames stay in quarantine forever). A SELF-clone (the
+// forked origin is this device) cannot be self-revoked and still routes through
+// `cairn migrate` — see DOGFOOD §14. Durable-log internals are untouched:
 // every append uses the public log API exactly as migrate/revoke do.
 
 import (
@@ -190,15 +191,39 @@ func ResolveFork(opts ResolveForkOptions) (string, error) {
 		reissued++
 	}
 
-	// RULING-NEEDED: §6.4's full ceremony ALSO re-enrols the physical device
-	// under a new identity and revokes the cloned certificate. We do the branch
-	// decision + losing-branch reissue + root-signed device.fork.resolve here;
-	// the cloned-cert revocation is a documented follow-up (`cairn device
-	// revoke`, or `cairn migrate` first for a self-clone) rather than automated
-	// inside resolve, because RevokeDevice refuses a self-revoke by design.
-	// Flagged for author confirmation (DOGFOOD §14 documents the follow-up).
+	// 3. BUNDLE the cloned-cert revocation (R41 / G7.4). §6.4's ceremony revokes
+	// the equivocating (cloned) certificate; the operator has the root key out
+	// exactly once, so we do it HERE in the same session rather than as a
+	// separate follow-up. Choosing the canonical branch stays human; the revoke
+	// does not. A SELF-clone (the forked origin IS this device) cannot be
+	// self-revoked — RevokeDevice refuses it by design — so that case still
+	// routes through `cairn migrate` and is reported, not automated.
+	selfClone := f.OriginDevice == loaded.Device.DeviceID
+	revoked := false
+	if !selfClone && trust.Member(f.OriginDevice) && !trust.Revoked(f.OriginDevice) {
+		revPayload := map[string]any{
+			"device_id": f.OriginDevice,
+			"reason":    "cloned device equivocated (fork_resolution_id " + resolutionID + ")",
+		}
+		if err := appendSigned(lg, &event.Envelope{
+			SchemaVersion:    config.EventSchemaVersion,
+			CairnID:          loaded.Portable.CairnID,
+			EventType:        "device.revoke",
+			OriginDeviceID:   active.DeviceID,
+			OriginGeneration: active.Generation,
+			ActorPrincipalID: "operator",
+			ObjectType:       "device",
+			ObjectID:         f.OriginDevice,
+			WallTime:         opts.Now().UTC().Format(config.WallTimeFormat),
+			PayloadSchema:    config.PayloadSchemaID,
+			SigningKeyID:     event.KeyID(rootPub),
+		}, revPayload, rootPriv); err != nil {
+			return "", fmt.Errorf("append bundled device.revoke: %w", err)
+		}
+		revoked = true
+	}
 
-	// 3. mark the fork resolved (both branches preserved: local in the log,
+	// 4. mark the fork resolved (both branches preserved: local in the log,
 	// remote in quarantine — never deleted)
 	f.Resolved = true
 	f.Canonical = opts.Canonical
@@ -209,7 +234,16 @@ func ResolveFork(opts ResolveForkOptions) (string, error) {
 	fmt.Fprintf(opts.Out, "fork on origin %s/%d RESOLVED — canonical: %s; %d losing-branch event(s) reissued under the recovery origin (recovered_from_event_id + fork_resolution_id %s).\n",
 		f.OriginDevice, f.OriginGen, opts.Canonical, reissued, resolutionID)
 	fmt.Fprintf(opts.Out, "The losing branch is preserved in .cairn/quarantine (never deleted).\n")
-	fmt.Fprintf(opts.Out, "NEXT: revoke the cloned certificate — `cairn device revoke %s --root-key <path>` (for a self-clone, `cairn migrate` first). Then REMOVE the restored root key and restart the daemon.\n", f.OriginDevice)
+	switch {
+	case revoked:
+		fmt.Fprintf(opts.Out, "Cloned certificate for device %s REVOKED (root-signed) in the same session.\n", f.OriginDevice)
+		fmt.Fprintf(opts.Out, "NEXT: REMOVE the restored root key and restart the daemon (the listener will refuse the revoked device).\n")
+	case selfClone:
+		fmt.Fprintf(opts.Out, "SELF-CLONE: the forked origin is THIS device; a self-revoke is refused by design.\n")
+		fmt.Fprintf(opts.Out, "NEXT: run `cairn migrate` to rotate this device's identity, then REMOVE the restored root key and restart.\n")
+	default:
+		fmt.Fprintf(opts.Out, "Note: device %s was already revoked or not a current member — no revoke appended. REMOVE the restored root key and restart.\n", f.OriginDevice)
+	}
 	return resolutionID, nil
 }
 

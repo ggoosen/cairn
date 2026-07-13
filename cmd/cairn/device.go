@@ -184,7 +184,7 @@ func newSyncCmd(dirFlag *string) *cobra.Command {
 	cmd.AddCommand(&cobra.Command{
 		Use:   "now [host:port]",
 		Short: "Reconcile with peers now (N6): frontier exchange + missing-range transfer, both directions",
-		Long:  "Runs one bidirectional reconciliation. With no argument, sweeps every configured sync peer; with an address, reconciles that peer only. Mutations go through the running daemon (single writer).",
+		Long:  "Triggers one bidirectional reconciliation in the BACKGROUND and returns immediately (G7.1 — a large catch-up must not hit the IPC deadline). With no argument, sweeps every configured sync peer; with an address, reconciles that peer only. Watch `cairn sync status` or the daemon log for convergence. Mutations go through the running daemon (single writer).",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			req := daemon.Request{Op: "sync-now"}

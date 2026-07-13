@@ -570,21 +570,30 @@ func (d *Daemon) dispatch(req Request) Response {
 		if len(peers) == 0 {
 			return fail(errors.New("no sync peers configured (set sync_peers in the device config, or pass an address)"))
 		}
-		total := 0
-		errsBy := map[string]any{}
-		for _, addr := range peers {
-			n, err := d.SyncWith(addr)
-			if err != nil {
-				errsBy[addr] = err.Error()
-				continue
+		// G7.1: run the sweep in the BACKGROUND and ack immediately. A large
+		// catch-up (thousands of events) can exceed the IPC deadline even though
+		// convergence succeeds — which surfaced as a spurious i/o timeout. Report
+		// progress via the daemon log + `cairn sync status`. One sweep at a time.
+		if !d.beginManualSync() {
+			return Response{OK: true, Status: map[string]any{
+				"status": "a manual sync is already in progress — watch `cairn sync status` or the daemon log"}}
+		}
+		go func() {
+			defer d.endManualSync()
+			total := 0
+			for _, addr := range peers {
+				n, err := d.SyncWith(addr)
+				if err != nil {
+					fmt.Fprintf(d.warn, "sync now: peer %s failed: %v\n", addr, err)
+					continue
+				}
+				total += n
 			}
-			total += n
-		}
-		st := map[string]any{"ingested": total, "peers": len(peers)}
-		if len(errsBy) > 0 {
-			st["errors"] = errsBy
-		}
-		return Response{OK: true, Status: st}
+			fmt.Fprintf(d.warn, "sync now: complete — %d event(s) ingested across %d peer(s)\n", total, len(peers))
+		}()
+		return Response{OK: true, Status: map[string]any{
+			"status": fmt.Sprintf("sync started in background across %d peer(s) — watch `cairn sync status` or the daemon log for convergence", len(peers)),
+			"peers":  len(peers)}}
 
 	case "sync-status":
 		fr, err := d.Frontiers()

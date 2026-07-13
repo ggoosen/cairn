@@ -80,6 +80,7 @@ type Daemon struct {
 	syncSrv  *peer.Server // N5 sync listener (nil unless configured)
 
 	syncListen string // R44/R45: human-readable listener state (guarded by mu)
+	manualSync bool   // G7.1: a background `sync now` sweep is in flight (guarded by mu)
 
 	syncBulkThreshold int           // N6: overrides config.SyncBulkCatchupThreshold in tests
 	syncKick          chan struct{} // N6: push-on-append nudges the anti-entropy sweep (R29)
@@ -123,6 +124,24 @@ func (d *Daemon) SyncListenState() string {
 func (d *Daemon) setSyncListenState(s string) {
 	d.mu.Lock()
 	d.syncListen = s
+	d.mu.Unlock()
+}
+
+// beginManualSync claims the single-in-flight `sync now` slot (G7.1). Returns
+// false if a background sweep is already running.
+func (d *Daemon) beginManualSync() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.manualSync {
+		return false
+	}
+	d.manualSync = true
+	return true
+}
+
+func (d *Daemon) endManualSync() {
+	d.mu.Lock()
+	d.manualSync = false
 	d.mu.Unlock()
 }
 

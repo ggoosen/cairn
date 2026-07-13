@@ -1618,3 +1618,44 @@ size check ever ran.
 **Tests:** `TestG6AttachmentStreamedAndCapEnforced` (normal attachment streams
 end-to-end; a >16 MiB attachment fails with the clean cap message, never
 `broken pipe`). Full suite + vet green; `internal/log` untouched.
+
+### G7 — minor batch — DONE (2026-07-13)
+
+1. **`sync now` async** (G7.1): a large catch-up could exceed the IPC deadline
+   even though convergence succeeded (spurious i/o timeout). `sync-now` now runs
+   the sweep in a BACKGROUND goroutine (single in-flight at a time) and acks
+   immediately; progress via the daemon log + `cairn sync status`.
+2. **Bare-enrol `identity show`** (G7.2): a freshly joined node has no local
+   genesis until N6 replicates. `identity show` now falls back to
+   `identity.BootstrapTrust` and reports "BOOTSTRAP STATE …" (exit 0) instead of
+   hard-erroring "no genesis event found". Test:
+   `TestG7IdentityShowBootstrapState`.
+3. **Push-side fork detection** (G7.3): fork detection was pull-asymmetric —
+   an equivocating node whose frontier merely COLLIDES with ours (equal
+   next-seq, different head) pushes nothing, so the server missed it until it
+   pulled. The initiator now sends its frontier in the frontier request, and the
+   responder runs the same equal-seq/different-head check
+   (`detectFrontierForkFromPeer`), logs loudly, and kicks a pull-back so the
+   precise probe + quarantine runs. (ingestRecords already ran the
+   coordinate/chain backstops on pushes.)
+4. **R41 revoke bundling** (G7.4): `fork resolve` now REVOKES the cloned
+   certificate in the SAME root-key session (device.fork.resolve + reissue +
+   root-signed device.revoke). Choosing the canonical branch stays human; the
+   revoke does not. A SELF-clone still routes through `cairn migrate` (self-
+   revoke is refused by design) and is reported. `TestN8ForkDetectionAndRepair`
+   now asserts the cloned device is revoked (and the test resolves as the
+   operator device, fixing a latent env bug where it ran as the clone).
+5. **Version string** (G7.5): build version reads `p1` (was `p0`). The
+   normative `PayloadSchemaID` (`cairn/p0-events/v1`) is unchanged — it is the
+   event schema id, not the build version. Test: `TestG7VersionIsP1`.
+
+Full suite + vet + verify green; `internal/log` untouched.
+
+---
+
+## Pre-N9 status: G1–G7 COMPLETE (2026-07-13)
+
+All seven work-order items landed, one commit each (`FIX-G1`…`FIX-G7`), atop
+the R42–R45 rulings commit. `make verify` green throughout; `internal/log`
+never touched. Items needing a real multi-node/tailnet/Linux environment are
+flagged for the N9 auditors: G2 (stock tailnet bind), G5 (Linux embedder load).

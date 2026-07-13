@@ -384,6 +384,13 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 				writeSync(conn, syncMsg{Type: "error", Err: err.Error()})
 				return
 			}
+			// G7.3: symmetric fork detection. The initiator now sends its
+			// frontier; if it collides with ours (same next-seq, different head)
+			// this is equivocation the server would otherwise miss. Log loudly
+			// and kick a pull-back so the precise investigation + quarantine runs.
+			if d.detectFrontierForkFromPeer(req.Frontier, peerDevice) {
+				d.kickSync()
+			}
 			if err := writeSync(conn, syncMsg{Type: "frontier", Frontier: fr}); err != nil {
 				return
 			}
@@ -535,8 +542,16 @@ func (d *Daemon) SyncWith(addr string) (int, error) {
 	}
 	defer pc.Close()
 
-	// 1. frontier exchange
-	if err := writeSync(pc, syncMsg{Type: "frontier"}); err != nil {
+	// 1. frontier exchange. G7.3: include OUR frontier in the request so the
+	// responder can run the SAME equal-next-seq/different-head fork check — an
+	// equivocating push where neither side trails the other would otherwise be
+	// invisible to the server (nothing is behind, so nothing is pushed) until
+	// the honest node happens to initiate a pull.
+	mine, err := d.Frontiers()
+	if err != nil {
+		return 0, err
+	}
+	if err := writeSync(pc, syncMsg{Type: "frontier", Frontier: mine}); err != nil {
 		return 0, err
 	}
 	resp, err := readSync(pc.R)
@@ -554,10 +569,6 @@ func (d *Daemon) SyncWith(addr string) (int, error) {
 		peerFr[f.log()] = f
 	}
 
-	mine, err := d.Frontiers()
-	if err != nil {
-		return 0, err
-	}
 	myFr := map[cairnlog.Origin]originFrontier{}
 	for _, f := range mine {
 		myFr[f.log()] = f
@@ -1002,6 +1013,45 @@ func asForkError(err error) *forkError {
 // sequence, different chain head): fetch the peer's overlapping branch, find
 // the first divergent sequence, quarantine the peer's divergent suffix, and
 // record + freeze the fork. Caller must NOT hold d.mu.
+// detectFrontierForkFromPeer runs the equal-next-seq/different-head fork check
+// against a peer-supplied frontier (G7.3 — the RESPONDER side of a sync). It
+// only DETECTS + logs; the precise branch probe/quarantine needs us to be the
+// initiator, so the caller kicks a pull-back. Returns true if any origin
+// collides. Never holds d.mu across the whole scan.
+func (d *Daemon) detectFrontierForkFromPeer(peerFr []originFrontier, peerDevice string) bool {
+	if len(peerFr) == 0 {
+		return false
+	}
+	mine, err := d.Frontiers()
+	if err != nil {
+		return false
+	}
+	byOrigin := make(map[cairnlog.Origin]originFrontier, len(mine))
+	for _, f := range mine {
+		byOrigin[f.log()] = f
+	}
+	found := false
+	for _, pf := range peerFr {
+		o := pf.log()
+		mf, ok := byOrigin[o]
+		if !ok {
+			continue
+		}
+		d.mu.Lock()
+		frozen := d.isFrozen(o)
+		d.mu.Unlock()
+		if frozen {
+			continue // already known; no need to re-log
+		}
+		if mf.NextSeq == pf.NextSeq && mf.LastEventID != "" && pf.LastEventID != "" && mf.LastEventID != pf.LastEventID {
+			fmt.Fprintf(d.warn, "sync: FORK SUSPECTED on origin %s/%d from peer %s (equal frontier at seq %d but heads differ: mine %s vs theirs %s) — equivocation a push would hide. Scheduling a pull-back to investigate + quarantine; run `cairn doctor fork %s`.\n",
+				o.DeviceID, o.Generation, peerDevice, mf.NextSeq-1, short(mf.LastEventID), short(pf.LastEventID), o.DeviceID)
+			found = true
+		}
+	}
+	return found
+}
+
 func (d *Daemon) investigateFrontierFork(pc *peer.Conn, o cairnlog.Origin, mine, peer originFrontier) error {
 	// fetch the peer's records over the whole overlap [FirstSequence, N)
 	from := int64(config.FirstSequence)

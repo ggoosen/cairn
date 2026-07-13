@@ -9,9 +9,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// version derives from build info (RULINGS.md R11): P0 status + VCS rev.
+// version derives from build info (RULINGS.md R11): milestone status + VCS
+// rev. G7.5: P0 complete + P1 through the pre-N9 fixes → "p1".
 var version = func() string {
-	v := "p0"
+	v := "p1"
 	if info, ok := debug.ReadBuildInfo(); ok {
 		rev, dirty := "", false
 		for _, s := range info.Settings {

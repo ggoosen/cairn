@@ -145,6 +145,22 @@ func newIdentityShowCmd(dirFlag *string) *cobra.Command {
 
 			env, pl, err := loaded.GenesisRecord()
 			if err != nil {
+				// G7.2: a freshly bare-enrolled node has NO local genesis yet — it
+				// runs on grant-chain bootstrap trust until N6 replicates the log
+				// (R37). Report that state instead of hard-erroring.
+				if bt, berr := identity.BootstrapTrust(loaded.DeviceDir); berr == nil && bt.GenesisEnv != nil {
+					fmt.Fprintf(out, "cairn_id:        %s\n", loaded.Portable.CairnID)
+					fmt.Fprintf(out, "portable dir:    %s\n", loaded.Dir)
+					fmt.Fprintf(out, "device state:    %s\n", loaded.DeviceDir)
+					fmt.Fprintf(out, "device_id:       %s (generation %d)\n", loaded.Device.DeviceID, loaded.Device.OriginGeneration)
+					fmt.Fprintf(out, "genesis event:   %s (verified via grant chain)\n", bt.GenesisEnv.EventID)
+					fmt.Fprintf(out, "devices:         %d admitted (bootstrap chain)\n", len(bt.Devices()))
+					fmt.Fprintln(out, "BOOTSTRAP STATE: no local genesis yet — running on grant-chain trust until the log replicates (N6/R37); run `cairn sync now` to pull.")
+					if loaded.Device.AllowUnencrypted {
+						fmt.Fprintf(out, "encryption:      OVERRIDDEN (--allow-unencrypted persisted device-local)\n")
+					}
+					return nil
+				}
 				return err
 			}
 			devicePub, err := pl.InitialDeviceCert.DevicePublicKey()

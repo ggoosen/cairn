@@ -19,6 +19,7 @@ import (
 
 	"github.com/ggoosen/cairn/internal/daemon"
 	"github.com/ggoosen/cairn/internal/fsx"
+	"github.com/ggoosen/cairn/internal/identity"
 	cairnlog "github.com/ggoosen/cairn/internal/log"
 	"github.com/ggoosen/cairn/internal/projection"
 )
@@ -143,6 +144,9 @@ func TestN8ForkDetectionAndRepair(t *testing.T) {
 	// --- repair (offline): keep branch A, reissue branch B under recovery -----
 	cancelA()
 	dA.Close()
+	// the operator resolves on A (deviceA) — restore A's device-state base, which
+	// prior startSyncNode calls repointed at the clone's base.
+	t.Setenv("CAIRN_DEVICE_STATE_DIR", p.baseA)
 	resID, err := daemon.ResolveFork(daemon.ResolveForkOptions{
 		Dir: p.dirA, OriginDevice: p.deviceB, Canonical: "local",
 		RootKeyPath: p.rootKey, Out: io.Discard,
@@ -164,6 +168,13 @@ func TestN8ForkDetectionAndRepair(t *testing.T) {
 	rforks := dA.Forks()
 	if len(rforks) != 1 || !rforks[0].Resolved || rforks[0].Canonical != "local" {
 		t.Fatalf("fork not marked resolved after repair: %+v", rforks)
+	}
+	// G7.4 / R41: the cloned certificate is REVOKED in the SAME session (deviceB
+	// is a different device than the resolving deviceA → not a self-clone).
+	if trust, terr := identity.MeshTrust(fsx.OS{}, p.dirA); terr != nil {
+		t.Fatalf("mesh trust after resolve: %v", terr)
+	} else if !trust.Revoked(p.deviceB) {
+		t.Fatal("G7.4: fork resolve did not bundle the cloned-cert revoke (deviceB still admitted)")
 	}
 	if searchCount(t, dA, "unique-bbb") != 1 {
 		t.Fatal("repair did not reissue the losing branch's content under the recovery origin")
