@@ -13,11 +13,21 @@ all: vet test build
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 install: build
-	@mkdir -p "$(BINDIR)"
-	rm -f "$(BINDIR)/cairn"
-	cp bin/cairn "$(BINDIR)/cairn"
+	@mkdir -p "$(BINDIR)" 2>/dev/null || { echo "ERROR: cannot create $(BINDIR) — retry with sudo (sudo make install) or install non-root (make install PREFIX=$$HOME/.local)"; exit 1; }
+	@rm -f "$(BINDIR)/cairn" 2>/dev/null || { echo "ERROR: cannot remove old $(BINDIR)/cairn — retry with sudo (sudo make install) or non-root (make install PREFIX=$$HOME/.local)"; exit 1; }
+	@cp bin/cairn "$(BINDIR)/cairn" 2>/dev/null || { echo "ERROR: cannot write $(BINDIR)/cairn — retry with sudo (sudo make install) or non-root (make install PREFIX=$$HOME/.local)"; exit 1; }
 	@echo "installed cairn -> $(BINDIR)/cairn (remove-before-copy; AMFI-safe)"
-	@echo "next: cairn daemon --install   # launchd (macOS) / systemd --user (Linux)"
+	@# FIX-H7: end the stale-binary saga — a daemon running the OLD binary keeps
+	@# running stale code until restarted. Detect and instruct (safer than auto-
+	@# killing a daemon that may be mid-sync; launchd KeepAlive would also race).
+	@if pgrep -f "cairn daemon" >/dev/null 2>&1; then \
+	  echo "NOTE: a cairn daemon is RUNNING the OLD binary — it will keep running stale code until you restart it:"; \
+	  echo "      cairn daemon --install     # launchd/systemd: reloads + restarts with the new binary"; \
+	  echo "      (hand-run daemon: pkill -f 'cairn daemon', then start the new one)"; \
+	  echo "      until you restart, 'cairn --version' and 'cairn daemon' will warn about the mismatch."; \
+	else \
+	  echo "next: cairn daemon --install   # launchd (macOS) / systemd --user (Linux) — restarts + supervises"; \
+	fi
 
 # FIX-F4: the plain (untagged) build must FAIL AT COMPILE TIME with an
 # instructive error; the tagged suite must be green.

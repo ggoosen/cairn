@@ -122,7 +122,11 @@ func newDaemonCmd(dirFlag *string) *cobra.Command {
 			if install {
 				return installService(dir, cmd.OutOrStdout())
 			}
-			d, err := daemon.Start(daemon.Options{Dir: dir, Warn: cmd.ErrOrStderr()})
+			// FIX-H7: if a daemon is ALREADY running a different binary, warn
+			// loudly before we try to start (and fail on its lock) — the stale
+			// daemon is why recent code isn't in effect.
+			warnIfStaleDaemon(*dirFlag, version, cmd.ErrOrStderr())
+			d, err := daemon.Start(daemon.Options{Dir: dir, Warn: cmd.ErrOrStderr(), Version: version})
 			if err != nil {
 				return err
 			}

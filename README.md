@@ -68,7 +68,9 @@ make build                       # bin/cairn — always build via make (or the
 export PATH="$PWD/bin:$PATH"
 
 cairn init                       # create your mesh + device identity + genesis
-cairn daemon &                   # the resident single writer
+cairn daemon --install           # resident single writer under launchd/systemd —
+                                 # supervised + auto-restart (never hand-babysat).
+                                 # `cairn daemon &` also works for a quick look.
 cairn setup-agent claude-code    # mint a view for a consumer
 cairn send --topic project/x "Decided: we're using approach B because …"
 cairn digest --view claude-code --budget 1500

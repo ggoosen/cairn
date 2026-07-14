@@ -667,6 +667,7 @@ func (d *Daemon) dispatch(req Request) Response {
 			"device_id":   d.loaded.Device.DeviceID,
 			"next_seq":    next,
 			"degradation": d.DegradationLevel().String(), // P2-1 (spec §8.2)
+			"version":     d.version,                     // FIX-H7: RUNNING daemon's build version
 		}}
 
 	case "map":

@@ -46,15 +46,27 @@ func main() {
 
 func newRootCmd() *cobra.Command {
 	var dir string
+	var showVersion bool
 
 	root := &cobra.Command{
-		Use:           "cairn",
-		Short:         "Cairn — local-first, crash-safe message and knowledge daemon for AI agent sessions",
-		Version:       version,
+		Use:   "cairn",
+		Short: "Cairn — local-first, crash-safe message and knowledge daemon for AI agent sessions",
+		// FIX-H7: handle --version ourselves (not cobra's built-in flag) so we can
+		// warn when a DIFFERENT daemon is running — cobra short-circuits its
+		// version flag before any hook could run.
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if showVersion {
+				fmt.Fprintln(cmd.OutOrStdout(), version)
+				warnIfStaleDaemon(dir, version, cmd.ErrOrStderr())
+				return nil
+			}
+			return cmd.Help()
+		},
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
 	root.PersistentFlags().StringVar(&dir, "dir", "", "path to the portable cairn directory (default ~/cairn, or $CAIRN_DIR)")
+	root.Flags().BoolVar(&showVersion, "version", false, "print the build version (warns if a different daemon is running)")
 
 	root.AddCommand(newInitCmd(&dir))
 	root.AddCommand(newIdentityCmd(&dir))

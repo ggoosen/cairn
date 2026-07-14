@@ -2043,3 +2043,30 @@ and this entry.
 search is `full`, and `SetDegradeLevelForTest(LexicalOnly)` forces `lexical_only`;
 rung 5 — at `DelayBlobRepl` the blob phase no-ops cleanly (nil conn proves the
 short-circuit precedes any I/O). Full suite + vet green; `internal/log` untouched.
+
+## H7 — deploy hygiene: end the stale-binary saga — DONE (2026-07-14)
+
+The live daemon had been running the N2-era binary — dogfooding never exercised
+the code under test, and it cost an entire audit run.
+
+1. **`make install`** now: fails each fs step with a clear `sudo` / non-root
+   (`make install PREFIX=$HOME/.local`) hint instead of a raw permission error;
+   and, after copy, DETECTS a running daemon (`pgrep`) and instructs a restart
+   (`cairn daemon --install`, or pkill+restart for a hand-run one) — safer than
+   auto-killing a daemon that may be mid-sync (launchd KeepAlive would also race).
+2. **Version-mismatch warning (`cmd/cairn/version.go`, R45 spirit):** the daemon
+   now reports its RUNNING build version over the `status` IPC (`Options.Version`
+   → `d.version`). `cairn --version` and `cairn daemon` dial any running daemon
+   and warn LOUDLY on stderr when its version differs from this binary's (an
+   empty/absent version = a pre-H7 stale daemon → also warns). `--version` is now
+   handled directly (cobra short-circuits its built-in version flag before any
+   hook could run).
+3. **Version string** already reads `p1-<sha>` (G7.5); confirmed.
+4. **`cairn daemon --install`** is now the documented DEFAULT in README + DOGFOOD
+   (launchd/systemd, supervised + auto-restart) so the daemon is never
+   hand-babysat; `cairn daemon &` is noted only as a quick-look fallback.
+
+**Regression (`cmd/cairn/fix_h7_test.go`):** `versionMismatchWarning` (equal →
+silent; differing → warns naming both + "STALE"; empty running → warns "unknown")
+and `cairn --version` prints the `p1` version. Full suite + vet green;
+`internal/log` untouched.

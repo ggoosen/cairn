@@ -46,6 +46,7 @@ type Options struct {
 	Now      func() time.Time
 	Warn     io.Writer
 	Embedder embed.Embedder // nil → embed.Detect(Dir); lexical_only if none
+	Version  string         // FIX-H7: build version string of THIS binary (stale-binary detection)
 }
 
 // Daemon is the single writer for one cairn.
@@ -76,6 +77,7 @@ type Daemon struct {
 
 	readOnly bool   // portable-only restore: reads allowed, writes refused (R9)
 	sockDir  string // where daemon.sock.path is registered
+	version  string // FIX-H7: build version this daemon is RUNNING (for stale-binary detection)
 
 	sessions *sessions    // N2 capability handles (guarded by mu via dispatch)
 	syncSrv  *peer.Server // N5 sync listener (nil unless configured)
@@ -294,6 +296,7 @@ func Start(opts Options) (*Daemon, error) {
 		store:    object.NewStore(opts.FS, opts.Dir),
 		verifier: identity.NewChainVerifier(),
 		now:      opts.Now,
+		version:  opts.Version,
 		lockFile: lockFile,
 		warn:     opts.Warn,
 		embedder: opts.Embedder,

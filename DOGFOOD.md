@@ -14,7 +14,10 @@ make build                      # builds bin/cairn (needs Go 1.23+, CGO, git)
 sudo cp bin/cairn /usr/local/bin/ 2>/dev/null || export PATH="$PWD/bin:$PATH"
 
 cairn init                      # creates ~/cairn + device identity (FileVault required)
-cairn daemon &                  # or install autostart (step 5)
+cairn daemon --install          # RECOMMENDED: launchd (macOS) / systemd --user (Linux),
+                                # supervised + auto-restart so the daemon is never
+                                # hand-babysat and never left running a stale binary.
+                                # (`cairn daemon &` still works for a quick look.)
 cairn send "hello cairn" && cairn search hello
 ```
 
