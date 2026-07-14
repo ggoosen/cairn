@@ -173,6 +173,27 @@ const (
 	SalienceWeightDemand = 0.50
 	SalienceWeightRef    = 0.30
 	SalienceWeightSignal = 0.20
+
+	// Operator-signal anti-gaming (spec §9.2, FIX-H4). Signals are the cheapest
+	// channel to forge, so their contribution is deduped, decayed, trust-weighted,
+	// and per-principal capped BEFORE it saturates into S — additive with slow
+	// decay, never a multiplier lock.
+	//
+	// SignalDecayHalfLifeHours: a signal's weight halves every N hours of age, so
+	// a stale "important" flag fades rather than pinning an item forever.
+	SignalDecayHalfLifeHours = float64(30 * 24) // 30 days
+	// SignalMaxWeight caps one signal's declared weight (an emitter cannot buy
+	// unbounded influence with a single high-weight signal).
+	SignalMaxWeight = 3.0
+	// SignalAgentTrust discounts a non-operator (agent) principal's signals; the
+	// operator's signals carry full trust (1.0). Revisable from dogfood.
+	SignalOperatorPrincipal = "operator"
+	SignalOperatorTrust     = 1.0
+	SignalAgentTrust        = 0.3
+	// SignalPrincipalDailyCap bounds ONE principal's total effective signal
+	// contribution within a UTC day (summed across every item it signals), so a
+	// flood across many items cannot dominate either.
+	SignalPrincipalDailyCap = 5.0
 )
 
 const (

@@ -6,13 +6,18 @@ package daemon_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/ggoosen/cairn/internal/daemon"
 )
 
 func TestP22SalienceCombinesDemandRefAndSignals(t *testing.T) {
 	dir := initCairn(t)
-	d, err := daemon.Start(daemon.Options{Dir: dir})
+	// Pin the clock: FIX-H4 signal decay makes salience time-dependent, so two
+	// SalienceScores calls at different real instants would drift in the last
+	// ULPs. A fixed clock keeps the batch/SalienceFor equality exact.
+	fixed := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	d, err := daemon.Start(daemon.Options{Dir: dir, Now: func() time.Time { return fixed }})
 	if err != nil {
 		t.Fatal(err)
 	}

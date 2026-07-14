@@ -40,13 +40,23 @@ func saturate(count int, half float64) float64 {
 	return 1 - math.Pow(2, -float64(count)/half)
 }
 
+// saturateF is saturate over a non-negative float (the FIX-H4 effective signal
+// weight is fractional after trust/decay/cap).
+func saturateF(x, half float64) float64 {
+	if x <= 0 || half <= 0 {
+		return 0
+	}
+	return 1 - math.Pow(2, -x/half)
+}
+
 // Salience blends the three §9.2 inputs into a bounded S ∈ [0,1]:
-// demand (already [0,1]), reference-graph in-degree (saturated), and summed
-// operator-signal weight (saturated). Weights sum to 1 (config).
-func Salience(fetches, impressions, refInDegree, signalWeight int) float64 {
+// demand (already [0,1]), reference-graph in-degree (saturated), and the
+// EFFECTIVE operator-signal weight (FIX-H4: already deduped/decayed/trust-
+// weighted/capped by EffectiveSignalWeights), saturated. Weights sum to 1.
+func Salience(fetches, impressions, refInDegree int, signalWeight float64) float64 {
 	demand := DemandPosterior(fetches, impressions)
 	ref := saturate(refInDegree, config.SalienceRefHalf)
-	sig := saturate(signalWeight, config.SalienceSignalHalf)
+	sig := saturateF(signalWeight, config.SalienceSignalHalf)
 	s := config.SalienceWeightDemand*demand +
 		config.SalienceWeightRef*ref +
 		config.SalienceWeightSignal*sig

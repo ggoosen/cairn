@@ -5,7 +5,41 @@ package daemon
 // in-degree and operator-signal weight into a bounded S ∈ [0,1] per message,
 // via the pure rank.Salience math. Nothing here leaves the node.
 
-import "github.com/ggoosen/cairn/internal/rank"
+import (
+	"time"
+
+	"github.com/ggoosen/cairn/internal/config"
+	"github.com/ggoosen/cairn/internal/rank"
+)
+
+// effectiveSignals projects raw operator signals into the FIX-H4 anti-gaming
+// effective weight per message: deduped per (principal, message, kind), slow-
+// decayed by age against the daemon clock, trust-weighted, and per-principal-day
+// capped (spec §9.2). Nothing here is forgeable by volume.
+func (d *Daemon) effectiveSignals() (map[string]float64, error) {
+	rows, err := d.proj.SignalObservations()
+	if err != nil {
+		return nil, err
+	}
+	now := d.now()
+	obs := make([]rank.SignalObs, 0, len(rows))
+	for _, r := range rows {
+		created, err := time.Parse(config.WallTimeFormat, r.CreatedAt)
+		if err != nil {
+			created = now // unparseable timestamp: treat as fresh, never crash
+		}
+		age := now.Sub(created).Hours()
+		obs = append(obs, rank.SignalObs{
+			Message:   r.MessageID,
+			Principal: r.Principal,
+			Kind:      r.Kind,
+			Weight:    r.Weight,
+			AgeHours:  age,
+			DayBucket: created.UTC().Format("2006-01-02"),
+		})
+	}
+	return rank.EffectiveSignalWeights(obs), nil
+}
 
 // SalienceScores returns message_id → salience S ∈ [0,1] for every message that
 // has ANY salience signal (impression, fetch, reply, or operator signal). A
@@ -20,7 +54,7 @@ func (d *Daemon) SalienceScores() (map[string]float64, error) {
 	if err != nil {
 		return nil, err
 	}
-	sig, err := d.proj.OperatorSignalWeight()
+	sig, err := d.effectiveSignals()
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +108,7 @@ func (d *Daemon) P2Inputs() (map[string]P2Input, error) {
 	if err != nil {
 		return nil, err
 	}
-	sig, err := d.proj.OperatorSignalWeight()
+	sig, err := d.effectiveSignals()
 	if err != nil {
 		return nil, err
 	}

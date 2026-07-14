@@ -198,10 +198,24 @@ func (s *Store) DemandByMessage() (Demand, error) {
 		d.Impressions[id] = n
 	}
 	rows.Close()
-	// a "fetch" = a `found` outcome; strength is DISTINCT operator tasks, so an
-	// item re-found across separate tasks counts once per task.
+	// a "fetch" = a `found` outcome; demand strength is DISTINCT operator RUNS.
+	// FIX-H4 (§9.2 orchestration-run dedup): the run cluster key prefers an
+	// OPERATOR-SUPPLIED task_id, then the principal, then the interaction id. A
+	// daemon-INFERRED task_id (agents that supplied none get a unique synthetic
+	// one) is deliberately ignored, so N agents in one orchestration run — sharing
+	// the orchestrator principal, none supplying a task — register ONE demand
+	// cluster, not N. Genuinely distinct operator tasks still each count.
+	// A daemon-inferred task is exactly 'task-' || first-8-of-interaction_id
+	// (see retrieve.go); that synthetic value is treated as NO task, so a run of
+	// agents that supplied none clusters by principal. An operator-SUPPLIED
+	// task_id is a real cluster key. (The row-level `inferred` flag can't be used
+	// here — it also trips on an inferred surface, which would wrongly discard a
+	// real task.)
 	frows, err := s.db.Query(`
-		SELECT outcome_message_id, count(DISTINCT COALESCE(NULLIF(task_id,''), interaction_id))
+		SELECT outcome_message_id, count(DISTINCT COALESCE(
+			NULLIF(CASE WHEN task_id = 'task-' || substr(interaction_id,1,8) THEN '' ELSE task_id END, ''),
+			NULLIF(principal, ''),
+			interaction_id))
 		FROM interactions
 		WHERE outcome='found' AND outcome_message_id IS NOT NULL AND outcome_message_id<>''
 		GROUP BY outcome_message_id`)

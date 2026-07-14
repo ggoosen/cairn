@@ -1950,3 +1950,40 @@ asserts exact string equality with the printed total — under P0 AND P2, over a
 corpus with salience/intent/novelty non-zero, for every returned result. The
 reverted-renderer run reproduced the auditor's exact pathology (0.75+0.04+0=0.79
 vs total 0.8211, S line absent). Full suite + vet green; `internal/log` untouched.
+
+## H4 — salience gaming surface (§9.2 incomplete) — DONE (2026-07-14)
+
+**Defect (Claude):** operator-signal salience used `sum(weight)` with no decay,
+dedup, caps, or trust — and demand inflated one orchestration run into N
+clusters. §9.2 requires signals additive with slow decay (never a multiplier
+lock), deduped per principal/item/kind, per-principal daily caps, agent trust
+weights, and orchestration-run dedup.
+
+**Fix — signals (`internal/rank/signal.go`, pure):** `EffectiveSignalWeights`
+projects raw signals into a bounded effective weight per message —
+(a) dedup per (principal, message, kind), keeping the least-decayed instance;
+(b) clamp declared weight to `SignalMaxWeight`; (c) trust weight (operator 1.0,
+agents `SignalAgentTrust` 0.3); (d) slow decay `2^(−age/30d)`; (e) per-principal
+per-UTC-day cap scaling. `rank.Salience`'s signal input became a float
+(`saturateF`). The daemon (`effectiveSignals`) age-stamps signals against the
+daemon clock and feeds the result into salience.
+
+**Fix — demand orchestration-run dedup (`telemetry.DemandByMessage`):** the fetch
+cluster key prefers an operator-SUPPLIED task_id, then principal, then
+interaction id. A daemon-inferred task (detected precisely as
+`'task-'||substr(interaction_id,1,8)`, not via the coarse `inferred` flag which
+also trips on inferred surfaces) is treated as no task, so N agents in one run
+sharing the orchestrator principal register ONE cluster; distinct operator tasks
+still each count.
+
+**Config:** `SignalDecayHalfLifeHours` (30d), `SignalMaxWeight` (3),
+`SignalAgentTrust` (0.3) / operator 1.0, `SignalPrincipalDailyCap` (5).
+
+**Regression:** pure `internal/rank/signal_test.go` (dedup / slow-decay ≈ half at
+one half-life / agent-trust discount / max-weight clamp / per-principal-day cap);
+daemon `fix_h4_test.go` — the three accept tests: (1) a 50-signal agent flood ==
+a single signal and < the operator's one signal; (2) a 90-day-stale signal is
+out-ranked by a fresh one; (3) a 5-agent run = one demand cluster, +2 distinct
+tasks = 3. (P2-2's exact-equality assertion now pins the daemon clock, since
+decay makes salience legitimately time-dependent.) Full suite + vet green;
+`internal/log` untouched.

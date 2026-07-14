@@ -192,7 +192,10 @@ func (p *Projection) ReferenceInDegree() (map[string]int, error) {
 }
 
 // OperatorSignalWeight returns each message's summed operator-signal weight
-// (P2 salience §9.2 operator-signals term; NULL weight counts as 1).
+// (P2 salience §9.2 operator-signals term; NULL weight counts as 1). NOTE: this
+// is the RAW sum — the salience path no longer uses it (FIX-H4 replaced it with
+// SignalObservations + rank.EffectiveSignalWeights, which dedup/decay/trust/cap
+// before saturating). Retained for diagnostics.
 func (p *Projection) OperatorSignalWeight() (map[string]int, error) {
 	out := map[string]int{}
 	rows, err := p.db.Query(`SELECT message_id, COALESCE(sum(COALESCE(weight,1)),0) FROM signals GROUP BY message_id`)
@@ -207,6 +210,39 @@ func (p *Projection) OperatorSignalWeight() (map[string]int, error) {
 			return nil, err
 		}
 		out[id] = n
+	}
+	return out, rows.Err()
+}
+
+// SignalRow is one raw operator signal for the FIX-H4 anti-gaming layer.
+type SignalRow struct {
+	MessageID string
+	Principal string
+	Kind      string
+	Weight    int
+	CreatedAt string // RFC 3339 UTC
+}
+
+// SignalObservations returns every operator signal, un-aggregated, so the
+// salience layer can dedup per (principal, message, kind), slow-decay by age,
+// trust-weight, and per-principal-day cap (spec §9.2). An empty actor_principal_id
+// is attributed to the operator (the P0/local-CLI tier-1 default).
+func (p *Projection) SignalObservations() ([]SignalRow, error) {
+	rows, err := p.db.Query(`
+		SELECT message_id, COALESCE(NULLIF(actor_principal_id,''),'operator'),
+		       kind, COALESCE(weight,1), created_at
+		FROM signals`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SignalRow
+	for rows.Next() {
+		var r SignalRow
+		if err := rows.Scan(&r.MessageID, &r.Principal, &r.Kind, &r.Weight, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }
