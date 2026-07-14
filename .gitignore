@@ -2,3 +2,8 @@
 *.test
 /dist/
 bin/
+
+# Local Go build + module caches (sandbox points GOCACHE/GOMODCACHE here).
+# Machine-local and enormous — never commit.
+/.gocache/
+/.gomodcache/
