@@ -2070,3 +2070,41 @@ the code under test, and it cost an entire audit run.
 silent; differing → warns naming both + "STALE"; empty running → warns "unknown")
 and `cairn --version` prints the `p1` version. Full suite + vet green;
 `internal/log` untouched.
+
+## H8 — audit-rig enablement — DONE (2026-07-14)
+
+The Codex audit died on `sudo` (agents can't type a password) and on a stale
+deployed binary; the whole two-node matrix went unrun. Made the audit path
+runnable — documentation only (the Makefile already honours `PREFIX`).
+
+1. **Non-sudo install documented** — DOGFOOD §1 now shows
+   `make install PREFIX=$HOME/.local` → `~/.local/bin` (no root) alongside the
+   sudo path, so an automated auditor agent can install HEAD without root.
+2. **New DOGFOOD §15 "Audit rig setup"** — both nodes on the SAME HEAD, non-sudo
+   install, `cairn --version` must be `p1-<sha>` (and match the running daemon,
+   no stale-binary warning), **`sync_listen`/`sync_peers` REMOVED from NODE-A's
+   config** so R44's auto-listener gate (G2) proves itself instead of being
+   masked, SSH-over-tailnet to NODE-B, daemons under launchd/systemd, and a
+   Phase-0 invariant checklist the auditor asserts first. The root-key ceremony
+   stays with the operator, never an agent.
+
+No code change; full suite + vet + verify green; `internal/log` untouched.
+
+---
+
+## N9 work order H1–H8: COMPLETE (2026-07-14)
+
+All eight items landed, one commit each (`FIX-H1`…`FIX-H8`) atop the `R46-R48`
+rulings commit. H1–H5 shipped regression-test-first (each repro confirmed failing
+before its fix); H1/H2 applied the R46 invariant sweep with the full enumeration
+in each commit message. `make verify` green throughout; `internal/log` never
+touched. Ten commits total on `master`, nothing pushed.
+
+**Re-verification handed back to the operator/auditors:** H1 (ephemeral sweep),
+H2 (key-write sweep), H3 (why-ranked reconciliation), H4 (salience caps/decay),
+H5 (bomb guards) are all covered by new regression tests; the two adoption
+questions (is the P2 ranking profile safe to enable? is heavy-derivatives safe to
+turn on?) and Codex's Brief A end-to-end two-node run remain the live-rig items.
+Operator prerequisites (kill/reinstall the stale daemon on both nodes, remove
+`sync_listen` per §15, rig restoration, move the root key offline) are the
+operator's — see DOGFOOD §15 and the work order's "Operator prerequisites".

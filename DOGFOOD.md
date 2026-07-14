@@ -11,7 +11,10 @@ copy-paste baseline), manual-workaround rate ≤ 25%.
 ```sh
 git clone https://github.com/ggoosen/cairn && cd cairn
 make build                      # builds bin/cairn (needs Go 1.23+, CGO, git)
-sudo cp bin/cairn /usr/local/bin/ 2>/dev/null || export PATH="$PWD/bin:$PATH"
+sudo make install               # -> /usr/local/bin (stops nothing; restart hint if a daemon runs)
+# NO ROOT? (e.g. an automated audit agent with no passwordless sudo):
+#   make install PREFIX=$HOME/.local   # -> ~/.local/bin  (add it to PATH)
+#   export PATH="$HOME/.local/bin:$PATH"
 
 cairn init                      # creates ~/cairn + device identity (FileVault required)
 cairn daemon --install          # RECOMMENDED: launchd (macOS) / systemd --user (Linux),
@@ -382,3 +385,43 @@ cairn device revoke <origin-device> --root-key /path/to/root.key
 # then revoke the old (cloned) certificate as above.
 ```
 Finally remove the restored root key and restart the daemon.
+
+## 15. Audit rig setup (so the crossed two-node re-audit can actually run)
+
+The N9 re-audit died on `sudo` (an agent shell has no passwordless root) and on a
+STALE deployed binary, so the whole two-node fault matrix went unrun. Set the rig
+up once, this way, and an auditor agent can drive it end to end.
+
+**Both nodes — install HEAD without root, run supervised, confirm the version:**
+
+```sh
+cd ~/projects/cairn && git pull        # BOTH nodes on the SAME commit (git rev-parse HEAD must match)
+make install PREFIX=$HOME/.local       # no sudo needed; -> ~/.local/bin
+export PATH="$HOME/.local/bin:$PATH"
+cairn --version                        # MUST be p1-<sha>, never p0-; warns if a stale daemon is still running
+cairn daemon --install                 # launchd (macOS) / systemd --user (Linux) — supervised, no hand-babysitting
+```
+
+**NODE-A — REMOVE `sync_listen` and `sync_peers` from the device config.** They
+currently MASK the G2 auto-listener gate (R44): with `sync_listen` pinned by
+hand, you never exercise the auto-detect path the audit is meant to verify. Delete
+both keys and let R44 bind `<tailnet-ip>:9700` on its own; confirm with:
+
+```sh
+cairn sync status                      # reports the listener it auto-bound (or the loud reason it did not)
+```
+
+(NODE-B may keep an explicit `sync_peers` pointing at NODE-A, or rely on the same
+auto path — the point is that at least one node proves the stock listener.)
+
+**SSH-over-tailnet to NODE-B** so the auditor can drive both nodes from one shell
+(`ssh nodeb.<tailnet>`). The signing ceremony (root key) stays on the operator's
+machine and never touches an agent's hands — the auditor drives sends, syncs,
+kills, and doctor, not the root-key ceremony.
+
+**Rig invariants the auditor should assert first (Phase 0):**
+- `git rev-parse HEAD` identical on both nodes;
+- `cairn --version` is `p1-<sha>` on both, and matches the running daemon (no
+  stale-binary warning);
+- NODE-A has no `sync_listen`/`sync_peers` in its device config;
+- both daemons are under launchd/systemd (`cairn daemon --install`), not hand-run.
