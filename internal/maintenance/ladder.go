@@ -105,6 +105,22 @@ func Assess(d Debt, t Thresholds) Level {
 }
 
 // Gate helpers — a rung is shed when the level is at or above it.
+//
+// ENFORCEMENT STATUS (FIX-H6 — a ladder that reports a rung it does not act on
+// is worse than none, R45 spirit):
+//   - rungs 1–4 (SkipAutoLinks, SkipSummaries, SkipEmbeddings, LexicalOnlyForced)
+//     are ENFORCED — the enricher loop (fetch.go) and Search (retrieve.go) gate
+//     on them.
+//   - rung 5 (DelayBlobRepl) is ENFORCED — blobPhase (reconcile.go) skips
+//     proactive replication under disk pressure; durability is eventual.
+//   - rungs 6–7 (RejectLowPrioBlob, RejectSmallText) are COMPUTED AND REPORTED
+//     (level surfaced in `cairn status`, transitions logged) but NOT YET
+//     ENFORCED: they are REJECT paths, and rejecting a blob/text send safely
+//     requires pre-ack reserved-capacity semantics (§8.2's "reserved slice for
+//     small high-priority text") that interact with the P0 send-never-blocks
+//     invariant — deferred to a dedicated change, documented in README + PROGRESS.
+//     Until then they fail OPEN (the send proceeds), never silently: the disk
+//     debt is sampled and the level is announced.
 func (l Level) SkipAutoLinks() bool     { return l >= DelayAutoLinks }
 func (l Level) SkipSummaries() bool     { return l >= DelaySummaries }
 func (l Level) SkipEmbeddings() bool    { return l >= DelayEmbeddings }

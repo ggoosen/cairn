@@ -56,6 +56,8 @@ Kin and inspirations: [Secure Scuttlebutt](https://scuttlebutt.nz)'s per-origin 
 
 **Pre-alpha.** P0 is complete and P1 is nearly complete — the single-machine daemon and the multi-machine Tailscale mesh (replication, blob durability, capability enforcement, MCP, live fork detection) are built and passing their acceptance suites. What remains before the first tagged release is **N9: hardening under a full network fault matrix and a crossed two-auditor security audit**. Star/watch for the release. Built in Go; macOS (Apple Silicon) first, Linux best-effort.
 
+**Known limitation — degradation ladder (spec §8.2):** the load-shedding ladder enforces rungs 1–5 (delay auto-links → summaries → embeddings → force lexical-only search → delay proactive blob replication). The two disk/quota **reject** rungs (6 reject low-priority blobs, 7 reject small text) are computed and reported (the level shows in `cairn status` and every transition is logged) but not yet *enforced* — safely rejecting a send needs pre-ack reserved-capacity semantics that are deferred to a dedicated change. Until then they fail open (the send proceeds), never silently.
+
 ## Quickstart
 
 ```bash

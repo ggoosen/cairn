@@ -60,6 +60,14 @@ func (d *Daemon) SetLadderThresholdsForTest(t maintenance.Thresholds) {
 	d.mu.Unlock()
 }
 
+// SetDegradeLevelForTest pins the cached ladder level (the disk rungs 5–7 are
+// otherwise driven by real free-space, which tests cannot inject).
+func (d *Daemon) SetDegradeLevelForTest(lvl maintenance.Level) {
+	d.mu.Lock()
+	d.degradeLevel = lvl
+	d.mu.Unlock()
+}
+
 // freeDiskBytes returns the free bytes on the filesystem holding dir. ok=false
 // if the platform stat fails (disk rungs then stay disengaged — the backlog
 // axis still governs). syscall.Statfs is available on macOS + Linux (the

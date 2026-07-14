@@ -2014,3 +2014,32 @@ enabled drains without OOM/hang, records a `failed` derivative (never a
 successful `image_metadata`/`ocr_text` — the pre-fix path would have), and the
 daemon still publishes + searches afterward. Full suite + vet green; `internal/log`
 untouched.
+
+## H6 — degradation ladder rungs 5–7 unwired (R45 spirit) — DONE (2026-07-14)
+
+**Defect (Claude, MINOR):** the ladder computed all 7 rungs but only 1–3 were
+consulted; rungs 4–7 had gate helpers no caller invoked (fail-open) — a ladder
+that silently doesn't ladder.
+
+**Fix — wired rungs 4 and 5:**
+- **Rung 4 (LexicalOnlyForced)** — `Search` (retrieve.go) now skips the vector
+  query when the level forces lexical-only, shedding vector cost under a severe
+  embedding backlog even with an embedder present. Closes the backlog axis (1–4).
+- **Rung 5 (DelayBlobRepl)** — `blobPhase` (reconcile.go) short-circuits under
+  disk pressure: it skips the inventory exchange (the initiator then sends
+  `done`; the responder handles it), delaying proactive replication. Durability
+  is eventual — a later sweep replicates once pressure eases; nothing is lost.
+  Inert on a healthy disk.
+
+**Marked rungs 6–7 explicitly (code + README + here):** `RejectLowPrioBlob` and
+`RejectSmallText` are REJECT paths — safely rejecting a blob/text send needs
+pre-ack reserved-capacity semantics (§8.2's reserved small-hi-pri slice) that
+touch the P0 send-never-blocks invariant, so enforcement is DEFERRED. They stay
+computed + REPORTED (level in `cairn status`, transitions logged R45-style) and
+fail OPEN, never silently. Documented in `ladder.go`, README "Known limitation",
+and this entry.
+
+**Regression (`fix_h6_test.go`):** rung 4 — with a BagOfWords embedder a healthy
+search is `full`, and `SetDegradeLevelForTest(LexicalOnly)` forces `lexical_only`;
+rung 5 — at `DelayBlobRepl` the blob phase no-ops cleanly (nil conn proves the
+short-circuit precedes any I/O). Full suite + vet green; `internal/log` untouched.

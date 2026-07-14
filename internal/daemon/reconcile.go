@@ -846,7 +846,23 @@ func (d *Daemon) targetBlobs() (map[string]bool, error) {
 // is stored or served (R31); a node that fetches a blob advertises it
 // (cache-then-advertise) by recording itself as a holder. Best-effort: blob
 // errors are logged, not fatal (events already converged).
+// BlobPhaseForTest drives the blob phase with no peer connection — only valid
+// when a degradation level ≥ DelayBlobRepl makes it short-circuit before any
+// protocol I/O (FIX-H6 rung 5). Panics-safe because the gate returns first.
+func (d *Daemon) BlobPhaseForTest() error { return d.blobPhase(nil) }
+
 func (d *Daemon) blobPhase(pc *peer.Conn) error {
+	// H6/rung 5 (spec §8.2): under disk pressure, DELAY proactive blob
+	// replication — skip the inventory exchange entirely (the initiator then
+	// sends `done`; the responder handles it). Durability is eventual: a later
+	// sweep replicates the targets once pressure eases, so nothing is lost.
+	// Inert on a healthy disk (the cached level is Healthy).
+	if lvl := d.DegradationLevel(); lvl.DelayBlobRepl() {
+		if pc != nil {
+			fmt.Fprintf(d.warn, "sync: degradation %s — delaying blob replication to %s (disk pressure; durability catches up when it eases)\n", lvl, pc.PeerDevice)
+		}
+		return nil
+	}
 	d.mu.Lock()
 	targets, err := d.targetBlobs()
 	if err != nil {

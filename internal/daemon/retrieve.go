@@ -101,7 +101,10 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 
 	mode := "lexical_only"
 	vecIDs := []string(nil)
-	if d.embedder != nil {
+	// H6/rung 4 (spec §8.2): under a severe embedding backlog the ladder forces
+	// lexical-only, shedding the vector query's cost even when an embedder is
+	// present. Inert at a healthy level.
+	if d.embedder != nil && !d.DegradationLevel().LexicalOnlyForced() {
 		if qvecs, err := d.embedder.Embed([]string{opts.Query}); err == nil {
 			heads, herr := d.proj.HeadVectors(d.embedder.ModelID(), opts.IncludeRetracted)
 			if herr == nil && len(heads) > 0 {
