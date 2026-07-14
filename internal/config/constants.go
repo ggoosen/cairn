@@ -353,6 +353,15 @@ const (
 	HeavyDeriveTimeout    = 60 * time.Second
 	HeavyExtractorVersion = "1"
 
+	// FIX-H5 (R48): decompression-bomb / pixel guards that run BEFORE any heavy
+	// extractor. Mesh attachments are untrusted, and tesseract decodes the FULL
+	// image — an adversarial image (tiny file, enormous declared dimensions)
+	// would OOM the enricher. These bounds are checked from the image HEADER
+	// (image.DecodeConfig — no pixel allocation) and reject before decode.
+	HeavyMaxImageDimension    = 20000       // per-side pixel cap (declared dims)
+	HeavyMaxImagePixels       = 40_000_000  // total pixel ceiling (~40 MP)
+	HeavyMaxDecompressionRatio = 200        // decoded-RGBA-bytes / compressed-bytes
+
 	// Receiver summary topical-consistency check (N4, spec §8.4): the
 	// sender summary is an untrusted claim; below this cosine vs the body
 	// the receiver marks disagreement and prefers its LOCAL extractive

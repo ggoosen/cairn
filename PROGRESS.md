@@ -1987,3 +1987,30 @@ out-ranked by a fresh one; (3) a 5-agent run = one demand cluster, +2 distinct
 tasks = 3. (P2-2's exact-equality assertion now pins the daemon clock, since
 decay makes salience legitimately time-dependent.) Full suite + vet green;
 `internal/log` untouched.
+
+## H5 — no decompression-bomb / pixel guard before tesseract (R48) — DONE (2026-07-14)
+
+**Defect (Claude):** `ExtractHeavy` ran the registry (tesseract FIRST — it decodes
+the FULL image) with no bomb/pixel guard, so an adversarial attachment (tiny
+file, enormous declared dimensions) OOMs the enricher. "Safe on trusted content
+only" is self-cancelling: mesh attachments are untrusted by definition (R48).
+
+**Fix (`internal/derive/heavy.go`):** `preflightImage` runs BEFORE the registry
+loop (after size + byte-sniff), reading dimensions from the image HEADER via
+`image.DecodeConfig` — no pixel allocation. It rejects: per-side dimension >
+`HeavyMaxImageDimension` (20000), total pixels > `HeavyMaxImagePixels` (40 MP),
+decompression ratio (decoded-RGBA / compressed) > `HeavyMaxDecompressionRatio`
+(200), and any undecodable/malformed header. A rejection is a plain error (not
+`ErrUnsupported`), so the enricher records a clean `derivative.fail`. Audio has
+no shipped decoder (never reaches one); multi-frame count stays bounded by the
+16 MiB input cap + per-frame pixel ceiling (frames are not decoded — that would
+be the very OOM we prevent).
+
+**Regression:** pure `internal/derive/heavy_h5_test.go` — a 45-byte
+`pngHeader(60000,60000)` dimension bomb, an 8000×8000 pixel-flood, and a
+malformed header are each rejected (not as `ErrUnsupported`); a legit 24×36 image
+still yields a derivative. Daemon `fix_h5_test.go` — a bomb ATTACHMENT with heavy
+enabled drains without OOM/hang, records a `failed` derivative (never a
+successful `image_metadata`/`ocr_text` — the pre-fix path would have), and the
+daemon still publishes + searches afterward. Full suite + vet green; `internal/log`
+untouched.

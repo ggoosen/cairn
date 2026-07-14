@@ -65,6 +65,15 @@ func ExtractHeavy(ctx context.Context, data []byte) (*Result, error) {
 	if kind == "" {
 		return nil, ErrUnsupported
 	}
+	// FIX-H5 (R48): pre-flight bomb/dimension guards BEFORE any extractor runs.
+	// tesseract (the first registered extractor) decodes the FULL image, so an
+	// adversarial attachment must be rejected here — from the header only, no
+	// pixel allocation — never inside a decoder that would already have OOMed.
+	if kind == "image" {
+		if err := preflightImage(data); err != nil {
+			return nil, err
+		}
+	}
 	ctx, cancel := context.WithTimeout(ctx, config.HeavyDeriveTimeout)
 	defer cancel()
 
@@ -91,6 +100,38 @@ func ExtractHeavy(ctx context.Context, data []byte) (*Result, error) {
 		return nil, lastErr
 	}
 	return nil, ErrUnsupported
+}
+
+// preflightImage rejects a bomb/malformed/oversized image from its HEADER only
+// (image.DecodeConfig reads dimensions without allocating pixels), so no
+// extractor ever decodes an adversarial image (FIX-H5 / R48). A rejection is a
+// plain error (not ErrUnsupported), so the caller records a clean derivative.fail.
+func preflightImage(data []byte) error {
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("preflight: undecodable %s image header: %w", format, err)
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 {
+		return fmt.Errorf("preflight: non-positive image dimensions %dx%d", cfg.Width, cfg.Height)
+	}
+	if cfg.Width > config.HeavyMaxImageDimension || cfg.Height > config.HeavyMaxImageDimension {
+		return fmt.Errorf("preflight: image %dx%d exceeds the %d px per-side cap (dimension bomb)",
+			cfg.Width, cfg.Height, config.HeavyMaxImageDimension)
+	}
+	pixels := int64(cfg.Width) * int64(cfg.Height)
+	if pixels > config.HeavyMaxImagePixels {
+		return fmt.Errorf("preflight: %d pixels exceeds the %d-pixel ceiling (pixel-flood bomb)",
+			pixels, int64(config.HeavyMaxImagePixels))
+	}
+	// decompression ratio: decoded RGBA bytes vs the compressed input. A tiny
+	// file that decodes to a huge raster is the classic decompression bomb.
+	if len(data) > 0 {
+		if ratio := (pixels * 4) / int64(len(data)); ratio > config.HeavyMaxDecompressionRatio {
+			return fmt.Errorf("preflight: decompression ratio %d exceeds %d (decompression bomb)",
+				ratio, config.HeavyMaxDecompressionRatio)
+		}
+	}
+	return nil
 }
 
 // runContained runs an extractor with panic containment (the timeout lives on
