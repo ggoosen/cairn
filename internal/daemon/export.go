@@ -10,6 +10,7 @@ import (
 	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/fsx"
 	"github.com/ggoosen/cairn/internal/merge"
+	"github.com/ggoosen/cairn/internal/object"
 	"github.com/ggoosen/cairn/internal/views"
 )
 
@@ -211,6 +212,15 @@ func (d *Daemon) ingestEdit(messageID, baseRevisionID, claimedBodyHash string, e
 // crash-atomic: either no revision or the complete merge graph (row 13).
 // Caller holds d.mu.
 func (d *Daemon) appendRevision(messageID string, bodies [][2]any, machineMerged bool) (*IngestResult, error) {
+	// R42/R46 sweep: a revision inherits its message's text_class. An ephemeral
+	// message's revision body must NEVER be inlined — same invariant the publish
+	// path enforces — or the un-purgeable inline copy is reintroduced on the
+	// revise/merge path (the N9 audit's H1 finding).
+	info, err := d.proj.MessageInfo(messageID)
+	if err != nil {
+		return nil, err
+	}
+	ephemeral := info.TextClass == object.ClassEphemeral
 	type rev struct {
 		id      string
 		body    []byte
@@ -247,7 +257,7 @@ func (d *Daemon) appendRevision(messageID string, bodies [][2]any, machineMerged
 			"body_hash":           r.hash,
 			"body_len":            len(r.body),
 		}
-		if len(r.body) <= config.InlineBodyLimit {
+		if len(r.body) <= config.InlineBodyLimit && !ephemeral {
 			m["body_bytes"] = string(r.body)
 		}
 		if r.merged {
@@ -258,6 +268,12 @@ func (d *Daemon) appendRevision(messageID string, bodies [][2]any, machineMerged
 	payload := map[string]any{"message_id": messageID, "revisions": payloadRevs}
 	env, rec, err := d.buildEvent("message.revise_body", "message", messageID, payload, PublishRequest{Actor: "operator"})
 	if err != nil {
+		return nil, err
+	}
+	// R42/R46 pre-ack guard (F1: reject before acknowledgement, never after):
+	// structural enforcement of the ephemeral-no-inline invariant on the
+	// revise/merge path — a defense-in-depth twin of ValidateNoInlineEphemeral.
+	if err := ValidateNoInlineEphemeralRevisions(env, info.TextClass); err != nil {
 		return nil, err
 	}
 	if err := d.lg.Append(rec, env); err != nil {

@@ -1061,6 +1061,32 @@ func ValidateNoInlineEphemeral(env *event.Envelope) error {
 	return nil
 }
 
+// ValidateNoInlineEphemeralRevisions enforces R42 on the revise/merge path
+// (R46 invariant sweep): when the target message is ephemeral, NO revision in a
+// message.revise_body event may carry inline body_bytes. The revise_body event
+// is not self-describing (text_class lives on the message row, not the payload),
+// so the caller passes the message's class. Applied pre-ack in appendRevision —
+// the structural guard that makes the invariant enforced on this path, not
+// merely observed, exactly as ValidateNoInlineEphemeral does for publish/reply.
+func ValidateNoInlineEphemeralRevisions(env *event.Envelope, textClass string) error {
+	if env.EventType != "message.revise_body" || textClass != object.ClassEphemeral {
+		return nil
+	}
+	var pl struct {
+		Revisions []struct {
+			BodyBytes string `json:"body_bytes"`
+		} `json:"revisions"`
+	}
+	if json.Unmarshal(env.Payload, &pl) == nil {
+		for _, r := range pl.Revisions {
+			if r.BodyBytes != "" {
+				return fmt.Errorf("rejected before ack: ephemeral message revision carries inline body_bytes (R42/R46: ephemeral bodies live only as objects, on every write path)")
+			}
+		}
+	}
+	return nil
+}
+
 // Housekeep runs one ephemeral-TTL sweep (refs from the projection).
 func (d *Daemon) Housekeep() ([]string, error) {
 	if err := d.writable(); err != nil {

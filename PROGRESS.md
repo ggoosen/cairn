@@ -1854,3 +1854,47 @@ your review: P2-3 (P2 ranking profile) + P2-3b (calibration) are OPT-IN /
 advisory until you adopt the weights; heavy-derivative ML runtimes are pluggable
 behind the shipped interface; and the operator-only items (N9 live audit, rig
 restoration, adopt-standalone, G2/G5 live checks) remain.
+
+---
+
+# N9 audit fix work order (docs/cairn-n9-fix-workorder-H.md) — H1–H8
+
+Two N9 audit reports of d451c2f (Claude Brief B: P1 READY WITH FINDINGS, two
+MAJOR residuals; Codex Brief A: NOT READY — a stale-binary RIG problem, matrix
+UNRUN). Rulings R46–R48 appended first. H1–H5 regression-test-first; H1/H2 apply
+the R46 invariant sweep. `internal/log` untouched. One commit per item, FIX-H<n>.
+
+## R46–R48 rulings — DONE (2026-07-14)
+
+R46 (invariant sweeps: gate EVERY write path, enumerate in the commit), R47
+(a ranking profile's why-ranked must reconcile exactly with its returned score),
+R48 (untrusted-input pre-flight guards before any heavy extractor). Commit
+`R46-R48`.
+
+## H1 — ephemeral inline body on the revise/merge path (R42/R46 sweep) — DONE (2026-07-14)
+
+**Defect (Claude MAJOR):** `appendRevision` (export.go) inlined revision bodies
+with only a size check — no class gate — so revising or merging an ephemeral
+message reintroduced the un-purgeable inline copy R42 forbids (searchable on
+every synced node, un-scrubbable at TTL). G1 had closed only publish/reply.
+
+**R46 enumeration — every `body_bytes` write path (grep `body_bytes`):**
+1. `daemon.go:756` — message.publish / message.reply (Publish, EmergencyPublish)
+   — GATED (G1, class check) + pre-ack `ValidateNoInlineEphemeral`.
+2. `export.go:251` — message.revise_body (`appendRevision`, reached by `Revise`,
+   `Resolve`/`applyResolution`, `IngestExport`/`ingestEdit`) — **the hole; gated
+   here** by the message's text_class + pre-ack `ValidateNoInlineEphemeralRevisions`.
+3. `fork_resolve.go:174` — message.publish reissue (fork resolve) — GATED (G1/G7,
+   `textClass != ClassEphemeral`).
+
+**Fix:** `appendRevision` looks up `MessageInfo(messageID).TextClass`; an
+ephemeral message never inlines any revision body (single OR 2-revision merge).
+Added `ValidateNoInlineEphemeralRevisions(env, textClass)` — the structural
+pre-ack twin of the publish guard — called before `Append`.
+
+**Regression (`fix_h1_test.go`, FAILED before the gate on cases a/b):** (a) revise
+an ephemeral → no body_bytes; (b) 2-revision merge path likewise; (c) after a
+housekeeping sweep nothing survives in any event; (d) an ephemeral revise_body
+carrying body_bytes is rejected pre-ack via the guard; (e) canonical ≤64 KiB
+revise still inlines (not over-corrected). Full suite + vet green; `internal/log`
+untouched.
