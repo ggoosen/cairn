@@ -589,3 +589,54 @@ instances: the daemon that wasn't running with no CLI hint; the embedder
 falling back to lexical-only silently; the sync listener binding nothing
 silently. When implementing any startup path, audit it for other
 silent-declines and give each the same prominent, remedy-bearing log line.
+
+---
+
+# N9 audit rulings (two audit reports of d451c2f — H1–H8 work order)
+
+## R46 — Invariant sweeps (adopt before H1)
+
+Both G-residuals found by the N9 audit are the same failure class: **the fix was
+applied at the finding's location, not across the invariant's surface.** G1 gated
+the publish/reply path and left revise/merge inlining ephemeral bodies; G3 gated
+enroll/join and left `migrate` writing a device key ungated. Neither is a new bug
+— both are the *original* bug, alive on a path nobody enumerated.
+
+**Ruling:** when a fix enforces an invariant, it is not complete until **every
+write path to that invariant has been enumerated and gated**, and the enumeration
+is recorded in the commit message. Grep-and-list the whole surface; never
+patch-the-repro. This applies to any invariant-enforcing fix, not only the two
+that triggered it — H1 (ephemeral-body inlining) and H2 (key-material writes)
+adopt it immediately, and every future invariant fix inherits it.
+
+## R47 — A ranking profile's explanation must reconcile exactly (from H3)
+
+Any ENABLED ranking profile's `why-ranked` output MUST print every scoring
+component (R, S, F, I, N, penalties, and the mandatory/pin flags) with its weight
+and its weight×value product, and those printed numbers MUST recompute to the
+returned score **exactly** (to the stored decimal precision), under EVERY
+profile. A profile whose printed explanation does not reconcile with its own
+returned score is **not adoptable** — an unreconcilable explanation is precisely
+the "black box" that spec §9 ("dumb, inspectable, no black box", five review
+rounds) exists to forbid. The N9 audit reproduced the P2 profile printing
+component lines summing to 0.79 against a returned 0.8255 with S/I/N never
+printed; that is a correctness defect in the audit surface, not a cosmetic one.
+
+**Regression shape (mandatory):** a test parses `why-ranked` output, recomputes
+the score from the printed components and weights ALONE, and asserts exact
+equality with the returned score — under P0 and P2 profiles, over a corpus with
+salience/intent/novelty non-zero. What an auditor can only verify by hand becomes
+a permanent test.
+
+## R48 — Untrusted-input pre-flight guards before heavy extraction (from H5)
+
+**Mesh attachments are untrusted by definition** — that is the premise of the
+whole sandbox posture. Any derivative pipeline that runs a resource-heavy or
+external extractor over attachment/mesh content MUST run pre-flight guards BEFORE
+any extractor executes: a decompression-ratio limit, a declared-vs-actual
+dimension check, a pixel-count ceiling, a page/frame ceiling, a file-size
+ceiling, and content-SNIFFED MIME (never filename trust). Malformed, bomb, or
+oversized input produces a clean `derivative.fail` with bounded memory — never an
+OOM, never a hang. "Safe on trusted content only" is a self-cancelling condition
+for a pipeline that consumes mesh content: the guards are what make the opt-in
+safe to turn on at all.
