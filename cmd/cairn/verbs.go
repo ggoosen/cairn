@@ -450,6 +450,7 @@ func newFetchCmd(dirFlag *string) *cobra.Command {
 
 func newMigrateCmd(dirFlag *string) *cobra.Command {
 	var displayName string
+	var allowUnencrypted bool
 	cmd := &cobra.Command{
 		Use:   "migrate",
 		Short: "Offline device-migration ceremony: enrol new identity, revoke this device, old origin becomes read-only",
@@ -461,6 +462,7 @@ func newMigrateCmd(dirFlag *string) *cobra.Command {
 			}
 			res, err := identity.Migrate(identity.MigrateOptions{
 				Dir: dir, DisplayName: displayName, Out: cmd.OutOrStdout(),
+				AllowUnencrypted: allowUnencrypted,
 			})
 			if err != nil {
 				return err
@@ -469,6 +471,7 @@ func newMigrateCmd(dirFlag *string) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&displayName, "display-name", "", "display name for the new device certificate")
+	cmd.Flags().BoolVar(&allowUnencrypted, "allow-unencrypted", false, "proceed on an unencrypted volume (writes a device key; warns loudly)")
 	return cmd
 }
 

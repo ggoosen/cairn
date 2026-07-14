@@ -1898,3 +1898,34 @@ housekeeping sweep nothing survives in any event; (d) an ephemeral revise_body
 carrying body_bytes is rejected pre-ack via the guard; (e) canonical ≤64 KiB
 revise still inlines (not over-corrected). Full suite + vet green; `internal/log`
 untouched.
+
+## H2 — migrate writes a device key with no encryption gate (G3/R46 sweep) — DONE (2026-07-14)
+
+**Defect (Claude MAJOR, code-verified):** `migrate.go` staged the new device
+private key with no encryption gate — a hole in the P0 invariant "no key
+material on unencrypted storage via ANY path." G3 had gated only enroll/join.
+
+**R46 enumeration — every key-material (`SaveKey`) write path:**
+1. `initialize.go:134/141` — device + root key (`init`) — GATED (`checkEncryption`).
+2. `enroll.go:107` — device key staged (`CreateEnrollRequest`) — GATED (G3).
+3. `enroll.go:487` — device key (`Join`) — GATED (G3).
+4. `migrate.go:136` — device key (`migrate`) — **the hole; gated here.**
+5. `init --adopt` (`Adopt`) — routes through `Initialize`, inherits its gate.
+6. `identity export-root` — **EXEMPT by design:** writes the root key to an
+   operator-chosen OFFLINE destination (USB / air-gapped / printed); it already
+   REFUSES a destination inside the mesh dir. An encryption check there would
+   defeat the offline-backup purpose.
+7. fork-resolve / recovery origin — reuses the ACTIVE origin's existing device
+   key (no new key material) — N/A.
+
+**Fix:** `MigrateOptions` gains `AllowUnencrypted` + `Checker`; `Migrate` calls
+`GateEncryption(deviceDir, …)` after the completion guard (which writes no key
+material) and before staging the new key. `cairn migrate --allow-unencrypted`
+added (parity with init/enroll/join: proceeds + warns loudly).
+
+**Regression (`fix_h2_test.go`, migrate cases FAILED before the gate):**
+`TestH2MigrateGatesEncryptionBeforeKeyWrite` (unencrypted refuses before the key
+is staged; override proceeds + warns); `TestH2AllKeyWritePathsRouteThroughGate`
+— the R46 table over {init, enroll-request, join, migrate}, each must refuse on
+an unencrypted volume (a new key-write path added later without the gate fails
+it). Full suite + vet green; `internal/log` untouched.

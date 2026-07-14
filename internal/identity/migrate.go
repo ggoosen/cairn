@@ -21,11 +21,13 @@ import (
 
 // MigrateOptions parameterizes the P0 offline migrate ceremony (rulings §4).
 type MigrateOptions struct {
-	Dir         string // portable dir
-	DisplayName string
-	FS          fsx.FS
-	Now         func() time.Time
-	Out         io.Writer
+	Dir              string // portable dir
+	DisplayName      string
+	FS               fsx.FS
+	Now              func() time.Time
+	Out              io.Writer
+	AllowUnencrypted bool          // FIX-H2/R46: operator override for an unencrypted volume
+	Checker          VolumeChecker // FIX-H2/R46: injectable for tests; defaults to system
 }
 
 // MigrateResult reports the outcome.
@@ -89,6 +91,15 @@ func Migrate(opts MigrateOptions) (*MigrateResult, error) {
 			fmt.Fprintf(opts.Out, "migration to %s already complete; cleaned up staging\n", pend.NewDeviceID)
 			return &MigrateResult{OldDeviceID: pend.OldDeviceID, NewDeviceID: pend.NewDeviceID}, nil
 		}
+	}
+
+	// FIX-H2/R46: gate encryption BEFORE staging the new device key — the same
+	// P0 invariant enroll/join enforce (G3). Placed after the completion guard
+	// (which writes no key material, only bookkeeping) so a finished migration
+	// can always clean up. Refuses on an unencrypted/unknown volume unless the
+	// operator passes the override, which warns loudly.
+	if err := GateEncryption(deviceDir, opts.Checker, opts.AllowUnencrypted, opts.Out); err != nil {
+		return nil, err
 	}
 
 	rootPriv, err := LoadKey(filepath.Join(deviceDir, config.RootKeyName))
