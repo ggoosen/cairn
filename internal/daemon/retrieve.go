@@ -592,14 +592,23 @@ func (d *Daemon) WhyRanked(interactionID, messageID string) (string, error) {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s  rank %d (profile=%s)\n", messageID, finalRank, profile)
-	fmt.Fprintf(&b, "  R     %s × %s = %s   (lex rank %d, vec rank %d, RRF %s)\n",
-		rec.R, rec.Weights.R, rank.Dec(rank.ParseDec(rec.R)*rank.ParseDec(rec.Weights.R)), rec.LexRank, rec.VecRank, rec.RRF)
-	fmt.Fprintf(&b, "  F     %s × %s = %s   (created %s)\n",
-		rec.F, rec.Weights.F, rank.Dec(rank.ParseDec(rec.F)*rank.ParseDec(rec.Weights.F)), rec.CreatedAt)
-	fmt.Fprintf(&b, "  P_eff %s × %s = %s\n",
-		rec.Peff, rec.Weights.P, rank.Dec(rank.ParseDec(rec.Peff)*rank.ParseDec(rec.Weights.P)))
+	// R47/H3: print EVERY additive term (R, S, F, P_eff, I, N) with its value,
+	// weight, and product under BOTH profiles — the printed products must sum to
+	// the total, or the explanation is the black box §9 forbids. Empty component/
+	// weight strings (a P0 record omits S/I/N; a P2 record zeroes P) parse to 0,
+	// so their line reads "0 × 0 = 0" and reconciliation holds on either profile.
+	term := func(name, val, weight, extra string) {
+		v, w := rank.ParseDec(val), rank.ParseDec(weight)
+		fmt.Fprintf(&b, "  %-5s %s × %s = %s%s\n", name, rank.Dec(v), rank.Dec(w), rank.Dec(v*w), extra)
+	}
+	term("R", rec.R, rec.Weights.R, fmt.Sprintf("   (lex rank %d, vec rank %d, RRF %s)", rec.LexRank, rec.VecRank, rec.RRF))
+	term("S", rec.S, rec.Weights.S, "   (salience §9.2)")
+	term("F", rec.F, rec.Weights.F, fmt.Sprintf("   (created %s)", rec.CreatedAt))
+	term("P_eff", rec.Peff, rec.Weights.P, "   (executable priority, decayed)")
+	term("I", rec.I, rec.Weights.I, "   (operator intent)")
+	term("N", rec.N, rec.Weights.N, "   (novelty/exposure)")
 	if rec.Mandatory != "" {
-		fmt.Fprintf(&b, "  mandatory: %s\n", rec.Mandatory)
+		fmt.Fprintf(&b, "  mandatory: %s (inclusion class — not an additive score term)\n", rec.Mandatory)
 	}
 	fmt.Fprintf(&b, "  total %s\n", rec.Score)
 	return b.String(), nil

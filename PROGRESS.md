@@ -1929,3 +1929,24 @@ is staged; override proceeds + warns); `TestH2AllKeyWritePathsRouteThroughGate`
 — the R46 table over {init, enroll-request, join, migrate}, each must refuse on
 an unencrypted volume (a new key-write path added later without the gate fails
 it). Full suite + vet green; `internal/log` untouched.
+
+## H3 — why-ranked does not reconcile under the P2 profile (R47) — DONE (2026-07-14)
+
+**Defect (Claude, live-reproduced):** `WhyRanked` printed only R / F / P_eff —
+never S / I / N. Under the P2 profile (wP=0, S/I/N non-zero) the printed lines
+summed to 0.79 against a returned 0.8255, so the explanation did not reconcile
+with its own score — the "black box" spec §9 exists to forbid (R47).
+
+**Fix:** the renderer now prints EVERY additive term (R, S, F, P_eff, I, N) with
+its value, weight, and product under BOTH profiles (empty P0 S/I/N and P2 P
+parse to 0 → "0 × 0 = 0", so reconciliation holds either way), plus the
+mandatory/pin inclusion flag (labelled *not* an additive term). The six printed
+products sum exactly to the total.
+
+**Regression (`fix_h3_test.go` — R47's mandatory shape, FAILED before the fix):**
+`TestH3WhyRankedReconcilesBothProfiles` parses the output, recomputes the score
+from the printed components + weights ALONE in the canonical additive order, and
+asserts exact string equality with the printed total — under P0 AND P2, over a
+corpus with salience/intent/novelty non-zero, for every returned result. The
+reverted-renderer run reproduced the auditor's exact pathology (0.75+0.04+0=0.79
+vs total 0.8211, S line absent). Full suite + vet green; `internal/log` untouched.
