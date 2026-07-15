@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -45,9 +49,11 @@ func newReindexCmd(dirFlag *string) *cobra.Command {
 			if lexical {
 				fsys := fsx.OS{}
 				store := object.NewStore(fsys, dir)
-				// nil verifier → two-pass mesh-trust replay (FIX-F2)
-				report, err := projection.ReindexLexical(fsys, dir, projection.DBPath(dir),
-					nil, projection.StoreBodyFetch(store))
+				// FIX-J3 (R45): a reindex must be observable and bounded, never a
+				// silent hang. A stall watchdog aborts if no event is applied for
+				// ReindexStallTimeout (the observed WSL2 hang leaves only a
+				// discardable .rebuild); a throttled heartbeat logs progress.
+				report, err := reindexWithWatchdog(cmd, fsys, dir, store)
 				if err != nil {
 					return err
 				}
@@ -71,3 +77,66 @@ func newReindexCmd(dirFlag *string) *cobra.Command {
 	cmd.Flags().BoolVar(&semantic, "semantic", false, "rebuild embeddings (stub until M6)")
 	return cmd
 }
+
+// reindexWithWatchdog runs a lexical reindex under a progress heartbeat and a
+// stall watchdog (FIX-J3, R45). It cancels the reindex context if no event is
+// applied for config.ReindexStallTimeout, so a wedged filesystem produces a
+// clear error and a discardable .rebuild rather than an indefinite hang. The
+// heartbeat (throttled to config.ReindexProgressInterval) makes a slow-but-live
+// reindex visible.
+func reindexWithWatchdog(cmd *cobra.Command, fsys fsx.FS, dir string, store *object.Store) (*projection.ReindexReport, error) {
+	ctx, cancel := context.WithCancel(cmd.Context())
+	defer cancel()
+
+	var applied int64
+	lastProgress := atomicTime{}
+	lastProgress.set(time.Now())
+	var lastLog time.Time
+
+	progress := func(n int64) {
+		atomic.StoreInt64(&applied, n)
+		lastProgress.set(time.Now())
+		if now := time.Now(); now.Sub(lastLog) >= config.ReindexProgressInterval {
+			lastLog = now
+			fmt.Fprintf(cmd.ErrOrStderr(), "reindex: %d events applied…\n", n)
+		}
+	}
+
+	stalled := make(chan struct{})
+	go func() {
+		t := time.NewTicker(config.ReindexStallTimeout / 4)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if time.Since(lastProgress.get()) >= config.ReindexStallTimeout {
+					close(stalled)
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+
+	report, err := projection.ReindexLexicalCtx(ctx, fsys, dir, projection.DBPath(dir),
+		nil, projection.StoreBodyFetch(store), progress)
+	select {
+	case <-stalled:
+		return nil, fmt.Errorf("reindex STALLED: no progress for %v after %d events — aborted (the .rebuild is discardable). "+
+			"A pathologically slow filesystem (e.g. WSL2 drvfs on a Windows-mounted path) is the usual cause; "+
+			"move the cairn dir to a native Linux filesystem. Original: %w", config.ReindexStallTimeout, atomic.LoadInt64(&applied), err)
+	default:
+	}
+	return report, err
+}
+
+// atomicTime is a tiny mutex-guarded time holder for the watchdog.
+type atomicTime struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (a *atomicTime) set(t time.Time) { a.mu.Lock(); a.t = t; a.mu.Unlock() }
+func (a *atomicTime) get() time.Time  { a.mu.Lock(); defer a.mu.Unlock(); return a.t }

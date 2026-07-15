@@ -365,6 +365,15 @@ func (d *Daemon) ingestRecords(recs [][]byte, bodies map[string][]byte, peerHint
 		d.applyProjection(env, rec)
 		appended++
 	}
+	// R49.2: after ingesting a reconcile batch, sweep retryable parks — a
+	// cross-origin topic.link.add that parked when it arrived ahead of its
+	// topic.create self-heals now that this batch may have delivered the create.
+	// One bounded sweep per batch, not per event (avoids O(events×parked)).
+	if appended > 0 {
+		if _, err := d.proj.RetryParked(); err != nil {
+			fmt.Fprintf(d.warn, "WARNING: retry-parked sweep after ingest failed: %v\n", err)
+		}
+	}
 	return appended, nil
 }
 

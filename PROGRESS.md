@@ -2208,3 +2208,45 @@ one 243 ms) and asserts INCONCLUSIVE (not FAIL) with the sample size + ≥30
 surfaced; `TestJ2AdequateSampleGivesVerdict` asserts ≥30 fast samples PASS.
 
 `make test` + `go vet` green; `internal/log` untouched.
+
+## J3 — INVESTIGATE — NODE-B `reindex --lexical` hung >90s until killed — DONE (2026-07-15)
+
+**Codex MAJOR-1:** reindex on the WSL node hung; the managed daemon stayed
+healthy; post-kill doctor was clean.
+
+**Investigation / classification (measure before fixing):**
+- **NOT lock contention.** `cairn reindex --lexical` runs IN-PROCESS in the CLI
+  (not through the daemon) and side-builds `index.sqlite.rebuild` then
+  atomic-renames it over the live db (rulings §6). It never acquires the daemon
+  write flock and never opens the live db for writing during the rebuild, so it
+  cannot deadlock against the running daemon. Verified in code
+  (`cmd/cairn/reindex.go`, `projection.ReindexLexical`).
+- **NOT a J1 retry loop.** `RetryParked` is a bounded fixpoint over a finite
+  parked set; a healed event's quarantine row is DELETED, so it cannot re-heal,
+  and a stuck retryable park makes zero progress and returns. The J1 sweep was
+  also moved OUT of per-`Apply` (it now runs once per reconcile batch / at
+  recover / at reindex end / in doctor), removing any O(events×parked) re-attempt
+  cost during a large rebuild. Pinned by `TestJ3RetryParkedTerminatesOnStuckPark`.
+- **Environmental: WSL2 drvfs I/O.** The remaining cause is filesystem I/O on the
+  WSL node — a Windows-mounted (drvfs/9p) path makes `synchronous=FULL` SQLite
+  writes and the segment reads pathologically slow. Not reproducible on native
+  macOS/Linux (mac reindex: 200 events 115 ms, 100k 27.7 s). Documented as an
+  environmental posture item; the fix is to keep the cairn dir on a native Linux
+  filesystem (recorded for J4/README).
+
+**Hardening (R45: a reindex must never hang silently — timeout + progress log):**
+`projection.ReindexLexicalCtx`/`ReplayCtx` take a cancellation context and a
+per-event `Progress` reporter (the existing signatures are thin wrappers, so no
+test caller changed). The `cairn reindex` CLI now runs under a **stall watchdog**
+(`config.ReindexStallTimeout` = 120 s: aborts with a clear "reindex STALLED …
+likely a slow filesystem (WSL2 drvfs); move to native Linux" error, leaving only
+the discardable `.rebuild`) and a throttled **progress heartbeat**
+(`config.ReindexProgressInterval` = 5 s). A hang is now bounded and observable.
+
+**Regression (`internal/daemon/fix_j3_test.go`):**
+`TestJ3RetryParkedTerminatesOnStuckPark` (repeated sweeps over a never-satisfied
+park all terminate within a hard 10 s bound; the retry-loop hypothesis is ruled
+out) and `TestJ3ReindexContextCancelAborts` (a cancelled context aborts the
+rebuild with `context.Canceled` — the watchdog mechanism).
+
+`make test` + `go vet` green; `internal/log` untouched.

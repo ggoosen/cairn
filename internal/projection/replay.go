@@ -1,6 +1,7 @@
 package projection
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,11 @@ import (
 	cairnlog "github.com/ggoosen/cairn/internal/log"
 	"github.com/ggoosen/cairn/internal/object"
 )
+
+// Progress is an optional per-event reporter for a long replay/reindex (FIX-J3,
+// R45: a reindex must be observable, never a silent hang). It receives the
+// running count of events applied. nil disables it.
+type Progress func(applied int64)
 
 // ReindexReport summarizes a rebuild: reindex COMPLETES (exit 0) even with
 // parked events — the report makes them loud (FIX-F1 ruling 3). Parked splits
@@ -44,6 +50,14 @@ func StoreBodyFetch(store *object.Store) BodyFetch {
 // inside Apply's checkpoint transaction. verifyFor supplies a FRESH chain
 // verifier per call (key learning starts from genesis).
 func Replay(p *Projection, fsys fsx.FS, portableDir string, verifyFor func() cairnlog.VerifyFunc) error {
+	return ReplayCtx(context.Background(), p, fsys, portableDir, verifyFor, nil)
+}
+
+// ReplayCtx is Replay with a cancellation context and an optional progress
+// reporter (FIX-J3/R45). The context is checked before every applied event, so
+// a caller's stall watchdog or deadline aborts a wedged replay with its own
+// error instead of hanging; progress is invoked per event for a heartbeat log.
+func ReplayCtx(ctx context.Context, p *Projection, fsys fsx.FS, portableDir string, verifyFor func() cairnlog.VerifyFunc, progress Progress) error {
 	if verifyFor == nil {
 		// FIX-F2 ruling 1: two-pass replay. Pass 1 establishes the mesh-wide
 		// membership/key set across ALL origins (the security log is one
@@ -59,11 +73,22 @@ func Replay(p *Projection, fsys fsx.FS, portableDir string, verifyFor func() cai
 	if err != nil {
 		return err
 	}
+	var applied int64
 	for _, origin := range origins {
 		verify := verifyFor()
 		_, err := cairnlog.Walk(fsys, portableDir, origin, verify,
 			func(env *event.Envelope, rec []byte) error {
-				return p.Apply(env, rec)
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if aerr := p.Apply(env, rec); aerr != nil {
+					return aerr
+				}
+				applied++
+				if progress != nil {
+					progress(applied)
+				}
+				return nil
 			})
 		if err != nil {
 			return fmt.Errorf("replaying origin %s/%d: %w", origin.DeviceID, origin.Generation, err)
@@ -87,6 +112,16 @@ func Replay(p *Projection, fsys fsx.FS, portableDir string, verifyFor func() cai
 // runs outside fsx; the projection is derived state, crash-safe by rebuild).
 // Production callers pass DBPath(portableDir).
 func ReindexLexical(fsys fsx.FS, portableDir, dbPath string, verifyFor func() cairnlog.VerifyFunc, bodyFetch BodyFetch) (*ReindexReport, error) {
+	return ReindexLexicalCtx(context.Background(), fsys, portableDir, dbPath, verifyFor, bodyFetch, nil)
+}
+
+// ReindexLexicalCtx is ReindexLexical with a cancellation context and an
+// optional per-event progress reporter (FIX-J3/R45). A caller supplies a
+// context with a stall watchdog / deadline so a reindex on a pathologically
+// slow filesystem (the observed WSL2 case) ABORTS with a clear error and leaves
+// only a discardable .rebuild, instead of hanging indefinitely; progress feeds
+// a heartbeat log so a running reindex is always observable.
+func ReindexLexicalCtx(ctx context.Context, fsys fsx.FS, portableDir, dbPath string, verifyFor func() cairnlog.VerifyFunc, bodyFetch BodyFetch, progress Progress) (*ReindexReport, error) {
 	live := dbPath
 	if err := os.MkdirAll(filepath.Dir(live), config.DirPerm); err != nil {
 		return nil, err
@@ -100,7 +135,7 @@ func ReindexLexical(fsys fsx.FS, portableDir, dbPath string, verifyFor func() ca
 	if err != nil {
 		return nil, fmt.Errorf("opening rebuild db: %w", err)
 	}
-	if err := Replay(p, fsys, portableDir, verifyFor); err != nil {
+	if err := ReplayCtx(ctx, p, fsys, portableDir, verifyFor, progress); err != nil {
 		p.Close()
 		return nil, err
 	}

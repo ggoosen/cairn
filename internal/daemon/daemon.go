@@ -438,7 +438,9 @@ func (d *Daemon) recover() error {
 				return fmt.Errorf("replaying origin %s/%d: %w", o.DeviceID, o.Generation, err)
 			}
 		}
-		return nil
+		// R49.2: heal cross-origin parks once every origin is projected.
+		_, err := d.proj.RetryParked()
+		return err
 	}
 
 	active := cairnlog.Origin{DeviceID: d.loaded.Device.DeviceID, Generation: d.loaded.Device.OriginGeneration}
@@ -461,6 +463,13 @@ func (d *Daemon) recover() error {
 	}
 	d.lg = lg
 	if _, err := identity.ReconcileSeqState(d.fs, d.loaded.DeviceDir, active.DeviceID, active.Generation, report.NextSeq, d.warn); err != nil {
+		return err
+	}
+
+	// R49.2: heal cross-origin parks once every origin (foreign + active) is
+	// projected — a topic.link.add on one origin that parked ahead of its
+	// topic.create on another clears now that both are applied.
+	if _, err := d.proj.RetryParked(); err != nil {
 		return err
 	}
 

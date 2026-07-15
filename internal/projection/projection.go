@@ -210,17 +210,7 @@ func (p *Projection) Apply(env *event.Envelope, _ []byte) error {
 		env.OriginDeviceID, env.OriginGeneration, env.OriginSequence, env.EventID); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	// R49.2: a just-applied event may satisfy a dependency an earlier
-	// (out-of-order) event was parked on. Sweep retryable parks so the
-	// self-heal happens on the SAME arrival, not only at the next reindex.
-	// Cheap when the quarantine is empty (the overwhelming common case).
-	if _, err := p.RetryParked(); err != nil {
-		return err
-	}
-	return nil
+	return tx.Commit()
 }
 
 // errMissingRef marks a projection failure caused by a missing intra-mesh

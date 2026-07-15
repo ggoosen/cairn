@@ -244,6 +244,17 @@ const (
 // Measured from parked_at.
 const ParkedRetryableGrace = 24 * time.Hour
 
+// Reindex progress + stall watchdog (FIX-J3, R45: a reindex must never hang
+// silently). ReindexProgressInterval throttles the heartbeat log; if no event
+// is applied for ReindexStallTimeout the CLI aborts the reindex with a clear
+// error (the side-build .rebuild is discardable). The stall timeout is
+// deliberately generous — a legitimately slow filesystem (WSL2 drvfs on the
+// observed rig) is slow, not wedged — but bounded, so an actual hang surfaces.
+const (
+	ReindexProgressInterval = 5 * time.Second
+	ReindexStallTimeout     = 120 * time.Second
+)
+
 // ---------------------------------------------------------------------------
 // Views (spec §7.3, rulings §8)
 // ---------------------------------------------------------------------------
