@@ -2544,5 +2544,16 @@ keeping them current beats a low version number. Declare the honest floor instea
 
 **Fix:** `go 1.25.0` + `toolchain go1.26.3` (RULINGS R52). No dependency, `go.sum`, or source
 change. README Quickstart documents "Prerequisite: Go 1.25+". `make build`, `make verify`
-(untagged guard + tagged suite, testcache cleaned) green on NODE-A (go1.26.3). NODE-B
-reinstall verification below.
+(untagged guard + tagged suite, testcache cleaned) green on NODE-A (go1.26.3).
+
+**Live two-node reinstall verification (2026-07-15):**
+- **NODE-B (the node this blocked)** — base toolchain is `go1.23.4` (`GOTOOLCHAIN=local go
+  version`); the `toolchain go1.26.3` directive resolves to the **already-cached** toolchain
+  (`~/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.3.linux-amd64` — no download,
+  offline-capable). Clean build from a CLEARED build cache (`go clean -cache`) succeeded →
+  `p1-939fca5d6d31`; reinstalled `~/.local`, `systemctl --user restart cairn` → active on the
+  new binary. This is the "clean checkout builds" evidence: not pure Go 1.23 (the honest
+  floor is 1.25, operator-accepted per R52), but a fresh go1.23.4 base auto-provisions the
+  pinned compiler and builds with zero manual toolchain steps — the deploy trap is closed.
+- **NODE-A** — reinstalled `~/.local`, launchd restarted → daemon on `p1-939fca5d6d31`.
+- Both running daemons report `p1-939fca5d6d31`; tailnet peering intact after restart.
