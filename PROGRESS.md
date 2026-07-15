@@ -2250,3 +2250,48 @@ out) and `TestJ3ReindexContextCancelAborts` (a cancelled context aborts the
 rebuild with `context.Canceled` — the watchdog mechanism).
 
 `make test` + `go vet` green; `internal/log` untouched.
+
+## J4 — MINOR — provenance + posture — DONE (2026-07-15)
+
+Documentation only (no code).
+
+1. **Checkout ⇄ installed-binary provenance (J4.1).** NODE-B's discovered checkout
+   was `a036060` while its installed binary was `ccdf1dc` — the rig was restored
+   by shipping a **git bundle** node-to-node and B's working tree was left behind
+   the binary that had been `make install`ed from a later bundle. Not causal, but
+   it makes "which commit produced this behaviour?" un-answerable. DOGFOOD §15 now
+   carries a "Deploy-flow provenance" note with a copy-paste parity check
+   (`cairn --version` must contain `git rev-parse --short HEAD`; version derives
+   from VCS build info per R11, so a mismatch is always detectable) and a Phase 0
+   invariant. Operator action recorded: `git pull` each node's checkout to HEAD,
+   then rebuild+install from that checkout.
+2. **Device key on unencrypted storage (J4.2).** NODE-B ran on a WSL2 box on an
+   unencrypted volume with a persisted `--allow-unencrypted` override — expected
+   for a disposable test rig, a standing finding for any real second node. README
+   gained a **Security posture** section: keys are device-local `0600`, never
+   portable; unencrypted storage is opt-in and warns every start; a real node must
+   put the cairn dir (and the device-local key path) on encrypted storage; the
+   WSL2 `drvfs` double-whammy (unencryptable + slow `synchronous=FULL`, the J3
+   reindex wedge) → keep the cairn dir on a native Linux filesystem on encrypted
+   storage. Also restated the R22/R35 same-OS-user isolation honesty.
+
+## J1–J4 COMPLETE (2026-07-15)
+
+All four items landed, one commit each (`FIX-J1`…`FIX-J4`) atop the R49 ruling
+(appended to RULINGS.md first, per the work order). J1 shipped
+regression-test-first and genuinely CROSS-NODE (the adversarial reproduction was
+confirmed RED by neutering `RetryParked`, showing the exact Codex FK park that
+never heals). J2/J3 measured before classifying: J2's P95 is ~2 ms at scale
+(run-2's 4-send/243 ms was small-sample/degraded-node noise) plus a gate-quality
+guard; J3's reindex hang is WSL2 drvfs I/O (environmental) plus an R45
+watchdog+progress guard and a ruled-out retry-loop. J4 is provenance/posture
+docs. `internal/log/` never touched (flagged, not modified). `make verify` green.
+
+**Handed back to the operator/auditor (Codex re-audit scope):** re-run Brief A
+Phase 3 from offline-catch-up through the reindex/doctor/gates checkpoint — the
+B→A topic send + A reindex + doctor/gates must be clean (J1); the kill-mid-sync
+(both roles), ephemeral-no-backfill, and kill-mid-blob-transfer drills that were
+BLOCKED-BY-FAILURE last run should now execute; B reindex completes without
+hanging (J3); re-check the P95 gate with ≥30 sends (J2). Rig prerequisites
+(checkout/binary parity, encrypted storage for a real node) are in DOGFOOD §15 /
+README Security posture.

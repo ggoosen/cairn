@@ -58,6 +58,34 @@ Kin and inspirations: [Secure Scuttlebutt](https://scuttlebutt.nz)'s per-origin 
 
 **Known limitation — degradation ladder (spec §8.2):** the load-shedding ladder enforces rungs 1–5 (delay auto-links → summaries → embeddings → force lexical-only search → delay proactive blob replication). The two disk/quota **reject** rungs (6 reject low-priority blobs, 7 reject small text) are computed and reported (the level shows in `cairn status` and every transition is logged) but not yet *enforced* — safely rejecting a send needs pre-ack reserved-capacity semantics that are deferred to a dedicated change. Until then they fail open (the send proceeds), never silently.
 
+## Security posture
+
+- **Device keys are device-local, never in the portable mesh directory.** Each
+  node's private key and the mesh root key live in device-local state
+  (`~/Library/Application Support/cairn/…` on macOS, `$XDG_DATA_HOME/cairn/…` on
+  Linux), `0600`, and never travel with a portable backup. A portable-only
+  restore creates a *new* origin; it can never impersonate the old device.
+- **Encrypted storage is expected; unencrypted is opt-in and loud.** `cairn init`
+  refuses to start on an unencrypted volume unless you pass `--allow-unencrypted`,
+  which persists the override device-local and **warns on every start**. This is
+  the right escape hatch for a throwaway test node, but it means the device key
+  sits on unencrypted storage.
+  - **Standing finding (FIX-J4.2):** the N9 two-node test rig ran NODE-B on a WSL2
+    box on an **unencrypted** volume with a persisted `--allow-unencrypted`
+    override — acceptable for a disposable test node, **not** acceptable for any
+    real second node. For a production node, put the cairn dir (and therefore the
+    device-local key path) on encrypted storage (FileVault / LUKS / dm-crypt); a
+    device key on unencrypted storage is a device-compromise-at-rest risk, and a
+    stolen device key is a valid mesh writer until you `cairn device revoke` it.
+  - WSL2 note: a Windows-mounted (`drvfs`) path is both unencryptable-by-cairn and
+    pathologically slow for `synchronous=FULL` I/O (it is what wedged the run-2
+    reindex — see DOGFOOD §15 / PROGRESS J3). Keep the cairn dir on a **native
+    Linux** filesystem inside the WSL2 distro, on encrypted storage.
+- **Same-OS-user isolation prevents accidents, not malice** (capability profiles,
+  R22/R35): the daemon cannot distinguish same-user local processes except by the
+  handle they present. A stronger boundary (socket peer-cred binding, per-principal
+  OS users) is a P3 consideration.
+
 ## Quickstart
 
 ```bash

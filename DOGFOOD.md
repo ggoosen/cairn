@@ -423,5 +423,28 @@ kills, and doctor, not the root-key ceremony.
 - `git rev-parse HEAD` identical on both nodes;
 - `cairn --version` is `p1-<sha>` on both, and matches the running daemon (no
   stale-binary warning);
+- **checkout ⇄ installed-binary parity:** the sha in `cairn --version` MUST equal
+  `git rev-parse --short HEAD` in the checkout you built from;
 - NODE-A has no `sync_listen`/`sync_peers` in its device config;
 - both daemons are under launchd/systemd (`cairn daemon --install`), not hand-run.
+
+**Deploy-flow provenance (FIX-J4.1 — why the checkout/binary can diverge).** In
+the N9 run-2 rig, NODE-B's discovered checkout was `a036060` while its INSTALLED
+binary was `ccdf1dc` — because the rig was restored by shipping a **git bundle**
+node-to-node (see `docs/cairn-rig-restoration-runbook.md`) and B's working tree
+was left a few commits behind the binary that had already been `make install`ed
+from a later bundle. It was not causal for any finding, but it makes provenance
+un-auditable ("which commit produced this behaviour?"). The version string
+derives from VCS build info (R11), so a mismatch is always detectable. Standing
+rule for every node:
+
+```sh
+cd ~/projects/cairn && git pull                 # bring the CHECKOUT to HEAD
+git rev-parse --short HEAD                       # e.g. ccdf1dc
+make install PREFIX=$HOME/.local                 # rebuild the BINARY from that checkout
+cairn --version | grep -q "$(git rev-parse --short HEAD)" \
+  && echo "parity OK" || echo "STALE: binary != checkout — reinstall"
+```
+
+Do this on BOTH nodes before any audit phase; never `make install` from one
+bundle and then leave the checkout on an older one.
