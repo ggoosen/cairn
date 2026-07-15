@@ -14,10 +14,14 @@ import (
 )
 
 // ReindexReport summarizes a rebuild: reindex COMPLETES (exit 0) even with
-// parked events — the report makes them loud (FIX-F1 ruling 3).
+// parked events — the report makes them loud (FIX-F1 ruling 3). Parked splits
+// into Retryable (R49: a missing intra-mesh reference whose dependency has not
+// replicated to this node yet — expected during active sync) and terminal
+// (Parked-Retryable: genuine corruption).
 type ReindexReport struct {
-	Events int64 `json:"events"`
-	Parked int   `json:"parked"`
+	Events          int64 `json:"events"`
+	Parked          int   `json:"parked"`
+	ParkedRetryable int   `json:"parked_retryable"`
 }
 
 // DBPath is the live projection database location (derived state).
@@ -65,6 +69,13 @@ func Replay(p *Projection, fsys fsx.FS, portableDir string, verifyFor func() cai
 			return fmt.Errorf("replaying origin %s/%d: %w", origin.DeviceID, origin.Generation, err)
 		}
 	}
+	// R49.2: a final self-heal sweep after every origin is applied. Cross-node
+	// replication has no global ordering (an origin whose topic.create replicated
+	// LATER than a peer's topic.link.add is applied after it here), so a retryable
+	// park from an earlier origin heals once its dependency's origin is walked.
+	if _, err := p.RetryParked(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -100,6 +111,11 @@ func ReindexLexical(fsys fsx.FS, portableDir, dbPath string, verifyFor func() ca
 		return nil, err
 	}
 	report.Parked = len(parked)
+	for _, pe := range parked {
+		if pe.Retryable {
+			report.ParkedRetryable++
+		}
+	}
 	p.db.QueryRow(`SELECT count(*) FROM events`).Scan(&report.Events)
 	// fold WAL into the main file so the rename moves ONE complete db
 	if _, err := p.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {

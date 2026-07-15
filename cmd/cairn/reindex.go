@@ -53,7 +53,15 @@ func newReindexCmd(dirFlag *string) *cobra.Command {
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "lexical projection rebuilt at %s (%d events)\n", projection.DBPath(dir), report.Events)
 				if report.Parked > 0 {
-					fmt.Fprintf(cmd.ErrOrStderr(), "\nATTENTION: %d event(s) PARKED (failed to project). Run `cairn doctor` for details.\n", report.Parked)
+					terminal := report.Parked - report.ParkedRetryable
+					if terminal > 0 {
+						fmt.Fprintf(cmd.ErrOrStderr(), "\nATTENTION: %d event(s) PARKED (%d terminal, %d retryable). Run `cairn doctor` for details.\n", report.Parked, terminal, report.ParkedRetryable)
+					} else {
+						// R49: retryable parks are a missing intra-mesh reference
+						// (e.g. a topic.link.add whose topic.create has not replicated
+						// yet); they self-heal on the event that satisfies them.
+						fmt.Fprintf(cmd.ErrOrStderr(), "\nNOTE: %d event(s) parked RETRYABLE (a dependency has not replicated yet; self-heals on sync). Run `cairn doctor` for details.\n", report.ParkedRetryable)
+					}
 				}
 			}
 			return nil

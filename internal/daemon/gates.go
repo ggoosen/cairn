@@ -140,7 +140,7 @@ func DeepDoctor(fsys fsx.FS, portableDir, dbPath string, now time.Time) (problem
 		infos = append(infos, "no projection database yet (start the daemon or run `cairn reindex --lexical`)")
 		return problems, infos, nil
 	}
-	projProblems, projInfos, err := DoctorProjection(portableDir, dbPath)
+	projProblems, projInfos, err := DoctorProjection(portableDir, dbPath, now)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -427,23 +427,45 @@ func (d *Daemon) forkGate() string {
 	return fmt.Sprintf("FAIL (%d unresolved fork(s) frozen — run `cairn doctor fork <origin>`)", unresolved)
 }
 
-// DoctorProjection inspects the derived projection (F1/F3). Parked events
-// and a checkpoint AHEAD of the log are failures. A checkpoint BEHIND the
-// log with zero parked events is informational: parking guarantees the
-// projector can no longer stall silently, so "behind" is always
-// heal-by-replay (daemon start / reindex), e.g. after an offline migrate
-// appended security events. Interpretation recorded in RULINGS.md.
-func DoctorProjection(portableDir, dbPath string) (problems, infos []string, err error) {
+// DoctorProjection inspects the derived projection (F1/F3/R49). A TERMINAL
+// parked event (genuine corruption a replay cannot heal) and a checkpoint
+// AHEAD of the log are failures. A RETRYABLE parked event (R49: a missing
+// intra-mesh reference — e.g. a topic.link.add replicated ahead of its
+// topic.create — that a later event may satisfy) is INFORMATIONAL while it is
+// within `ParkedRetryableGrace` of parked_at (a transient cross-node ordering
+// gap during active sync), and a FAILURE once it exceeds the window (a
+// dependency that never arrived). A checkpoint BEHIND the log with zero parked
+// events is informational: parking guarantees the projector can no longer stall
+// silently, so "behind" is always heal-by-replay (daemon start / reindex).
+// Interpretation recorded in RULINGS.md.
+func DoctorProjection(portableDir, dbPath string, now time.Time) (problems, infos []string, err error) {
 	p, err := projection.Open(dbPath, nil)
 	if err != nil {
 		return []string{fmt.Sprintf("projection unopenable: %v (run `cairn reindex --lexical`)", err)}, nil, nil
 	}
 	defer p.Close()
+	// A doctor run is a natural moment to attempt a self-heal sweep (R49.2):
+	// a retryable park whose dependency has since been projected clears here
+	// rather than lingering until the next reindex.
+	if _, herr := p.RetryParked(); herr != nil {
+		return nil, nil, herr
+	}
 	parked, err := p.ParkedEvents()
 	if err != nil {
 		return nil, nil, err
 	}
 	for _, pe := range parked {
+		if pe.Retryable {
+			overdue := parkedOverdue(pe.ParkedAt, now)
+			if !overdue {
+				infos = append(infos, fmt.Sprintf("retryable parked event %s (%s, origin %s seq %d): %s — dependency may still arrive (self-heals on the event that satisfies it)",
+					pe.EventID, pe.EventType, pe.Origin, pe.Sequence, pe.Error))
+				continue
+			}
+			problems = append(problems, fmt.Sprintf("retryable parked event %s (%s, origin %s seq %d) UNHEALED after %s: %s — its dependency never arrived",
+				pe.EventID, pe.EventType, pe.Origin, pe.Sequence, config.ParkedRetryableGrace, pe.Error))
+			continue
+		}
 		problems = append(problems, fmt.Sprintf("parked event %s (%s, origin %s seq %d): %s",
 			pe.EventID, pe.EventType, pe.Origin, pe.Sequence, pe.Error))
 	}
@@ -476,4 +498,15 @@ func DoctorProjection(portableDir, dbPath string) (problems, infos []string, err
 		}
 	}
 	return problems, infos, nil
+}
+
+// parkedOverdue reports whether a retryable park has exceeded R49's grace window
+// (measured from parked_at). An unparseable timestamp is treated as overdue —
+// fail closed, never silently swallow a stuck park.
+func parkedOverdue(parkedAt string, now time.Time) bool {
+	t, err := time.Parse(config.WallTimeFormat, parkedAt)
+	if err != nil {
+		return true
+	}
+	return now.Sub(t) > config.ParkedRetryableGrace
 }

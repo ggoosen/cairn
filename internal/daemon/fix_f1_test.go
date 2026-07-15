@@ -9,13 +9,25 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/daemon"
 	"github.com/ggoosen/cairn/internal/fsx"
 	"github.com/ggoosen/cairn/internal/identity"
 	cairnlog "github.com/ggoosen/cairn/internal/log"
 	"github.com/ggoosen/cairn/internal/projection"
 )
+
+// containsParked reports whether any doctor line mentions a parked event.
+func containsParked(lines []string) bool {
+	for _, l := range lines {
+		if strings.Contains(l, "parked") {
+			return true
+		}
+	}
+	return false
+}
 
 // F1(a): fresh mesh, send --topic <new name> × 3 distinct topics → all
 // visible in search AND digest, restart clean, reindex clean.
@@ -193,19 +205,30 @@ func TestF1UnprojectableEventIsParkedNotFatal(t *testing.T) {
 		t.Fatalf("reindex parked report: %d", report.Parked)
 	}
 
-	// doctor flags parked events as a failure condition (F3 hook)
-	problems, _, err := daemon.DoctorProjection(dir, dbPath)
+	// R49 amends F1: a FK-failing topic.link.add is now a RETRYABLE park (a
+	// missing intra-mesh reference the projector cannot distinguish from a
+	// not-yet-arrived dependency). Within the grace window it is INFORMATIONAL
+	// (the dependency may still arrive); once the window lapses it is a FAILURE
+	// (the dependency never arrived). This poison's referents never exist, so it
+	// stays parked across the grace boundary.
+	within, infos, err := daemon.DoctorProjection(dir, dbPath, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	for _, p := range problems {
+	for _, p := range within {
 		if strings.Contains(p, "parked") {
-			found = true
+			t.Fatalf("within grace, retryable park should be informational, not a problem: %v", within)
 		}
 	}
-	if !found {
-		t.Fatalf("doctor did not flag the parked event: %v", problems)
+	if !containsParked(infos) {
+		t.Fatalf("doctor did not surface the retryable parked event as info: %v", infos)
+	}
+	overdue, _, err := daemon.DoctorProjection(dir, dbPath, time.Now().Add(config.ParkedRetryableGrace+time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsParked(overdue) {
+		t.Fatalf("doctor did not flag the parked event past the grace window: %v", overdue)
 	}
 
 	// the log itself is untouched and fully valid (immutability)

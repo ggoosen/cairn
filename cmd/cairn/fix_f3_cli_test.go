@@ -64,7 +64,42 @@ func TestF3DoctorFailsOnMissingObject(t *testing.T) {
 	}
 }
 
+// TestF3DoctorFailsOnParkedEvent: a TERMINAL parked event (genuine corruption a
+// replay can never heal — here a revise_body with no revisions) FAILS doctor.
+// R49 distinguishes this from a RETRYABLE park (a missing intra-mesh reference),
+// which is informational within the grace window — asserted separately below.
 func TestF3DoctorFailsOnParkedEvent(t *testing.T) {
+	dir := setupEnv(t)
+	if out, err := runCLI(t, "init", "--dir", dir); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	d, err := daemon.Start(daemon.Options{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// terminal: revise_body carrying no revisions can never project, on any
+	// arrival order — not a FOREIGN KEY / missing-reference failure.
+	if _, err := d.SimpleEventUnvalidatedForTest("message.revise_body", "message",
+		"0190a1b2-c3d4-7e5f-8901-00000000dead",
+		map[string]any{"message_id": "0190a1b2-c3d4-7e5f-8901-00000000beef", "revisions": []any{}}); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+
+	out, err := runCLI(t, "doctor", "--dir", dir)
+	if err == nil {
+		t.Fatalf("doctor CLEAN with a TERMINAL parked event:\n%s", out)
+	}
+	if !strings.Contains(out, "parked") {
+		t.Fatalf("problem does not mention parking:\n%s", out)
+	}
+}
+
+// TestR49RetryableParkIsCleanWithinGrace: a FK-failing topic.link.add (a missing
+// intra-mesh reference — the R49 class) is a RETRYABLE park; doctor exits 0
+// within the grace window and surfaces it as a note (the dependency may still
+// arrive during active sync), never a red gate on a transient ordering gap.
+func TestR49RetryableParkIsCleanWithinGrace(t *testing.T) {
 	dir := setupEnv(t)
 	if out, err := runCLI(t, "init", "--dir", dir); err != nil {
 		t.Fatalf("init: %v\n%s", err, out)
@@ -82,11 +117,11 @@ func TestF3DoctorFailsOnParkedEvent(t *testing.T) {
 	d.Close()
 
 	out, err := runCLI(t, "doctor", "--dir", dir)
-	if err == nil {
-		t.Fatalf("doctor CLEAN with a parked event:\n%s", out)
+	if err != nil {
+		t.Fatalf("doctor FAILED on a retryable park within grace (should be informational):\n%s", out)
 	}
-	if !strings.Contains(out, "parked") {
-		t.Fatalf("problem does not mention parking:\n%s", out)
+	if !strings.Contains(out, "retryable parked") {
+		t.Fatalf("doctor did not surface the retryable park as a note:\n%s", out)
 	}
 }
 

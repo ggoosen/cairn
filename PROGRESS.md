@@ -2108,3 +2108,66 @@ turn on?) and Codex's Brief A end-to-end two-node run remain the live-rig items.
 Operator prerequisites (kill/reinstall the stale daemon on both nodes, remove
 `sync_listen` per §15, rig restoration, move the root key offline) are the
 operator's — see DOGFOOD §15 and the work order's "Operator prerequisites".
+
+---
+
+# N9 Brief A run 2 fix work order (docs/cairn-n9-fix-workorder-J.md) — J1–J4
+
+Input: Codex Brief A run 2 (`ccdf1dc`, live two-node) → NOT READY: one BLOCKER
+(J1), a gate failure (J2), two majors (J3/J4). RULINGS.md R49 appended first.
+`internal/log/` out of bounds. One commit per item (`FIX-J<n>`).
+
+## J1 — BLOCKER — cross-node topic.link.add parks on a peer (R49) — DONE (2026-07-15)
+
+**Defect (Codex BLOCKER-1):** a `topic.link.add` replicated to a peer parked on
+its reindex with `FOREIGN KEY constraint failed` — the referenced topic did not
+exist in the peer's projection. F1's atomic-on-origin `topic.create`+`link.add`
+is LOCAL atomicity; cross-node reconciliation has no global ordering. Doctor and
+gates correctly went red (R6), but an acknowledged link was permanently
+unprojectable on the peer.
+
+**Root cause (measured, not the work order's first guess):** the projection's
+`Apply` ALREADY enforces per-origin sequence contiguity (a gap is a hard error),
+so a SAME-origin link can never precede its create — R49.4 holds trivially there.
+The genuine failure is CROSS-ORIGIN: a `topic.link.add` on one origin references a
+`topic.create` on ANOTHER origin (B links a message to a topic A created); if the
+link's origin is walked/ingested before the create's origin, the FK fails. The
+in-process happy-path (same-origin `send --topic brandnew`) does NOT reproduce it;
+the deterministic cross-origin ordering does.
+
+**Fix (regression-test-first, RULINGS.md R49):**
+- `parked_events.retryable` column (schema v6; both `schema.sql` and
+  `build/sql/projection.sql`, drift test kept green). A projection failure on a
+  MISSING intra-mesh reference — a FOREIGN KEY constraint or the hand-thrown
+  `errMissingRef` (revise_body for a not-yet-replicated message) — parks
+  RETRYABLE; every other failure (parse/schema, `revise_body with no revisions`)
+  parks TERMINAL.
+- `Projection.RetryParked()` — a fixpoint sweep that re-runs `applyPayload` for
+  each retryable parked event from its stored envelope and clears the quarantine
+  row on success (healing a `topic.create` can satisfy its `link.add` in the same
+  sweep). Wired into `Apply` (after every commit — covers each live reconcile
+  event and each local append), the end of `Replay` (reindex/recovery), and
+  `DoctorProjection` (a doctor run is a natural heal point).
+- `DoctorProjection`/`DeepDoctor`/`gates` (R49.3): a retryable park is
+  INFORMATIONAL within `config.ParkedRetryableGrace` (24h, from `parked_at`) and a
+  FAILURE once overdue (the dependency never arrived); a TERMINAL park is always a
+  failure. The gates zero-loss row inherits this via DeepDoctor. `reindex` reports
+  the retryable/terminal split and never aborts (exit 0, R4.3).
+
+**Regression (cross-node, `internal/daemon/fix_j1_test.go`):**
+- `TestJ1CrossNodeTopicLinkReplicatesCleanly` — two mesh nodes: A seeds a topic, B
+  links a new message to it (cross-origin link), both converge, BOTH reindex with
+  ZERO parked, deep doctor exit 0, the shared topic carries both messages.
+- `TestJ1AdversarialLinkBeforeCreate` — the mandated adversarial case: B's origin
+  (the cross-origin link) is applied to a fresh projection BEFORE A's origin (the
+  create). Confirmed RED without the fix (parks `topic.link.add … FOREIGN KEY
+  constraint failed` and never heals); with the fix it parks RETRYABLE then
+  SELF-HEALS once A's create lands. Temporarily neutering `RetryParked` reproduced
+  the exact Codex failure, proving the test genuinely bites.
+- F1/F3 park tests updated to the R49 semantics (terminal park fails doctor;
+  retryable park is a within-grace note): `cmd/cairn` `TestF3DoctorFailsOnParkedEvent`
+  (now a terminal `revise_body`), `TestR49RetryableParkIsCleanWithinGrace` (new),
+  and `internal/daemon` `TestF1UnprojectableEventIsParkedNotFatal`
+  (within-grace info + overdue problem).
+
+`make test` + `go vet` green; `internal/log` untouched.

@@ -274,12 +274,15 @@ type ParkedEvent struct {
 	Sequence  int64  `json:"sequence"`
 	Error     string `json:"error"`
 	ParkedAt  string `json:"parked_at"`
+	// Retryable (R49): a missing intra-mesh reference that a later event may
+	// satisfy (informational within R49's grace window), vs terminal corruption.
+	Retryable bool `json:"retryable"`
 }
 
 // ParkedEvents lists the quarantine, oldest first.
 func (p *Projection) ParkedEvents() ([]ParkedEvent, error) {
 	rows, err := p.db.Query(`SELECT event_id, event_type,
-		origin_device_id || '/' || origin_generation, origin_sequence, error, parked_at
+		origin_device_id || '/' || origin_generation, origin_sequence, error, parked_at, retryable
 		FROM parked_events ORDER BY parked_at, event_id`)
 	if err != nil {
 		return nil, err
@@ -288,9 +291,11 @@ func (p *Projection) ParkedEvents() ([]ParkedEvent, error) {
 	var out []ParkedEvent
 	for rows.Next() {
 		var pe ParkedEvent
-		if err := rows.Scan(&pe.EventID, &pe.EventType, &pe.Origin, &pe.Sequence, &pe.Error, &pe.ParkedAt); err != nil {
+		var retryable int
+		if err := rows.Scan(&pe.EventID, &pe.EventType, &pe.Origin, &pe.Sequence, &pe.Error, &pe.ParkedAt, &retryable); err != nil {
 			return nil, err
 		}
+		pe.Retryable = retryable != 0
 		out = append(out, pe)
 	}
 	return out, rows.Err()

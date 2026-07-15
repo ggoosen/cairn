@@ -640,3 +640,54 @@ oversized input produces a clean `derivative.fail` with bounded memory — never
 OOM, never a hang. "Safe on trusted content only" is a self-cancelling condition
 for a pipeline that consumes mesh content: the guards are what make the opt-in
 safe to turn on at all.
+
+---
+
+# N9 Brief A run 2 fix rulings (live two-node, `ccdf1dc`) — J1–J4
+
+## R49 — Parked events are retryable; referential dependencies self-heal (from J1)
+
+F1 made `send --topic <new>` emit `topic.create` + `topic.link.add` atomically **on
+the origin node** (R4.1). That atomicity is **local**: cross-node reconciliation
+replicates events without guaranteeing the `topic.create` is projected before the
+`topic.link.add` that references it. The live two-node run reproduced a
+`topic.link.add` originating on NODE-B replicating to NODE-A and **parking on A's
+reindex** with `FOREIGN KEY constraint failed` — the referenced topic did not yet
+exist in A's projection. Doctor and gates correctly went red (R6). The message stayed
+searchable, so it is a projection-**consistency** failure, not data loss — but an
+acknowledged topic link was permanently unprojectable on the peer. The P0
+topic-poisoning class (F1) is alive **across the network**; atomic-on-origin is not
+atomic-across-the-mesh. This is a spec gap in reconciliation, not only a bug.
+
+**Ruling:**
+
+1. A projection failure caused by a **missing intra-mesh reference** (a FOREIGN KEY on
+   a not-yet-projected `topic.create`, or any dependency that may still arrive on a
+   later event) **parks as RETRYABLE**, not terminal. A parse error, a schema
+   violation, or any failure that no future event can satisfy parks as **terminal**
+   (genuine corruption).
+2. When a later event that could satisfy a parked event's dependency is projected, the
+   projector **re-attempts the retryable parked events** — a bounded retry sweep run
+   after each reconcile batch, at the end of a reindex/replay, and after each live
+   append. A retryable event that now projects clears from `parked_events`; one that
+   still fails stays parked (retryable), to be swept again when the next event lands.
+3. `doctor`/`gates` distinguish **retryable-pending** (informational within a grace
+   window — the dependency may still arrive during active sync; NOT a zero-loss
+   failure on its own) from **terminal** parked events (always a failure) and from
+   retryable events that have exceeded the grace window (a dependency that never
+   arrived — a failure). The grace window is a config constant
+   (`ParkedRetryableGrace`) measured from `parked_at`; a transient ordering gap during
+   active sync is not a red gate, but a dependency that never arrives eventually is.
+4. **Defense at the source (preferred, cheap):** reconciliation applies an origin's
+   events in **per-origin sequence order**, never by arrival order — a `topic.create`
+   at sequence N is applied before the `topic.link.add` at N+1 because they are already
+   in sequence order on the origin. R49.4 is the ordering defense; R49.1–3 are the
+   robust self-heal for genuinely out-of-order or partial arrival (the adversarial case
+   where the link is delivered/applied before the create).
+
+**Regression shape (mandatory, CROSS-NODE):** two mesh nodes; node B does
+`send --topic brandnew "…"`; the events replicate to node A and A reindexes; assert A
+projects the link cleanly — OR parks it retryable and then **self-heals** once the
+create is applied. Then reindex A → doctor A exit 0, gates zero-loss PASS. The
+adversarial ordering case (the link applied before its create) is exercised explicitly
+and must self-heal. A single-node stand-in does NOT satisfy this ruling.

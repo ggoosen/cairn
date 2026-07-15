@@ -180,6 +180,13 @@ CREATE TABLE rank_explanations (
 -- PARKED here and the stream continues — the projector never stalls and the
 -- log is never touched (parking is a projection concept only). Doctor treats
 -- parked events as a failure condition. Rebuildable like everything else.
+-- retryable (R49/FIX-J1): 1 = a MISSING intra-mesh reference (a FOREIGN KEY on
+-- a not-yet-projected dependency — e.g. a topic.link.add replicated ahead of
+-- its topic.create) that a LATER event may satisfy; the projector re-attempts
+-- retryable parked events after each applied event / reconcile batch / reindex
+-- and clears them when they project. 0 = terminal (genuine corruption: a parse
+-- or schema failure no future event can heal). Doctor/gates treat retryable
+-- parks within R49's grace window as informational, terminal parks as failures.
 CREATE TABLE parked_events (
   event_id TEXT PRIMARY KEY,
   origin_device_id TEXT NOT NULL,
@@ -187,7 +194,8 @@ CREATE TABLE parked_events (
   origin_sequence INTEGER NOT NULL,
   event_type TEXT NOT NULL,
   error TEXT NOT NULL,
-  parked_at TEXT NOT NULL
+  parked_at TEXT NOT NULL,
+  retryable INTEGER NOT NULL DEFAULT 0
 );
 
 -- NOTE: telemetry (interactions, impressions, outcomes) lives in a SEPARATE

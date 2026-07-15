@@ -228,11 +228,21 @@ const (
 // ---------------------------------------------------------------------------
 
 const (
-	ProjectionSchemaVersion = 5 // v5: attachment durability class (N7); v4: derivatives+summaries (N4); v3: subscriptions (N3); v2: parked_events
+	ProjectionSchemaVersion = 6 // v6: parked_events.retryable (R49/FIX-J1); v5: attachment durability class (N7); v4: derivatives+summaries (N4); v3: subscriptions (N3); v2: parked_events
 
 	// FTSTokenize: unicode61 with tokenchars `_ - # @` (rulings §6).
 	FTSTokenize = "unicode61 tokenchars '_-#@'"
 )
+
+// ParkedRetryableGrace (RULINGS.md R49.3) is how long a RETRYABLE parked event
+// (a projection failure on a missing intra-mesh reference that may still arrive
+// — e.g. a topic.link.add replicated ahead of its topic.create) is treated as
+// informational rather than a zero-loss failure by doctor/gates. Within the
+// grace window a transient cross-node ordering gap during active sync is not a
+// red gate; a dependency that never arrives eventually crosses it and becomes a
+// failure. Terminal (non-retryable) parked events are ALWAYS a failure.
+// Measured from parked_at.
+const ParkedRetryableGrace = 24 * time.Hour
 
 // ---------------------------------------------------------------------------
 // Views (spec §7.3, rulings §8)

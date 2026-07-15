@@ -17,7 +17,7 @@ import (
 	"fmt"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/mattn/go-sqlite3"
 
 	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/event"
@@ -195,21 +195,8 @@ func (p *Projection) Apply(env *event.Envelope, _ []byte) error {
 		if _, err := tx.Exec(`ROLLBACK TO payload`); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`INSERT OR REPLACE INTO parked_events
-				(event_id, origin_device_id, origin_generation, origin_sequence, event_type, error, parked_at)
-				VALUES (?,?,?,?,?,?,?)`,
-			env.EventID, env.OriginDeviceID, env.OriginGeneration, env.OriginSequence,
-			env.EventType, perr.Error(), time.Now().UTC().Format(config.WallTimeFormat)); err != nil {
+		if err := p.park(tx, env, perr); err != nil {
 			return err
-		}
-		if p.parkLogger != nil {
-			p.parkLogger(ParkedEvent{
-				EventID:   env.EventID,
-				EventType: env.EventType,
-				Origin:    fmt.Sprintf("%s/%d", env.OriginDeviceID, env.OriginGeneration),
-				Sequence:  env.OriginSequence,
-				Error:     perr.Error(),
-			})
 		}
 	}
 	if _, err := tx.Exec(`RELEASE payload`); err != nil {
@@ -223,7 +210,155 @@ func (p *Projection) Apply(env *event.Envelope, _ []byte) error {
 		env.OriginDeviceID, env.OriginGeneration, env.OriginSequence, env.EventID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// R49.2: a just-applied event may satisfy a dependency an earlier
+	// (out-of-order) event was parked on. Sweep retryable parks so the
+	// self-heal happens on the SAME arrival, not only at the next reindex.
+	// Cheap when the quarantine is empty (the overwhelming common case).
+	if _, err := p.RetryParked(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// errMissingRef marks a projection failure caused by a missing intra-mesh
+// reference that a LATER event may satisfy (R49.1) — a hand-thrown dependency
+// error (e.g. revise_body for a message whose publish has not yet replicated).
+// FOREIGN KEY failures are classified retryable directly (isRetryablePark).
+var errMissingRef = errors.New("missing intra-mesh reference (dependency may still arrive)")
+
+// isRetryablePark reports whether a projection error is a MISSING intra-mesh
+// reference that a later event could satisfy (R49.1): a FOREIGN KEY constraint
+// (topic.link.add ahead of its topic.create/message.publish; attachments/
+// source_refs/signals ahead of their message) or a hand-thrown errMissingRef.
+// Everything else (a parse error, a schema violation, an unexpected constraint)
+// is TERMINAL — no future event heals it.
+func isRetryablePark(err error) bool {
+	var se sqlite3.Error
+	if errors.As(err, &se) && se.ExtendedCode == sqlite3.ErrConstraintForeignKey {
+		return true
+	}
+	return errors.Is(err, errMissingRef)
+}
+
+// park quarantines a payload that failed projection (R4.3/R49). tx already
+// rolled the failed payload back to its savepoint. Retryable parks (missing
+// intra-mesh reference) self-heal on a later event (R49.2); terminal parks are
+// genuine corruption.
+func (p *Projection) park(tx *sql.Tx, env *event.Envelope, perr error) error {
+	retryable := isRetryablePark(perr)
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO parked_events
+			(event_id, origin_device_id, origin_generation, origin_sequence, event_type, error, parked_at, retryable)
+			VALUES (?,?,?,?,?,?,?,?)`,
+		env.EventID, env.OriginDeviceID, env.OriginGeneration, env.OriginSequence,
+		env.EventType, perr.Error(), time.Now().UTC().Format(config.WallTimeFormat), boolInt(retryable)); err != nil {
+		return err
+	}
+	if p.parkLogger != nil {
+		p.parkLogger(ParkedEvent{
+			EventID:   env.EventID,
+			EventType: env.EventType,
+			Origin:    fmt.Sprintf("%s/%d", env.OriginDeviceID, env.OriginGeneration),
+			Sequence:  env.OriginSequence,
+			Error:     perr.Error(),
+			Retryable: retryable,
+		})
+	}
+	return nil
+}
+
+// RetryParked re-attempts every RETRYABLE parked event (R49.2). A parked
+// event's row is already in `events` (the checkpoint advanced past it; only its
+// PAYLOAD was rolled back and quarantined), so retry re-runs applyPayload from
+// the stored envelope and, on success, clears the quarantine row. It loops to a
+// fixpoint: healing one park (a topic.create) can satisfy another (its
+// topic.link.add) in the same sweep. Returns the number healed. Terminal
+// (non-retryable) parks are never touched.
+func (p *Projection) RetryParked() (int, error) {
+	healed := 0
+	for {
+		envs, err := p.retryableParked()
+		if err != nil {
+			return healed, err
+		}
+		if len(envs) == 0 {
+			return healed, nil
+		}
+		progress := 0
+		for _, env := range envs {
+			ok, err := p.retryOne(env)
+			if err != nil {
+				return healed, err
+			}
+			if ok {
+				healed++
+				progress++
+			}
+		}
+		if progress == 0 {
+			return healed, nil // fixpoint: nothing more heals this sweep
+		}
+	}
+}
+
+// retryableParked reconstructs the envelopes of the retryable quarantine,
+// oldest first (dependency order tends to follow park order).
+func (p *Projection) retryableParked() ([]*event.Envelope, error) {
+	rows, err := p.db.Query(`SELECT e.event_id, e.event_type, e.origin_device_id, e.origin_generation,
+			e.origin_sequence, e.actor_principal_id, e.wall_time, e.payload_json
+		FROM parked_events pk JOIN events e ON e.event_id = pk.event_id
+		WHERE pk.retryable = 1
+		ORDER BY pk.parked_at, pk.origin_sequence`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*event.Envelope
+	for rows.Next() {
+		var (
+			env     event.Envelope
+			actor   sql.NullString
+			payload string
+		)
+		if err := rows.Scan(&env.EventID, &env.EventType, &env.OriginDeviceID, &env.OriginGeneration,
+			&env.OriginSequence, &actor, &env.WallTime, &payload); err != nil {
+			return nil, err
+		}
+		env.ActorPrincipalID = actor.String
+		env.Payload = json.RawMessage(payload)
+		e := env
+		out = append(out, &e)
+	}
+	return out, rows.Err()
+}
+
+// retryOne re-applies a single parked event's payload in its own transaction;
+// on success it clears the quarantine row. A still-failing retryable event is
+// left parked (it may heal on a later event); an event that now fails
+// TERMINALLY is re-parked as terminal.
+func (p *Projection) retryOne(env *event.Envelope) (bool, error) {
+	tx, err := p.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if perr := p.applyPayload(tx, env); perr != nil {
+		if isRetryablePark(perr) {
+			return false, nil // still waiting on a dependency; stay parked
+		}
+		// re-classify as terminal: update the quarantine row and commit
+		if _, err := tx.Exec(`UPDATE parked_events SET error=?, retryable=0 WHERE event_id=?`,
+			perr.Error(), env.EventID); err != nil {
+			return false, err
+		}
+		return false, tx.Commit()
+	}
+	if _, err := tx.Exec(`DELETE FROM parked_events WHERE event_id=?`, env.EventID); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
 }
 
 // --- payload projection -----------------------------------------------------
@@ -338,6 +473,11 @@ func (p *Projection) applyPayload(tx *sql.Tx, env *event.Envelope) error {
 		var mime, msgClass string
 		if err := tx.QueryRow(`SELECT r.body_mime, m.text_class FROM revisions r JOIN messages m ON m.head_revision_id = r.revision_id AND m.message_id=?`,
 			pl.MessageID).Scan(&mime, &msgClass); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				// R49.1: the target message's publish may not have replicated yet
+				// — retryable, self-heals when it arrives.
+				return fmt.Errorf("revise_body for unknown message %s: %w", pl.MessageID, errMissingRef)
+			}
 			return fmt.Errorf("revise_body for unknown message %s: %w", pl.MessageID, err)
 		}
 		for _, rev := range pl.Revisions {
