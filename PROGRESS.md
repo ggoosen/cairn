@@ -2414,6 +2414,16 @@ the memory bounds fail if any decoder allocates a raster):**
   without `CAIRN_HEAVY_DERIVATIVES=1` the same bomb is inert (gate
   genuinely off) and still records a clean `derivative.fail`, bounded.
 
+**Live drill (this machine, rebuilt binary, throwaway mesh,
+`CAIRN_HEAVY_DERIVATIVES=1`):** a 33-byte 60000×60000 GRAYSCALE PNG (the
+work-order repro) and an 8000×8000 grayscale flood attached via
+`cairn send --attach` through the real IPC path → each recorded a clean
+`derivative.fail` in the durable log with the pre-flight reason
+(`preflight: image 60000x60000 exceeds the 20000 px per-side cap`;
+`preflight: 64000000 pixels exceeds the 40000000-pixel ceiling`); daemon RSS
+stayed 20–24 MB throughout (baseline ~24 MB — no spike), search still
+answers, deep doctor clean.
+
 `make test` + `make vet` green before commit. Committed as `FIX-P2-2`.
 `internal/log/` and reconcile/sync untouched by both fixes.
 
