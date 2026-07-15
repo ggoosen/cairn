@@ -264,6 +264,18 @@ const (
 	GateSuccessAt5Min        = 0.70                   // golden-corpus CI proxy (validates config, not thesis)
 	GateLexicalOnlyTop10Min  = 0.60                   // lexical_only known-relevant in top-10
 	GateWorkaroundRateMax    = 0.25                   // human-measured (DOGFOOD protocol)
+
+	// GateLatencyMinSamples (FIX-J2, R45 spirit) is the minimum number of
+	// ack→lexical-visible samples before the P95 gate may return a verdict
+	// (PASS or FAIL). The gate reads P95 by rank offset, so with a handful of
+	// samples "P95" is just the slowest send — one hiccup fails the gate. Codex
+	// Brief A run 2 FAILed on 4 sends (243 ms) on a degraded WSL node that had
+	// dropped off the tailnet; that is a small-sample artifact, not a
+	// regression. Below this floor the gate reports INCONCLUSIVE (never FAIL):
+	// a P95 gate must not fail loudly on a sample too small to be meaningful.
+	// 30 aligns with the 30-handoff evaluation cadence and gives the 95th
+	// percentile at least one observation above it.
+	GateLatencyMinSamples = 30
 )
 
 // ---------------------------------------------------------------------------

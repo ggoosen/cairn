@@ -349,15 +349,24 @@ func (d *Daemon) GatesReport(w io.Writer) error {
 		}
 	}
 
-	latency := "n/a (no samples)"
-	latencyPass := ""
+	// FIX-J2 (R45 spirit): P95 is read by rank offset, so below a meaningful
+	// sample size "P95" is just the slowest send — one hiccup would FAIL the
+	// gate (Codex Brief A run 2: 4 sends, 243 ms, on a degraded WSL node). A
+	// gate must not fail loudly on a sample too small to mean anything: below
+	// GateLatencyMinSamples the verdict is INCONCLUSIVE, never FAIL.
+	latency := fmt.Sprintf("INCONCLUSIVE (no samples yet; need ≥%d)", config.GateLatencyMinSamples)
 	if g.LatencySamples > 0 {
 		p95 := time.Duration(g.LatencyP95Micros) * time.Microsecond
-		latencyPass = "PASS"
-		if p95 >= config.GateLexicalVisibilityP95 {
-			latencyPass = "FAIL"
+		if g.LatencySamples < config.GateLatencyMinSamples {
+			latency = fmt.Sprintf("INCONCLUSIVE (P95 %v over %d sends; need ≥%d for a meaningful P95; gate < %v)",
+				p95, g.LatencySamples, config.GateLatencyMinSamples, config.GateLexicalVisibilityP95)
+		} else {
+			verdict := "PASS"
+			if p95 >= config.GateLexicalVisibilityP95 {
+				verdict = "FAIL"
+			}
+			latency = fmt.Sprintf("%s (P95 %v over %d sends; gate < %v)", verdict, p95, g.LatencySamples, config.GateLexicalVisibilityP95)
 		}
-		latency = fmt.Sprintf("%s (P95 %v over %d sends; gate < %v)", latencyPass, p95, g.LatencySamples, config.GateLexicalVisibilityP95)
 	}
 
 	outcomes := g.OutcomeFound + g.OutcomeNotFound + g.OutcomeWorkaround

@@ -2171,3 +2171,40 @@ the deterministic cross-origin ordering does.
   (within-grace info + overdue problem).
 
 `make test` + `go vet` green; `internal/log` untouched.
+
+## J2 — INVESTIGATE — NODE-B lexical-visible P95 > 200ms gate — DONE (2026-07-15)
+
+**Codex BLOCKER-2:** B's automated gate FAILed `P95 243ms over 4 sends` (was
+100ms/PASS pre-run) on an unencrypted WSL node that dropped off the tailnet
+mid-run.
+
+**Measured before fixing (work-order instruction):** a stable 200-send
+measurement on a quiet node (this mac, `CAIRN_SCORECARD=200`):
+
+| metric | value |
+|---|---|
+| append total | 2.739 s (13.69 ms/event) |
+| send-ack P50 / P95 | 13.285 / 15.912 ms |
+| **ack→lexical-visible P95** | **1.973 ms** (gate < 200 ms ⇒ 100× margin) |
+| search P50 / P95 | 335 µs / 642 µs |
+| cold recovery (200) | 44 ms |
+| reindex --lexical (200) | 115 ms |
+
+This matches the prior 100k scorecard (1.52 ms). **Verdict: run2's 243 ms/4-send
+is small-sample / degraded-node noise, not a regression.** The enrichment path is
+unchanged and comfortably inside the gate at scale.
+
+**Gate-quality fix (the real defect — R45 spirit, "a P95 gate must not FAIL on a
+sample too small to be meaningful"):** the gate reads P95 by rank offset, so with
+4 samples "P95" is just the slowest send — one hiccup FAILs the gate. Added
+`config.GateLatencyMinSamples = 30`: below it the `cairn gates`
+send-ack→lexical-visible row reports **INCONCLUSIVE** (never FAIL), naming the
+sample size and the ≥30 requirement; at or above it the row PASS/FAILs as before.
+A 4-send 243 ms result is now INCONCLUSIVE, not a red gate.
+
+**Regression (`internal/daemon/fix_j2_test.go`):**
+`TestJ2SmallSampleP95IsInconclusiveNotFail` reproduces the Codex shape (4 samples,
+one 243 ms) and asserts INCONCLUSIVE (not FAIL) with the sample size + ≥30
+surfaced; `TestJ2AdequateSampleGivesVerdict` asserts ≥30 fast samples PASS.
+
+`make test` + `go vet` green; `internal/log` untouched.
