@@ -2520,3 +2520,29 @@ CROSS-NODE + REJOIN, confirmed RED first:**
 `make test` green (21 packages; K1 drills ×3 for flake), `make verify` green
 (untagged guard + tagged suite). `internal/log/` untouched; blob durability
 (N7) semantics unchanged for non-ephemeral targets. Committed as `FIX-K1`.
+
+---
+
+# go.mod version-directive fix (deploy) — DONE (2026-07-15)
+
+**Problem:** `go.mod` declared `go 1.26.3` — an unnecessarily high toolchain floor that
+repeatedly blocked deploys on NODE-B (system `go1.19.8` cannot even parse patch-version
+syntax) and pinned the project to one exact toolchain.
+
+**Investigation:**
+- Cairn's own code compiles at language level **1.23** (clean checkout built with the `go`
+  directive at `1.23` under the 1.26.3 toolchain).
+- The real floor is set by DEPENDENCIES: `golang.org/x/net v0.57.0` → `go 1.25.0` (binding
+  max), `ledongthuc/pdf` → `go 1.24.1`.
+- The "major.minor only" premise is the pre-Go-1.21 rule; it is now inverted. `go 1.25`
+  (bare) makes `go build` FAIL (`updates to go.mod needed … go mod tidy`); `go mod tidy`
+  normalizes to `go 1.25.0`. Both reproduced live.
+
+**Decision (operator-steered):** do NOT downgrade `x/net`/`pdf` to reach a 1.23 floor — both
+parse untrusted content (HTML tokenizer, PDF extractor) and are sandbox attack surface (R48);
+keeping them current beats a low version number. Declare the honest floor instead.
+
+**Fix:** `go 1.25.0` + `toolchain go1.26.3` (RULINGS R52). No dependency, `go.sum`, or source
+change. README Quickstart documents "Prerequisite: Go 1.25+". `make build`, `make verify`
+(untagged guard + tagged suite, testcache cleaned) green on NODE-A (go1.26.3). NODE-B
+reinstall verification below.

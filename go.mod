@@ -1,6 +1,12 @@
 module github.com/ggoosen/cairn
 
-go 1.26.3
+// The `go` directive is major.minor only and states the true minimum the
+// dependency set requires (golang.org/x/net v0.57.0 declares go 1.25.0 — the
+// binding floor; our own code compiles at 1.23). `toolchain` pins the build
+// compiler for reproducibility. See RULINGS.md R52.
+go 1.25.0
+
+toolchain go1.26.3
 
 require (
 	github.com/BurntSushi/toml v1.6.0

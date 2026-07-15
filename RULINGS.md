@@ -780,3 +780,43 @@ being the black box §9 forbids:
    digest, over a corpus where R, S, F, I and N are all non-zero — and asserts the
    non-zero terms trace non-zero, so an omitted or zeroed term fails even before
    the sum check does.
+
+---
+
+# Toolchain ruling — go.mod version directive (deploy fix)
+
+## R52 — The `go` directive states the dependency floor at the precision the toolchain requires (NOT "major.minor only")
+
+`go.mod` line 3 declared `go 1.26.3`. This repeatedly blocked deploys on a node whose
+system Go was `go1.19.8` (`invalid go version '1.26.3': must match format 1.23`) and pinned
+the whole project to an unnecessarily high toolchain floor.
+
+**Investigation (evidence, 2026-07-15):**
+- Cairn's OWN code compiles at language level **1.23** (a clean checkout built with the
+  `go` directive set to `1.23` under the local 1.26.3 toolchain).
+- The floor is set by DEPENDENCIES, not our code: `golang.org/x/net v0.57.0` declares
+  `go 1.25.0` (the binding maximum), `github.com/ledongthuc/pdf` declares `go 1.24.1`.
+- **The premise "the go directive must be major.minor only" is the pre-Go-1.21 rule and is
+  now false.** Since Go 1.21 the directive is `major.minor.patch`, and when a dependency
+  declares a patch-level version the toolchain REQUIRES the main module to match that
+  precision. Setting `go 1.25` (bare) makes `go build` fail with
+  `updates to go.mod needed; to update it: go mod tidy`, and `go mod tidy` rewrites it to
+  `go 1.25.0`. Live-reproduced both ways on this machine.
+
+**Ruling:**
+
+1. The `go` directive is set to the **true minimum the dependency set requires**, written
+   at the precision the toolchain demands — here `go 1.25.0` (driven by `x/net`), NOT a
+   bare `1.25` (which breaks `go build`) and NOT an inflated `1.26.3`.
+2. A `toolchain` line pins the build compiler for reproducibility (`toolchain go1.26.3`).
+   The `go` directive is the honest floor / prerequisite; the `toolchain` line is the build
+   tool. They are allowed to differ.
+3. **Security-surface dependencies are never downgraded to lower the floor.** `x/net/html`
+   tokenizes untrusted mesh HTML and `ledongthuc/pdf` extracts untrusted attachments — both
+   are part of the sandbox attack surface (R48). A version whose only sin is a higher `go`
+   directive stays current; the floor rises to meet it. Chasing a lower version number by
+   pinning adversarial-input parsers to older releases is backwards.
+4. The Go requirement is a **documented prerequisite** ("requires Go 1.25+", README
+   Quickstart), not a bug to be worked around. Any node installs a modern Go; a
+   `GOTOOLCHAIN=auto` (default) toolchain of 1.21+ fetches the pinned build compiler
+   automatically.

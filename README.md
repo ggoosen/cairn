@@ -88,6 +88,12 @@ Kin and inspirations: [Secure Scuttlebutt](https://scuttlebutt.nz)'s per-origin 
 
 ## Quickstart
 
+**Prerequisite: Go 1.25+.** The build floor is set by dependencies (`golang.org/x/net`
+processes untrusted mesh HTML, `ledongthuc/pdf` untrusted attachments — both kept current
+for security), not by Cairn's own code (which compiles at 1.23). `go.mod` pins the build
+toolchain to `go1.26.3` for reproducibility; a Go 1.21+ toolchain with `GOTOOLCHAIN=auto`
+(the default) fetches it automatically. macOS arm64 is primary; Linux is best-effort.
+
 ```bash
 git clone https://github.com/ggoosen/cairn && cd cairn
 make build                       # bin/cairn — always build via make (or the
