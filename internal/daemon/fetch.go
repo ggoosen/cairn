@@ -27,6 +27,10 @@ type FetchResult struct {
 	ManifestPath string `json:"manifest_path"`
 	BodyPath     string `json:"body_path"`
 	Expired      bool   `json:"content_expired,omitempty"`
+	// NotDelivered — R50.2/.3: the message is ephemeral and this node was not a
+	// live recipient at publish time, so the body was never delivered here.
+	// Distinct from content_expired (a TTL-explained absence).
+	NotDelivered bool `json:"ephemeral_not_delivered,omitempty"`
 }
 
 // Fetch writes views/<agent>/fetched/{<id>.manifest.json, <id>.body.md}.
@@ -61,20 +65,26 @@ func (d *Daemon) Fetch(messageID, agentView string) (*FetchResult, error) {
 	var expired *object.ExpiredError
 	if errors.As(err, &expired) {
 		res.Expired = true
+	} else if errors.Is(err, object.ErrNotFound) && info.TextClass == object.ClassEphemeral {
+		// R50: an absent, unexpired ephemeral body on this node means we were
+		// not a live recipient at publish time — the typed not-delivered
+		// result, never an opaque error and never the body.
+		res.NotDelivered = true
 	} else if err != nil {
 		return nil, fmt.Errorf("fetching body: %w", err)
 	}
 
 	manifest, err := json.MarshalIndent(map[string]any{
-		"message_id":      res.MessageID,
-		"revision_id":     res.RevisionID,
-		"body_hash":       res.BodyHash,
-		"source_event_id": res.SourceEvent,
-		"trust":           "untrusted",
-		"retracted":       res.Retracted,
-		"content_expired": res.Expired,
-		"text_class":      info.TextClass,
-		"retrieved_at":    d.now().UTC().Format(config.WallTimeFormat),
+		"message_id":              res.MessageID,
+		"revision_id":             res.RevisionID,
+		"body_hash":               res.BodyHash,
+		"source_event_id":         res.SourceEvent,
+		"trust":                   "untrusted",
+		"retracted":               res.Retracted,
+		"content_expired":         res.Expired,
+		"ephemeral_not_delivered": res.NotDelivered,
+		"text_class":              info.TextClass,
+		"retrieved_at":            d.now().UTC().Format(config.WallTimeFormat),
 	}, "", "  ")
 	if err != nil {
 		return nil, err
@@ -84,7 +94,7 @@ func (d *Daemon) Fetch(messageID, agentView string) (*FetchResult, error) {
 	if err := fsx.WriteFileAtomic(d.fs, res.ManifestPath, manifest, config.FilePerm); err != nil {
 		return nil, err
 	}
-	if !res.Expired {
+	if !res.Expired && !res.NotDelivered {
 		d.fs.Remove(res.BodyPath)
 		if err := fsx.WriteFileAtomic(d.fs, res.BodyPath, body, config.FilePerm); err != nil {
 			return nil, err
@@ -92,9 +102,6 @@ func (d *Daemon) Fetch(messageID, agentView string) (*FetchResult, error) {
 	} else {
 		d.fs.Remove(res.BodyPath)
 		res.BodyPath = ""
-	}
-	if res.Expired {
-		return res, nil
 	}
 	return res, nil
 }

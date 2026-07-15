@@ -73,6 +73,7 @@ type AttachmentBlob struct {
 	MessageID  string
 	Mime       string
 	Filename   string
+	Durability string
 }
 
 // AttachmentsNeedingDerivative returns attachment blobs with NO derivative
@@ -80,7 +81,7 @@ type AttachmentBlob struct {
 // from state (spec §8.1: no separate durable queue exists).
 func (p *Projection) AttachmentsNeedingDerivative(limit int) ([]AttachmentBlob, error) {
 	rows, err := p.db.Query(`
-		SELECT a.object_hash, a.message_id, a.mime, COALESCE(a.filename,'')
+		SELECT a.object_hash, a.message_id, a.mime, COALESCE(a.filename,''), a.durability
 		FROM attachments a
 		WHERE NOT EXISTS (SELECT 1 FROM derivatives d WHERE d.blob_hash = a.object_hash AND d.invalidated = 0)
 		ORDER BY a.message_id, a.object_hash LIMIT ?`, limit)
@@ -91,7 +92,7 @@ func (p *Projection) AttachmentsNeedingDerivative(limit int) ([]AttachmentBlob, 
 	var out []AttachmentBlob
 	for rows.Next() {
 		var b AttachmentBlob
-		if err := rows.Scan(&b.ObjectHash, &b.MessageID, &b.Mime, &b.Filename); err != nil {
+		if err := rows.Scan(&b.ObjectHash, &b.MessageID, &b.Mime, &b.Filename, &b.Durability); err != nil {
 			return nil, err
 		}
 		out = append(out, b)

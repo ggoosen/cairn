@@ -66,9 +66,14 @@ func TestG1EphemeralNotInlinedTwoNode(t *testing.T) {
 		t.Fatalf("R42 VIOLATION: ephemeral body searchable on non-origin B (got %d hits — inline copy leaked)", got)
 	}
 
-	// (a) fetch on B fails (the object was withheld, not present locally)
-	if _, err := dB.Fetch(eph.MessageID, "operator"); err == nil {
-		t.Fatalf("R42: fetch of a withheld ephemeral on B should fail, got nil error")
+	// (a) fetch on B returns the TYPED not-delivered result (K1/R50 upgraded
+	// this from an opaque error) — and never the body
+	fr, err := dB.Fetch(eph.MessageID, "operator")
+	if err != nil {
+		t.Fatalf("R50: fetch of a withheld ephemeral on B should return the typed result, got error: %v", err)
+	}
+	if !fr.NotDelivered || fr.BodyPath != "" {
+		t.Fatalf("R50: fetch of a withheld ephemeral must be typed not-delivered with no body file: %+v", fr)
 	}
 
 	// (c) deep doctor on B is CLEAN — a missing ephemeral object is

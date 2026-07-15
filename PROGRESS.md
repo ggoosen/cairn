@@ -2433,3 +2433,90 @@ here: P2-FIX-1's headline repro was already closed by FIX-H3 (the residual,
 now-fixed defect was verifier-dependent reconciliation — real, RED, but
 ulp-scale), and P2-FIX-2's guards were already correct (the gap was test
 coverage, now closed).
+
+---
+
+# N9 run-3 fix work order (docs/cairn-n9-fix-workorder-K.md) — K1
+
+## K1 — BLOCKER — ephemeral content reached a peer offline at send time — DONE (2026-07-15)
+
+Third instance of the ephemeral-leak class (inline-publish → inline-revise/
+merge → object-transfer-on-backfill). Codex run 3: B offline at publish;
+after rejoin B could search AND fetch the ephemeral body. **R50 replaced its
+reserved placeholder in RULINGS.md first** (the ephemeral invariant is
+delivery-time-scoped; its surface is fetch/store/index/serve/advertise).
+
+**Root cause:** `pushOrigin` shipped ephemeral bodies with
+`includeEphemeral=true` on EVERY push — "live PUSH to a connected peer"
+(R38) was implemented as "any push over a live connection", so the
+anti-entropy/catch-up push after B's rejoin backfilled the body; B stored,
+indexed, and served it. The G1 regression only exercised the PULL direction
+(which correctly withholds), so the push leak survived.
+
+**Fix (delivery-window rule, R50):**
+- Sender gate: an ephemeral body is OFFERED only on a live push while its
+  event is inside `EphemeralLiveDeliveryWindow` (60 s; push-on-append fires
+  within the 250 ms debounce — the margin covers slow dials). A catch-up
+  push ships the EVENT without the content.
+- Receiver gate (defense in depth): `ingestRecords` STORES an offered
+  ephemeral body only when the event wall time is inside
+  `EphemeralLiveAcceptWindow` (5 min, |skew|-tolerant); a nonconforming
+  sender's late backfill is refused loudly.
+- Serve gate: `get_object` never serves an object the projection knows only
+  as ephemeral content (new `projection.EphemeralOnlyObject` across revision
+  bodies, attachment durability, and derivative text via its source
+  attachment) — cache-then-advertise stops at ephemeral.
+- Accept gate: `put_object` refuses ephemeral-only objects.
+- Agent surface: `fetch` of a never-delivered ephemeral returns the TYPED
+  `ephemeral_not_delivered` result (manifest field included) — never the
+  body, never an opaque error; distinct from `content_expired`.
+- Derivative queue: an absent ephemeral attachment blob is skipped quietly
+  (absence is by design on non-recipients — previously would have recorded a
+  spurious permanent derivative.fail); never a remote fetch.
+- Unparseable wall times fail CLOSED (content withheld, event replicates).
+
+**Path enumeration (R50.4/R46; also in the FIX-K1 commit message):** PULL
+get_range (never ships ephemeral — pre-existing, now pinned by the drill's
+pull direction); live PUSH (window-gated — the leak); ingest accept
+(window-gated); blob inventory/advertise (`targetBlobs` excludes ephemeral —
+pre-existing; body objects are never inventoried); `get_object` serve
+(gated); `put_object` accept (gated); initiator blob pull (`fetchBlob` only
+runs over non-ephemeral targets); agent fetch (typed not-delivered, local
+store only — no remote path exists); FTS index + reindex (local object only,
+R42 — no bytes ⇒ no index); embeddings/digest excerpts (local store only);
+derivative extraction (skip-absent gate; derived text of an ephemeral source
+is classified ephemeral-only by the serve/accept gates via the derivatives
+join); export/peek/fork-reissue (local store only); inline-body-in-event
+(structurally rejected pre-ack — G1/H1). **Known residual (flagged, not a
+transfer path):** the derived TEXT object of an ephemeral attachment on a
+node that legitimately holds it is not yet TTL-purged by housekeeping
+(ObjectRefs covers revision bodies only); it can never leave the node (never
+inventoried, never in bodiesForRepl, get_object refuses it).
+
+**Regression (`internal/daemon/fix_k1_test.go`) — R50 mandatory shape,
+CROSS-NODE + REJOIN, confirmed RED first:**
+- `TestK1EphemeralNoBackfillOnRejoin` — the Codex drill: baseline converge,
+  disconnect B, A publishes `--class ephemeral` + canonical control, live
+  window passes, B rejoins, catch-up runs BOTH directions to quiescence
+  (control message proves it). On B: search 0 hits; fetch typed
+  not-delivered with no body file; object absent from the store; deep doctor
+  clean (R43); publish EVENT present with class intact and chain contiguity
+  to A's frontier. Origin still holds/indexes its own. RED pre-fix
+  (searchable on B — the exact live leak).
+- `TestK1EphemeralLiveGossipContrast` — a peer connected AT publish time
+  receives the body via the push-on-append sweep (search hit, object held,
+  normal fetch). GREEN before and after (feature preserved).
+- `TestK1EphemeralAcceptGate` — nonconforming sender (huge send window)
+  offers late; receiver refuses to store/index. RED pre-fix.
+- `TestK1EphemeralCacheAdvertise` — third node C (fresh enrolment ceremony)
+  receives the ephemeral LIVE, then B joins late: B↔C sync both directions,
+  plus DIRECT protocol probes — `get_object` on C answers Missing (cache
+  never re-serves), `put_object` on B is refused (bytes never stored). C
+  keeps its own copy; gates hold across daemon restarts (wall-time scoped,
+  not in-memory). RED pre-fix.
+- `fix_g1_test.go` fetch assertion upgraded to the typed not-delivered
+  result (was: any error).
+
+`make test` green (21 packages; K1 drills ×3 for flake), `make verify` green
+(untagged guard + tagged suite). `internal/log/` untouched; blob durability
+(N7) semantics unchanged for non-ephemeral targets. Committed as `FIX-K1`.

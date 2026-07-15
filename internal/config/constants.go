@@ -429,6 +429,18 @@ const (
 	SyncAntiEntropyInterval = 5 * time.Minute
 	// SyncPushDebounce collapses a burst of appends into one push sweep.
 	SyncPushDebounce = 250 * time.Millisecond
+	// EphemeralLiveDeliveryWindow — R50: an ephemeral body is OFFERED on a
+	// push only while the publish event is at most this old (the live-gossip
+	// window: push-on-append fires within SyncPushDebounce; the margin covers
+	// slow dials). Outside the window the body is never offered — a peer that
+	// rejoins later gets the event (chain data) but not the content.
+	EphemeralLiveDeliveryWindow = 60 * time.Second
+	// EphemeralLiveAcceptWindow — R50 defense in depth on the RECEIVER: an
+	// ephemeral body accompanying an ingested event is stored only when the
+	// event's wall time is within this window of local now (|skew| tolerant,
+	// wider than the send window so conforming live gossip never loses to
+	// clock skew). A nonconforming sender's late backfill is refused here.
+	EphemeralLiveAcceptWindow = 5 * time.Minute
 	// SyncRangeBatch caps records per range/push message (memory bound).
 	SyncRangeBatch = 512
 	// SyncBulkCatchupThreshold — R30: a peer more than this many events behind

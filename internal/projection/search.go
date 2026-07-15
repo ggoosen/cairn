@@ -149,6 +149,31 @@ func (p *Projection) ObjectRefs() ([]object.Ref, error) {
 	return out, rows.Err()
 }
 
+// EphemeralOnlyObject reports whether an object hash is known to this
+// projection ONLY as ephemeral-classed content: every revision-body reference
+// (message text class), attachment reference (durability class), and
+// derivative-text reference (the source attachment's durability) is ephemeral,
+// and at least one such reference exists. R50: such objects are never served
+// to peers (get_object) and never accepted from them (put_object) — ephemeral
+// bytes move only inside the live-gossip window with their event. Unknown
+// hashes return false (nothing to classify).
+func (p *Projection) EphemeralOnlyObject(hash string) (bool, error) {
+	var revAll, revNon, attAll, attNon, derAll, derNon int
+	err := p.db.QueryRow(`SELECT
+		(SELECT count(*) FROM revisions r JOIN messages m ON m.message_id=r.message_id WHERE r.body_hash=?1),
+		(SELECT count(*) FROM revisions r JOIN messages m ON m.message_id=r.message_id WHERE r.body_hash=?1 AND m.text_class<>'ephemeral'),
+		(SELECT count(*) FROM attachments WHERE object_hash=?1),
+		(SELECT count(*) FROM attachments WHERE object_hash=?1 AND durability<>'ephemeral'),
+		(SELECT count(*) FROM derivatives d JOIN attachments a ON a.object_hash=d.blob_hash WHERE d.text_hash=?1),
+		(SELECT count(*) FROM derivatives d JOIN attachments a ON a.object_hash=d.blob_hash WHERE d.text_hash=?1 AND a.durability<>'ephemeral')`,
+		hash).Scan(&revAll, &revNon, &attAll, &attNon, &derAll, &derNon)
+	if err != nil {
+		return false, err
+	}
+	known := revAll+attAll+derAll > 0
+	return known && revNon+attNon+derNon == 0, nil
+}
+
 // AppliedEvent is a projected event row (receipt regeneration).
 type AppliedEvent struct {
 	EventID   string

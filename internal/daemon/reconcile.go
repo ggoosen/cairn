@@ -218,9 +218,12 @@ func replicatesToFullNode(class string) bool {
 
 // readRange reads verified records [from,to) of an origin from its segment
 // files, plus the body objects they reference under the replication policy.
-// includeEphemeral ships ephemeral bodies too (a live PUSH to a connected
-// peer); a PULL response never backfills ephemeral text. Caller holds d.mu.
-func (d *Daemon) readRange(o cairnlog.Origin, from, to int64, includeEphemeral bool) ([][]byte, map[string][]byte, error) {
+// livePush marks a PUSH to a currently-connected peer: ephemeral bodies are
+// shipped ONLY on a live push AND only while the event is inside the R50
+// live-delivery window — a catch-up push after a rejoin is a backfill, not
+// live gossip, and must not carry ephemeral content. A PULL response never
+// backfills ephemeral text. Caller holds d.mu.
+func (d *Daemon) readRange(o cairnlog.Origin, from, to int64, livePush bool) ([][]byte, map[string][]byte, error) {
 	if to <= from {
 		return nil, nil, nil
 	}
@@ -263,7 +266,13 @@ func (d *Daemon) readRange(o cairnlog.Origin, from, to int64, includeEphemeral b
 				return nil, nil, fmt.Errorf("origin %s/%d seq %d fails verification on read: %w", o.DeviceID, o.Generation, seq, verr)
 			}
 			for _, b := range bodiesForRepl(env) {
-				if !replicatesToFullNode(b.class) && !(includeEphemeral && b.class == object.ClassEphemeral) {
+				// R50 sender gate: an ephemeral body is OFFERED only on a live
+				// push while its event is inside the live-delivery window.
+				// Outside it, the event ships without its content — the peer
+				// was not a live recipient at publish time.
+				if !replicatesToFullNode(b.class) &&
+					!(livePush && b.class == object.ClassEphemeral &&
+						d.withinEphemeralWindow(env.WallTime, d.ephemeralSendWindow())) {
 					continue
 				}
 				if _, have := bodies[b.hash]; have {
@@ -344,6 +353,19 @@ func (d *Daemon) ingestRecords(recs [][]byte, bodies map[string][]byte, peerHint
 		}
 		// objects before event (rulings §3 durability ordering)
 		for _, b := range bodiesForRepl(env) {
+			// R50 accept gate (defense in depth): an ephemeral body is STORED
+			// only when its event's wall time is inside the accept window —
+			// a nonconforming sender's late backfill is refused here even
+			// though a conforming sender never offers it. The event itself is
+			// always ingested (chain data).
+			if b.class == object.ClassEphemeral &&
+				!d.withinEphemeralWindow(env.WallTime, d.ephemeralAcceptWindow()) {
+				if _, offered := bodies[b.hash]; offered {
+					fmt.Fprintf(d.warn, "sync: REFUSED ephemeral body %s from %s — event %s is outside the live-delivery window (R50: ephemeral is never backfilled)\n",
+						b.hash, peerHint, env.EventID)
+				}
+				continue
+			}
 			if data, ok := bodies[b.hash]; ok && !d.store.Exists(b.hash) {
 				if _, err := d.store.Put(data); err != nil {
 					return appended, fmt.Errorf("storing replicated body %s: %w", b.hash, err)
@@ -478,6 +500,22 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 		case "get_object":
 			// serve a blob, verifying the bytes hash to the address BEFORE
 			// serving (R31). The initiator is fetching it → it will hold it.
+			// R50 serve gate: an object known ONLY as ephemeral content is
+			// NEVER served — not even by a cache that legitimately received it
+			// live (cache-then-advertise stops at ephemeral). Answer Missing,
+			// exactly as if we did not hold it.
+			ephOnly, cerr := d.proj.EphemeralOnlyObject(req.Hash)
+			if cerr != nil {
+				writeSync(conn, syncMsg{Type: "error", Err: cerr.Error()})
+				return
+			}
+			if ephOnly {
+				fmt.Fprintf(d.warn, "sync: withheld ephemeral object %s from %s (R50: ephemeral is never re-served)\n", req.Hash, peerDevice)
+				if err := writeSync(conn, syncMsg{Type: "object", Hash: req.Hash, Missing: true}); err != nil {
+					return
+				}
+				continue
+			}
 			d.mu.Lock()
 			data, gerr := d.store.Get(req.Hash) // Get re-verifies content-address
 			if gerr == nil {
@@ -499,6 +537,18 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 			// holds it (it pushed it).
 			if len(req.Data) > config.SyncMaxObjectBytes {
 				writeSync(conn, syncMsg{Type: "error", Err: "blob exceeds transfer cap"})
+				return
+			}
+			// R50 accept gate: bytes our projection knows ONLY as ephemeral
+			// content are refused — ephemeral is never delivered by blob push,
+			// only with its event inside the live window. A conforming peer
+			// never sends these (targetBlobs excludes ephemeral).
+			if ephOnly, cerr := d.proj.EphemeralOnlyObject(req.Hash); cerr != nil {
+				writeSync(conn, syncMsg{Type: "error", Err: cerr.Error()})
+				return
+			} else if ephOnly {
+				fmt.Fprintf(d.warn, "sync: REFUSED pushed ephemeral object %s from %s (R50: ephemeral is never backfilled)\n", req.Hash, peerDevice)
+				writeSync(conn, syncMsg{Type: "error", Err: "ephemeral object refused (R50: ephemeral content is never backfilled)"})
 				return
 			}
 			d.mu.Lock()
@@ -1012,6 +1062,106 @@ func (d *Daemon) SetSyncBulkThresholdForTest(n int) {
 	d.mu.Lock()
 	d.syncBulkThreshold = n
 	d.mu.Unlock()
+}
+
+// --- R50: ephemeral live-delivery windows -------------------------------------
+
+// ephemeralSendWindow / ephemeralAcceptWindow return the R50 windows (config
+// defaults unless test-overridden). Caller holds d.mu or reads are benign.
+func (d *Daemon) ephemeralSendWindow() time.Duration {
+	if d.ephSendWindow > 0 {
+		return d.ephSendWindow
+	}
+	return config.EphemeralLiveDeliveryWindow
+}
+
+func (d *Daemon) ephemeralAcceptWindow() time.Duration {
+	if d.ephAcceptWindow > 0 {
+		return d.ephAcceptWindow
+	}
+	return config.EphemeralLiveAcceptWindow
+}
+
+// withinEphemeralWindow reports whether an event's wall time is within w of
+// local now (absolute — tolerant of small skew in either direction). An
+// unparseable wall time is NOT within the window: the gate fails CLOSED —
+// content is withheld, never leaked; the event itself always replicates.
+func (d *Daemon) withinEphemeralWindow(wallTime string, w time.Duration) bool {
+	t, err := time.Parse(time.RFC3339Nano, wallTime)
+	if err != nil {
+		return false
+	}
+	dt := d.now().Sub(t)
+	if dt < 0 {
+		dt = -dt
+	}
+	return dt <= w
+}
+
+// SetEphemeralWindowsForTest overrides the R50 live-delivery windows so the
+// rejoin drill doesn't sleep out the real 60 s window. TEST HOOK.
+func (d *Daemon) SetEphemeralWindowsForTest(send, accept time.Duration) {
+	d.mu.Lock()
+	d.ephSendWindow, d.ephAcceptWindow = send, accept
+	d.mu.Unlock()
+}
+
+// ProbeGetObjectForTest dials addr over the authenticated sync protocol and
+// requests one object by hash WITHOUT storing it — a probe for the R50 serve
+// gate (does the peer serve these bytes at all?). TEST HOOK.
+func (d *Daemon) ProbeGetObjectForTest(addr, hash string) (served bool, err error) {
+	d.mu.Lock()
+	ident := d.syncIdentity()
+	trust := d.trust
+	d.mu.Unlock()
+	pc, err := peer.Dial(addr, ident, trust)
+	if err != nil {
+		return false, err
+	}
+	defer pc.Close()
+	if err := writeSync(pc, syncMsg{Type: "get_object", Hash: hash}); err != nil {
+		return false, err
+	}
+	resp, err := readSync(pc.R)
+	if err != nil {
+		return false, err
+	}
+	if resp.Type != "object" {
+		return false, fmt.Errorf("expected object, got %q (%s)", resp.Type, resp.Err)
+	}
+	served = !resp.Missing && len(resp.Data) > 0
+	writeSync(pc, syncMsg{Type: "done"})
+	return served, nil
+}
+
+// ProbePutObjectForTest dials addr and pushes raw object bytes — a probe for
+// the R50 accept gate (does the peer store these bytes at all?). A protocol
+// refusal returns (false, nil); transport failures return an error. TEST HOOK.
+func (d *Daemon) ProbePutObjectForTest(addr, hash string, data []byte) (accepted bool, err error) {
+	d.mu.Lock()
+	ident := d.syncIdentity()
+	trust := d.trust
+	d.mu.Unlock()
+	pc, err := peer.Dial(addr, ident, trust)
+	if err != nil {
+		return false, err
+	}
+	defer pc.Close()
+	if err := writeSync(pc, syncMsg{Type: "put_object", Hash: hash, Data: data}); err != nil {
+		return false, err
+	}
+	resp, err := readSync(pc.R)
+	if err != nil {
+		return false, err
+	}
+	if resp.Type == "error" {
+		return false, nil // refused — the gate's expected outcome
+	}
+	if resp.Type != "put_ack" {
+		return false, fmt.Errorf("expected put_ack, got %q", resp.Type)
+	}
+	writeSync(pc, syncMsg{Type: "done"})
+	return true, nil
 }
 
 // --- N8 fork detection ------------------------------------------------------

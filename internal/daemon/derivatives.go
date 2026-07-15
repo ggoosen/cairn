@@ -76,6 +76,13 @@ func (d *Daemon) DeriveOnce(limit int) (int, error) {
 	}
 	done := 0
 	for _, b := range blobs {
+		// R50: an ephemeral attachment blob that is absent locally was never
+		// delivered here (ephemeral is origin+live-recipients only) — its
+		// absence is by design, not an extraction failure. Skip quietly; no
+		// derivative.fail event, and NEVER a remote fetch.
+		if b.Durability == "ephemeral" && !d.store.Exists(b.ObjectHash) {
+			continue
+		}
 		derivID := d.newUUID()
 		now := d.now().UTC().Format(config.WallTimeFormat)
 		data, gerr := d.store.Get(b.ObjectHash)

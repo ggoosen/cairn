@@ -93,6 +93,10 @@ type Daemon struct {
 	syncBulkThreshold int           // N6: overrides config.SyncBulkCatchupThreshold in tests
 	syncKick          chan struct{} // N6: push-on-append nudges the anti-entropy sweep (R29)
 
+	// R50: ephemeral live-delivery windows (0 → config defaults; test-overridable)
+	ephSendWindow   time.Duration // sender: offer ephemeral bodies only this soon after publish
+	ephAcceptWindow time.Duration // receiver: accept ephemeral bodies only this close to the event's wall time
+
 	durab *durabilityRegistry // N7: per-blob peer-holder registry (guarded by d.mu)
 
 	forks map[cairnlog.Origin]*ForkRecord // N8: detected equivocations (guarded by d.mu)

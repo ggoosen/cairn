@@ -694,10 +694,50 @@ and must self-heal. A single-node stand-in does NOT satisfy this ruling.
 
 ---
 
-# P2 opt-in fix rulings (H-reverify follow-up) — P2-FIX-1/2
+# N9 run-3 fix ruling (Codex Brief A run 3, live two-node) — K1
 
-*(R50 is reserved for the K1 ephemeral-backfill work order running in parallel;
-this session's ruling is numbered R51 to avoid collision.)*
+## R50 — The ephemeral invariant is delivery-time-scoped; its surface is fetch/store/index/serve/advertise, not just inline-body (from K1)
+
+Third instance of the ephemeral-leak class. G1 closed inline-body-in-event
+(publish/reply); H1/R46 closed inline-body on revise/merge. The run-3 live drill
+found the third surface: B was offline when A published an ephemeral message, and
+after B rejoined, B could **search and fetch the body** — the publish *event*
+correctly replicates everywhere (envelope/metadata is chain data), but on rejoin B
+fetched the ephemeral OBJECT from A, stored it, indexed it, and served it. R42
+closed the inline vector; it never governed the object-fetch/index/serve path.
+
+**Ruling: ephemeral content is available ONLY to peers connected at publish time
+(who receive it via live gossip). For any node that was NOT a live recipient at
+publish time:**
+
+1. It MUST NOT fetch the ephemeral object during or after catch-up/backfill — the
+   object is not offered, not requested, and not accepted for ephemeral-class
+   events outside the live window.
+2. If it somehow holds the bytes, it MUST NOT index them (no search hit) and MUST
+   NOT serve them on `fetch` (typed `content_unavailable`/`ephemeral_not_delivered`).
+3. The publish EVENT still replicates (chain data, needed for chain contiguity and
+   history) — but it is treated as **ephemeral-not-delivered** on that node: no
+   object, no index, no serve, and `doctor` treats the absent object as
+   informational (R43), never a failure.
+4. **R46 invariant sweep (do it properly this time):** enumerate EVERY path by
+   which ephemeral object bytes can be transferred, stored, indexed, or served —
+   origin gossip, catch-up/anti-entropy reconcile, blob lazy-fetch by hash,
+   cache-then-advertise (an ephemeral object must NOT be advertised or re-served
+   by a cache), reindex, derivative extraction. Gate ALL of them on the
+   delivery-window rule, and list the enumeration in the FIX-K1 commit message.
+
+**Regression shape (mandatory, CROSS-NODE + REJOIN):** A and B connected;
+disconnect B; A publishes `--class ephemeral` M; reconnect B; run catch-up/
+anti-entropy to quiescence; assert on B — search for M's phrase returns NOTHING,
+`fetch M` returns the typed not-delivered result (never the body), the object is
+absent from B's store, doctor exits 0 clean (R43), and the publish EVENT is
+present (chain contiguity intact). Contrast case: a peer connected AT publish time
+DOES receive M via live gossip. Cache-advertise case: a third node that fetched M
+while connected must not later serve M to a node that was offline at publish time.
+
+---
+
+# P2 opt-in fix rulings (H-reverify follow-up) — P2-FIX-1/2
 
 ## R51 — Why-ranked reconciliation is defined against an EXTERNAL recompute (sharpens R47)
 
