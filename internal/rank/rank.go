@@ -63,8 +63,16 @@ func (p Profile) Weights() PublicWeights {
 // score computes the additive score for one candidate's components under a
 // weight set. The P (priority) term is decayed effective_P; in P2 wP=0 so
 // priority does not add linearly (it caps elsewhere).
+//
+// R51: each product carries an explicit float64 conversion, which the Go spec
+// defines as a rounding barrier — the compiler may never fuse a product into
+// the following addition (FMA). The total is therefore exactly what a plain
+// IEEE-754 recompute of the why-ranked trace produces (each printed value ×
+// weight rounded, then summed in this term order), on every platform and in
+// every language an auditor might verify with.
 func (w weightSet) score(c Components) float64 {
-	return w.R*c.R + w.S*c.S + w.F*c.F + w.P*c.Peff + w.I*c.I + w.N*c.N
+	return float64(w.R*c.R) + float64(w.S*c.S) + float64(w.F*c.F) +
+		float64(w.P*c.Peff) + float64(w.I*c.I) + float64(w.N*c.N)
 }
 
 // Candidate is one message entering ranking. LexRank/VecRank are 1-based

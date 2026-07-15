@@ -51,8 +51,10 @@ func reconcile(t *testing.T, text string) {
 	}
 	v := func(name string) float64 { return rank.ParseDec(comp[name][0]) }
 	w := func(name string) float64 { return rank.ParseDec(comp[name][1]) }
-	sum := v("R")*w("R") + v("S")*w("S") + v("F")*w("F") +
-		v("P_eff")*w("P_eff") + v("I")*w("I") + v("N")*w("N")
+	// R51: plain IEEE recompute (explicit conversions forbid FMA), matching the
+	// external-verifier semantics the scorer now guarantees.
+	sum := float64(v("R")*w("R")) + float64(v("S")*w("S")) + float64(v("F")*w("F")) +
+		float64(v("P_eff")*w("P_eff")) + float64(v("I")*w("I")) + float64(v("N")*w("N"))
 	if got := rank.Dec(sum); got != total {
 		t.Fatalf("R47 VIOLATION: printed components recompute to %s, returned total %s\n%s", got, total, text)
 	}

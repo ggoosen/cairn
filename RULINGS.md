@@ -691,3 +691,52 @@ projects the link cleanly — OR parks it retryable and then **self-heals** once
 create is applied. Then reindex A → doctor A exit 0, gates zero-loss PASS. The
 adversarial ordering case (the link applied before its create) is exercised explicitly
 and must self-heal. A single-node stand-in does NOT satisfy this ruling.
+
+---
+
+# P2 opt-in fix rulings (H-reverify follow-up) — P2-FIX-1/2
+
+*(R50 is reserved for the K1 ephemeral-backfill work order running in parallel;
+this session's ruling is numbered R51 to avoid collision.)*
+
+## R51 — Why-ranked reconciliation is defined against an EXTERNAL recompute (sharpens R47)
+
+R47 requires every scored term printed with weight and product, recomputing to the
+returned score exactly. Two ways a trace can satisfy a weaker reading while still
+being the black box §9 forbids:
+
+1. **Self-consistent-but-wrong traces.** A term that is scored but never
+   stored/printed leaves the stored components and the stored total agreeing with
+   each other while both disagree with the score the agent actually received. The
+   H3 regression reconciled printed components against the *printed total* — both
+   from the same stored record — so it could not catch this class.
+2. **Recompute-environment dependence.** Go permits fused multiply-add contraction
+   inside the scorer's additive expression; on arm64 the returned score can differ
+   by 1–2 ulps from a plain IEEE-754 recompute (each product rounded, then summed
+   in term order) of the exact printed decimals — which is precisely what an
+   auditor's python/bc/jq recompute does. Live-reproduced on this machine
+   (digest-P0: printed components recompute to …9077 against a returned …9079).
+
+**Ruling:**
+
+1. Reconciliation means: parse the trace, recompute with PLAIN IEEE-754 double
+   semantics — each printed value × printed weight rounded individually, summed in
+   the scorer's fixed term order (R, S, F, P_eff, I, N) — and the result equals the
+   RETURNED score bit-exactly. The reference verifier is external (any IEEE-754
+   double implementation), never "the same Go expression the scorer used".
+2. The scorer MUST therefore compute the additive total with per-term explicit
+   rounding (no FMA contraction across terms), so the arithmetic it performs is the
+   arithmetic the trace describes. Scores may shift by ≤ a few ulps relative to the
+   fused form; R16's drift wording covers this (result identity and ordering are
+   unaffected except on previously-bit-exact ties, which the deterministic
+   tiebreaks already order).
+3. Every term that contributes to the score MUST appear in the trace — printing is
+   part of scoring, not presentation. Adding a scored term without its trace line
+   is a correctness defect, not a cosmetic one.
+4. **Regression shape (mandatory):** the test reconciles printed components against
+   the score returned OUTSIDE the explanation record (SearchOutput results for
+   search; the rendered `score=` in the digest payload for digest), using the
+   fusion-free recompute of (1), under P0 and P2 profiles for BOTH search and
+   digest, over a corpus where R, S, F, I and N are all non-zero — and asserts the
+   non-zero terms trace non-zero, so an omitted or zeroed term fails even before
+   the sum check does.

@@ -2295,3 +2295,131 @@ BLOCKED-BY-FAILURE last run should now execute; B reindex completes without
 hanging (J3); re-check the P95 gate with ≥30 sends (J2). Rig prerequisites
 (checkout/binary parity, encrypted storage for a real node) are in DOGFOOD §15 /
 README Security posture.
+
+---
+
+# P2 opt-in fix work order (operator, 2026-07-15) — P2-FIX-1 / P2-FIX-2
+
+Scope per the work order: the two P2-opt-in BLOCKER findings; independent of
+the network/K work; `internal/log/` and the reconcile/sync paths out of bounds
+(and untouched). Both items regression-test-first.
+
+## P2-FIX-1 — why-ranked reconciliation (R51, sharpens R47/H3) — DONE (2026-07-15)
+
+**Work-order finding:** under `CAIRN_RANK_PROFILE=p2`, why-ranked printed
+components that did not recompute to the returned score (reported as
+components ≈ 0.9000 vs returned 0.6667, novelty scored but tracing 0.0).
+
+**What actually reproduced on HEAD (`27b3f35`):** the headline shape — a term
+scored but omitted/zeroed in the trace — does NOT reproduce: FIX-H3 prints all
+six terms and the strict probe traces R, S, F, I, N all non-zero under P2. But
+the reconciliation INVARIANT is genuinely violated in a subtler way, and the
+mandated regression shape caught it RED:
+
+- **RED (deterministic):** `TestP2WhyRankedReconcilesDigestProfile/P0`:
+  printed components recompute to `0.8999999922069077` against a returned
+  `0.8999999922069079` (note the 0.9000 neighbourhood of the reported repro).
+- **Root cause:** the Go spec permits fused multiply-add contraction inside
+  the scorer's additive expression (`rank.go` `score()`); on arm64 the
+  returned score therefore differed by 1–2 ulps from a plain IEEE-754
+  recompute (each printed value × weight rounded, then summed in term order)
+  — which is exactly what an external auditor's python/bc recompute does.
+  The prior H3 test never saw it because it reconciled against the printed
+  total (same stored record) using a Go expression that fused identically,
+  and its Search-path corpus happened not to trigger a fused-vs-plain
+  divergence.
+
+**Ruling:** R51 appended to RULINGS.md FIRST (per the FIX-F5 process rule):
+reconciliation is defined against an EXTERNAL plain-IEEE-754 recompute of the
+printed trace in scorer term order; the scorer must perform per-term rounding
+so its arithmetic IS the trace's arithmetic; every scored term must be
+printed. (Numbered R51 — R50 is reserved for the parallel K1 work order.)
+
+**Fix:** `rank.go` `score()` wraps each product in an explicit `float64`
+conversion — a spec-guaranteed rounding barrier that forbids FMA contraction —
+so the returned score is bit-reproducible from the printed components by any
+IEEE-754 double implementation. Scores move by ≤ a few ulps vs the fused
+form (R16 wording covers benign score drift; ordering unaffected —
+`TestGoldenCorpusRetrieval` and the full suite green).
+
+**Regression (`internal/daemon/fix_p2_1_test.go`), the R51 mandatory shape:**
+- `TestP2WhyRankedReconcilesWithReturnedScore` — parses why-ranked, recomputes
+  fusion-free from printed components+weights ALONE, asserts exact equality
+  with the RETURNED score (`SearchOutput.Results[].Score` — a value outside
+  the explanation record, so a scored-but-unprinted term always breaks it);
+  asserts all six term lines present; under P2 asserts R, S, F, I, N all
+  trace NON-ZERO for the salient message (an omitted or zeroed term fails
+  before the sum check does). Both profiles.
+- `TestP2WhyRankedReconcilesDigestProfile` — same reconciliation for digest,
+  returned score parsed from the rendered digest payload. Both profiles.
+  This is the leg that was RED pre-fix.
+- `retrieve_test.go` `TestWhyRankedExactArithmetic` and `fix_h3_test.go`
+  recomputes aligned to the R51 external-verifier semantics (both were fused,
+  i.e. verifier-dependent — the H3 test became timing-flaky in reverse once
+  the scorer stopped fusing, proving the point). Reconciliation tests
+  stressed `-count=5` green.
+
+**R46 sweep (term-combination surface, enumerated):** `rank.go score()` is the
+single live scoring site (both `Rank` and `RankUniformR` call it);
+`rank/calibrate.go WeightVector.score` is the only other place additive terms
+combine (the §9.3 calibration replay of stored components) — both now carry
+the per-term rounding barriers. No other combination site
+(`grep -rn 'w\.R\*|\.R\*'` over non-test code).
+
+**Live drill (this machine, rebuilt binary, throwaway mesh, real IPC):**
+under `CAIRN_RANK_PROFILE=p2` and under P0, `cairn why-ranked` traces parsed
+and recomputed in PYTHON (the external-tool case that previously mismatched by
+1 ulp) → `EXACT MATCH` against the returned score in both profiles, with
+S/I/N non-zero under P2 (S 0.1433…, I 0.6, N 0.3242…).
+
+`make test` + `make vet` green before commit. Committed as `FIX-P2-1`.
+
+## P2-FIX-2 — derivative memory guard (R48 hardening) — DONE (2026-07-15)
+
+**Work-order finding:** pre-flight budgets pixels × 4 bytes but a grayscale
+image passes and OOMs when Go's decoder expands to RGBA; repro a
+60000×60000 grayscale PNG. Demanded fix: budget by the decoder's ACTUAL
+target format (RGBA regardless of source channels) plus absolute
+dimension/pixel ceilings.
+
+**RED attempt (honest result): the defect does not reproduce on HEAD.**
+FIX-H5 (`70f317c`) already implements exactly the demanded shape in
+`derive.preflightImage`: absolute per-side cap (20000 px), absolute
+total-pixel ceiling (40 MP), and a decompression-ratio budget computed as
+`pixels × 4` — the RGBA decode target, independent of source channel count —
+all evaluated from `image.DecodeConfig` (header only, no pixel allocation)
+BEFORE any extractor runs. The 60000×60000 grayscale PNG is rejected by the
+per-side cap in pre-flight; no decoder ever sees it. What was MISSING was any
+regression coverage for the grayscale/paletted class (H5's tests used
+truecolor only) and any bounded-memory assertion — so a future regression to
+source-format budgeting would have landed green. That coverage is this fix.
+
+**Regression (new, all GREEN against HEAD, and RED-capable by construction —
+the memory bounds fail if any decoder allocates a raster):**
+- `internal/derive/fix_p2_2_test.go`:
+  `TestP2GrayscaleBombRejectedBounded` — the 60000×60000 grayscale repro,
+  a grayscale 8000×8000 pixel-flood, a 1-bit paletted bomb, and a 16-bit
+  gray+alpha bomb are each rejected BY PRE-FLIGHT (error must name
+  `preflight`) with total allocations bounded (< 8 MiB asserted via
+  `runtime.MemStats`); `TestP2PreflightBudgetsRGBATarget` pins the budgeting
+  rule itself — identical dimensions produce an IDENTICAL decompression
+  ratio for grayscale and truecolor sources (channel-independent ⇒ RGBA
+  target), and both trip the ratio guard.
+- `internal/daemon/fix_p2_2_test.go`:
+  `TestP2GrayscaleBombDaemonSurvivesBounded` — grayscale bomb + pixel-flood
+  attached through the live daemon path with heavy derivatives ON: each
+  yields a clean `derivative.fail` (never `image_metadata`/`ocr_text`),
+  enrichment allocations bounded (< 32 MiB asserted), and the daemon
+  survives (send + search still work). `TestP2GrayscaleBombGateOffInert` —
+  without `CAIRN_HEAVY_DERIVATIVES=1` the same bomb is inert (gate
+  genuinely off) and still records a clean `derivative.fail`, bounded.
+
+`make test` + `make vet` green before commit. Committed as `FIX-P2-2`.
+`internal/log/` and reconcile/sync untouched by both fixes.
+
+**Note for the operator:** the on-disk `H-REVERIFY-REPORT-claude.md` records
+H3/H5 as FIXED with no BLOCKERs, which is consistent with what reproduced
+here: P2-FIX-1's headline repro was already closed by FIX-H3 (the residual,
+now-fixed defect was verifier-dependent reconciliation — real, RED, but
+ulp-scale), and P2-FIX-2's guards were already correct (the gap was test
+coverage, now closed).

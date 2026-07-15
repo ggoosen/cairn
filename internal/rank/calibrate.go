@@ -26,7 +26,11 @@ type Episode struct {
 type WeightVector struct{ R, S, F, P, I, N float64 }
 
 func (w WeightVector) score(c CalibCandidate) float64 {
-	return w.R*c.R + w.S*c.S + w.F*c.F + w.P*c.P + w.I*c.I + w.N*c.N
+	// R51: same per-term rounding as the live scorer (explicit conversions
+	// forbid FMA contraction), so a calibration replay of the baseline weights
+	// reproduces logged scores bit-exactly.
+	return float64(w.R*c.R) + float64(w.S*c.S) + float64(w.F*c.F) +
+		float64(w.P*c.P) + float64(w.I*c.I) + float64(w.N*c.N)
 }
 
 // rankOfFound returns the 1-based rank of the found candidate under w (0 if the

@@ -196,9 +196,11 @@ func TestWhyRankedExactArithmetic(t *testing.T) {
 		if err := json.Unmarshal([]byte(compJSON), &rec); err != nil {
 			t.Fatal(err)
 		}
-		recomputed := rank.ParseDec(rec.R)*rank.ParseDec(rec.Weights.R) +
-			rank.ParseDec(rec.F)*rank.ParseDec(rec.Weights.F) +
-			rank.ParseDec(rec.Peff)*rank.ParseDec(rec.Weights.P)
+		// plain IEEE-754 recompute — each product explicitly rounded (no FMA),
+		// summed in term order: the R51 external-verifier semantics.
+		recomputed := float64(rank.ParseDec(rec.R)*rank.ParseDec(rec.Weights.R)) +
+			float64(rank.ParseDec(rec.F)*rank.ParseDec(rec.Weights.F)) +
+			float64(rank.ParseDec(rec.Peff)*rank.ParseDec(rec.Weights.P))
 		if rank.Dec(recomputed) != rec.Score {
 			t.Fatalf("stored score %s != recomputed %s", rec.Score, rank.Dec(recomputed))
 		}
