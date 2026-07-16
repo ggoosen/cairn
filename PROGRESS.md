@@ -2630,3 +2630,20 @@ proceeds exactly as before. `internal/log` untouched.
 **Regression test:** `cmd/cairn/fix_p2h2_test.go` — reindex against a live in-process daemon is
 refused with the stop-the-daemon guidance; the same reindex proceeds and reports a rebuild once
 the daemon is stopped.
+
+## P2H3 — MINOR — `cairn status` documented but absent — DONE (2026-07-16)
+
+**Defect (Codex P2 shakedown MAJOR-4):** README (§8.2 degradation-ladder note) and PROGRESS
+referenced `cairn status`, and the ladder claim says the level "shows in cairn status", but the
+CLI subcommand did not exist — the IPC `status` op was reachable only from the test harness.
+
+**Fix:** implemented `cairn status` (`cmd/cairn/status.go`), wired to the `status` op, which was
+enriched to a genuine one-shot operator health view: build version, cairn/device id, log head
+(`next_seq`), degradation level, pending embeddings, **projection health** (parked terminal /
+retryable counts, flagged "run doctor" if any terminal), membership count, sync-peer count, and
+sync-listener state. Human-readable by default; `--json` emits the raw object. The README's
+"level shows in `cairn status`" claim is now backed by the command.
+
+**Regression test:** `cmd/cairn/fix_p2h3_test.go` — human + `--json` views against a live daemon
+carry the expected fields; against a stopped daemon it returns the standard "daemon not running"
+guidance.

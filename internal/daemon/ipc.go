@@ -665,14 +665,38 @@ func (d *Daemon) dispatch(req Request) Response {
 		if d.lg != nil {
 			next = d.lg.NextSeq()
 		}
+		peers := append([]string(nil), d.loaded.Device.SyncPeers...)
 		d.mu.Unlock()
-		return Response{OK: true, Status: map[string]any{
+		st := map[string]any{
 			"cairn_id":    d.loaded.Portable.CairnID,
 			"device_id":   d.loaded.Device.DeviceID,
 			"next_seq":    next,
 			"degradation": d.DegradationLevel().String(), // P2-1 (spec §8.2)
 			"version":     d.version,                     // FIX-H7: RUNNING daemon's build version
-		}}
+		}
+		// P2H3: one-shot operator health view — membership, peers, sync listener,
+		// and projection health (parked events) so `cairn status` answers "is this
+		// daemon healthy?" without a doctor run. Best-effort: a query failure omits
+		// the field rather than failing the whole status.
+		st["members"] = d.memberCount()
+		st["peers"] = len(peers)
+		st["sync_listener"] = d.SyncListenState()
+		if pending, err := d.proj.CountPendingEmbeddings(); err == nil {
+			st["pending_embeddings"] = pending
+		}
+		if parked, err := d.proj.ParkedEvents(); err == nil {
+			terminal, retryable := 0, 0
+			for _, pe := range parked {
+				if pe.Retryable {
+					retryable++
+				} else {
+					terminal++
+				}
+			}
+			st["parked_terminal"] = terminal
+			st["parked_retryable"] = retryable
+		}
+		return Response{OK: true, Status: st}
 
 	case "map":
 		res, err := d.GenerateMap(req.AgentView)
