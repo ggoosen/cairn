@@ -47,10 +47,12 @@ scope — a transport abstraction seam (P3-1); one-time pairing invitations end 
 end (`cairn pair invite`/`join`: offline mint → paste-able token → new-node
 install → live pairing handshake → durable hard-single-use admission →
 immediately syncable) (P3-2); thin-node role with durability exclusion, role
-advertisement, and partial universal search (P3-3); and operator-selectable
-transport + `cairn net` diagnostics (P3-4). The **live iroh 1.x wire, relay
-diagnostics/self-host, and a thin node's live remote-query + power awareness are
-deferred (hardware-gated)** — they sit behind the built interfaces and drop in
+advertisement, partial universal search, remote-query (a thin node consults a
+full peer when partial), and a metered policy (P3-3); and operator-selectable
+transport + `cairn net` diagnostics (P3-4), with a concrete iroh integration
+plan. The **live iroh 1.x wire, relay diagnostics/self-host, the live validation
+of remote-query, and automatic metered/battery sensing are deferred
+(hardware-gated)** — they sit behind the built interfaces and drop in
 with no caller changes. See `docs/cairn-p3-onboarding-transport.md`.
 
 **P1 progress:** the mesh is built and passing its acceptance suites — MCP server + untrusted-content envelope (N1), capability enforcement + trusted launcher (N2), durable semantic subscriptions (N3), sandboxed attachment derivatives + receiver summary checks (N4), Tailscale transport + enrolment ceremony (N5), reconciliation + text replication (N6), blob replication + durability acknowledgement (N7), and live fork detection + network doctor (N8). The remaining gate is **N9: hardening + a crossed two-auditor network audit** before the first tagged release.
