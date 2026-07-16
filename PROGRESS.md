@@ -3160,3 +3160,38 @@ unchanged `Transport` interface when built.
 relay health/self-host diagnostics + patching mechanism (P3-4); a thin node's
 live remote-query dependency + battery/metered awareness (P3-3). All sit behind
 built interfaces/config and drop in without caller changes.
+
+---
+
+# P3 continuation — build-ahead of the live-hardware test pass (2026-07-17)
+
+Operator (2026-07-17): keep building every P3 piece that can be built without
+live hardware, so the rig visit is pure testing. Buildable-ahead: thin-node
+remote-query (the substantive remaining feature). Genuinely blocked: the iroh
+live wire (needs a Go↔iroh binding + a compile/test env — a skeleton + plan is
+the most that's sound) and battery/metered SENSING (platform + real device; the
+POLICY hook is buildable).
+
+## P3-3c — Thin-node remote query: protocol + server verb + client (spec §7) — DONE (2026-07-17) [Tier 2]
+
+**Design (recorded; open-q 9 conservative default — not asked, within one trust
+domain and opt-in):** a member node asks a FULL peer to run a universal search on
+its behalf over the SAME authenticated sync session (R27). Query goes only to a
+trusted mesh member (privacy bounded by existing trust); bounded by budget_chars;
+best-effort (any error → caller keeps its local partial result); returns result
+REFERENCES + budget payload, never bodies (bodies stay a deliberate fetch).
+
+**Build:** `syncMsg` gains `Query`/`Budget`/`Search` (a `*SearchOutput`). A new
+`remote_search` verb in `serveSync`: a FULL node runs `d.Search` and returns the
+`SearchOutput`; a THIN node refuses (no completeness to offer). `Daemon.RemoteSearch(addr,
+query, budget)` is the client — dials a full peer via the resolved transport,
+authenticates, exchanges remote_search/remote_results, returns the peer's output.
+
+**Tests:** end-to-end over loopback under separate device bases (a member paired
+into A's mesh queries A and gets ranked results); a THIN owner refuses with a
+"thin" message. `-race` clean; `make verify` green.
+
+**Next: P3-3d** — wire `RemoteSearch` into a thin node's `Search`/`Digest` so it
+AUTO-consults a configured full peer when its local result is partial, merges +
+marks provenance (remote-sourced), behind an opt-in config toggle. The live
+latency/privacy validation then needs the two-node rig.

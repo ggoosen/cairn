@@ -82,6 +82,12 @@ type syncMsg struct {
 	Err      string            `json:"err,omitempty"`
 	Role     string            `json:"role,omitempty"` // P3-3: sender's node role (full/thin), advertised on the frontier
 
+	// P3-3c remote query: a thin node asks a full node to search on its behalf
+	// (spec §7 — "search = local recent + remote query dependency").
+	Query  string        `json:"query,omitempty"`  // remote_search request
+	Budget int           `json:"budget,omitempty"` // remote_search budget_chars
+	Search *SearchOutput `json:"search,omitempty"` // remote_results response
+
 	// N7 blob replication
 	Hashes  []string `json:"hashes,omitempty"`  // blob_inv: blobs the sender holds
 	Hash    string   `json:"hash,omitempty"`    // get_object / put_object / object
@@ -575,6 +581,30 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 			if err := writeSync(conn, syncMsg{Type: "put_ack", Hash: req.Hash}); err != nil {
 				return
 			}
+		case "remote_search":
+			// P3-3c: answer a peer's universal-search query (spec §7). Only a
+			// FULL node can offer completeness — a thin node refuses (it would
+			// return the same partial view the asker already has).
+			if d.selfIsThin() {
+				writeSync(conn, syncMsg{Type: "remote_results", Err: "peer is a thin node — no universal search to offer"})
+				continue
+			}
+			if req.Query == "" {
+				writeSync(conn, syncMsg{Type: "remote_results", Err: "remote_search requires a query"})
+				continue
+			}
+			budget := req.Budget
+			if budget <= 0 {
+				budget = config.MCPSearchBudgetDefault
+			}
+			out, serr := d.Search(SearchOptions{Query: req.Query, BudgetChars: budget, AgentSurface: "remote", Principal: peerDevice})
+			if serr != nil {
+				writeSync(conn, syncMsg{Type: "remote_results", Err: serr.Error()})
+				continue
+			}
+			if err := writeSync(conn, syncMsg{Type: "remote_results", Search: out}); err != nil {
+				return
+			}
 		case "done":
 			return
 		default:
@@ -582,6 +612,49 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 			return
 		}
 	}
+}
+
+// RemoteSearch dials a full peer, authenticates (R27), and asks it to run a
+// universal search on this node's behalf (P3-3c, spec §7 — the thin node's
+// "remote query dependency"). It returns the peer's SearchOutput; the caller
+// merges it with local results and marks provenance. Best-effort: any transport
+// or peer error is returned so the caller can degrade to the local (partial)
+// result rather than fail the search.
+func (d *Daemon) RemoteSearch(addr, query string, budget int) (*SearchOutput, error) {
+	d.mu.Lock()
+	ident := d.syncIdentity()
+	trust := d.trust
+	tr := d.transport
+	d.mu.Unlock()
+	if trust == nil {
+		return nil, errors.New("no mesh trust")
+	}
+	if tr == nil {
+		return nil, errors.New("sync transport unavailable")
+	}
+	pc, err := peer.DialWithTransport(tr, addr, ident, trust)
+	if err != nil {
+		return nil, err
+	}
+	defer pc.Close()
+	if err := writeSync(pc, syncMsg{Type: "remote_search", Query: query, Budget: budget}); err != nil {
+		return nil, err
+	}
+	resp, err := readSync(pc.R)
+	if err != nil {
+		return nil, fmt.Errorf("peer closed before remote_results: %w", err)
+	}
+	writeSync(pc, syncMsg{Type: "done"})
+	if resp.Type != "remote_results" {
+		return nil, fmt.Errorf("expected remote_results, got %q", resp.Type)
+	}
+	if resp.Err != "" {
+		return nil, fmt.Errorf("remote search refused: %s", resp.Err)
+	}
+	if resp.Search == nil {
+		return nil, errors.New("remote search returned no results")
+	}
+	return resp.Search, nil
 }
 
 // SyncWith dials a peer, authenticates (R27), and runs one full bidirectional
