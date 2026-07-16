@@ -204,15 +204,19 @@ type Server struct {
 	OnPeer func(conn net.Conn, r *bufio.Reader, peerDevice string)
 }
 
-// NewServer validates the address and starts listening.
+// NewServer validates the address and starts listening over DefaultTransport
+// (the P1 tailnet TCP transport).
 func NewServer(addr string, ident Identity, trust Trust, warn io.Writer) (*Server, error) {
+	return NewServerWithTransport(DefaultTransport, addr, ident, trust, warn)
+}
+
+// NewServerWithTransport binds over an explicit transport (P3-1 seam: iroh and
+// tests supply their own). The address is validated by the transport itself.
+func NewServerWithTransport(tr Transport, addr string, ident Identity, trust Trust, warn io.Writer) (*Server, error) {
 	if warn == nil {
 		warn = io.Discard
 	}
-	if err := ValidateListenAddr(addr); err != nil {
-		return nil, err
-	}
-	ln, err := net.Listen("tcp", addr)
+	ln, err := tr.Listen(addr)
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +292,12 @@ func (s *Server) handle(conn net.Conn) {
 // authenticated responder device id (the N5 membership proof). It closes the
 // connection; N6's Dial keeps it open for reconciliation.
 func Ping(addr string, ident Identity, trust Trust) (string, error) {
-	conn, peerDevice, r, err := dial(addr, ident, trust)
+	return PingWithTransport(DefaultTransport, addr, ident, trust)
+}
+
+// PingWithTransport is Ping over an explicit transport (P3-1 seam).
+func PingWithTransport(tr Transport, addr string, ident Identity, trust Trust) (string, error) {
+	conn, peerDevice, r, err := dial(tr, addr, ident, trust)
 	if err != nil {
 		return "", err
 	}
@@ -311,7 +320,12 @@ type Conn struct {
 // connection and must Close it. The deadline set during the handshake is
 // cleared before returning.
 func Dial(addr string, ident Identity, trust Trust) (*Conn, error) {
-	conn, peerDevice, r, err := dial(addr, ident, trust)
+	return DialWithTransport(DefaultTransport, addr, ident, trust)
+}
+
+// DialWithTransport is Dial over an explicit transport (P3-1 seam).
+func DialWithTransport(tr Transport, addr string, ident Identity, trust Trust) (*Conn, error) {
+	conn, peerDevice, r, err := dial(tr, addr, ident, trust)
 	if err != nil {
 		return nil, err
 	}
@@ -321,8 +335,8 @@ func Dial(addr string, ident Identity, trust Trust) (*Conn, error) {
 
 // dial performs the three-message mutual handshake and hands back the still-
 // open connection and its reader. On any failure it closes the connection.
-func dial(addr string, ident Identity, trust Trust) (net.Conn, string, *bufio.Reader, error) {
-	conn, err := net.DialTimeout("tcp", addr, config.SyncHelloTimeout)
+func dial(tr Transport, addr string, ident Identity, trust Trust) (net.Conn, string, *bufio.Reader, error) {
+	conn, err := tr.Dial(addr, config.SyncHelloTimeout)
 	if err != nil {
 		return nil, "", nil, err
 	}

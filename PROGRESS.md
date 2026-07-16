@@ -2728,3 +2728,48 @@ a future extractor addition trips over the reminder (Claude shakedown FIND-2 / F
   (5s) to the tesseract command so a future child that inherited stdout could not keep
   `cmd.Output()` blocked past the ctx kill deadline. Inert for tesseract (no child), load-bearing
   for any future child-spawning extractor.
+
+---
+
+# P3 — onboarding/transport (spec §12; plan: P3-PLAN.md)
+
+Started 2026-07-16. Discipline: defer live-hardware/human-review items, keep
+going until blocked (same as P1/P2). Buildability split is recorded in
+`P3-PLAN.md`: transport abstraction (P3-1) and pairing invitations (P3-2) are
+fully offline-buildable; thin-node role (P3-3) builds its model/accounting with
+the live remote-query + power parts deferred; the real iroh wire (P3-4) is an
+interface now, wire deferred (hardware-gated, the P2-7 ML-runtime pattern).
+
+## P3-1 — Transport abstraction (FOUNDATION) — DONE (2026-07-16) [Tier 1]
+
+**Goal (spec §12 P3, threat model line 336):** create the seam iroh drops into
+without touching the authenticated handshake or N6 reconciliation. The transport
+must move bytes ONLY — membership stays the app-layer cert handshake's job (R27:
+endpoint identity ≠ mesh authorization), so a substituted transport can never
+admit a non-member.
+
+**Build:** new `internal/peer/transport.go` defines the `Transport` interface
+(`Name`, `ValidateAddr`, `Listen`, `Dial`, `LocalAddr`). The P1 Tailscale/TCP
+path became `tcpTransport` (delegating to the existing `ValidateListenAddr` /
+`DetectTailnetIP` so the tailnet-only semantics have exactly ONE definition), and
+`var DefaultTransport Transport = tcpTransport{}`. `peer.go` gained
+`NewServerWithTransport` / `DialWithTransport` / `PingWithTransport`; the bare
+`NewServer` / `Dial` / `Ping` now delegate to `DefaultTransport`, so **no existing
+caller changed** (fetch.go, reconcile.go ×3, device.go, daemon.go, all sync
+tests). The byte-level `net.Listen("tcp", …)` / `net.DialTimeout("tcp", …)` moved
+behind `tr.Listen` / `tr.Dial`; `dial()` takes a `Transport` param. The handshake
+(hello/verifyPeer/transcript) was already transport-agnostic and is unchanged.
+
+**Tests (`internal/peer/transport_test.go`):** a `memTransport` backed by
+`net.Pipe` — no sockets, no addressing, trusts every endpoint — proves the P3-4
+contract:
+- the full mutual cert handshake succeeds identically over it (transport-
+  agnosticism is honest, not asserted);
+- it STILL cannot grant membership — an un-enrolled peer is refused by the
+  handshake and the refusal logs the presented identity (R27 holds over any
+  transport);
+- `DefaultTransport` preserves the P1 tailnet address guard (rejects 0.0.0.0,
+  accepts 100.64.0.0/10) — the guard moved behind the interface but did not change.
+
+`make verify` green (untagged guard + full tagged suite). Pure refactor: no
+behavioural change to P1 sync.
