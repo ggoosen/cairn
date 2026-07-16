@@ -509,6 +509,17 @@ func (p *Projection) applyPayload(tx *sql.Tx, env *event.Envelope) error {
 		if err := json.Unmarshal(env.Payload, &pl); err != nil {
 			return err
 		}
+		// R53 sync-ingest boundary: a topic name is untrusted, peer-authorable
+		// data rendered into agent-facing views. Signature verification is not
+		// payload validation — a validly-signed topic.create carrying a
+		// schema-violating name (arriving from a nonconforming peer, or by any
+		// path the write-boundary sweep missed) is REFUSED here and quarantined
+		// as a TERMINAL park, never INSERTed. Terminal because no future event
+		// heals a schema violation (isRetryablePark returns false for a plain
+		// error like this — it is neither errMissingRef nor a FK constraint).
+		if !event.ValidTopicName(pl.Name) {
+			return fmt.Errorf("topic.create rejected: %q is not a valid topic name (%s)", pl.Name, event.TopicNamePattern)
+		}
 		_, err := tx.Exec(`INSERT INTO topics(topic_id, name, created_event_id) VALUES (?,?,?)`,
 			pl.TopicID, pl.Name, env.EventID)
 		return err

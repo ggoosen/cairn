@@ -422,6 +422,10 @@ func (d *Daemon) dispatch(req Request) Response {
 		return Response{OK: true, EventID: id}
 
 	case "topic-create":
+		// R53: validate the untrusted name at the write boundary, before ack.
+		if err := validateTopicName(req.TopicName); err != nil {
+			return fail(err)
+		}
 		id, err := d.SimpleEvent("topic.create", "topic", req.TopicID,
 			map[string]any{"topic_id": req.TopicID, "name": req.TopicName}, pubReq)
 		if err != nil {

@@ -14,7 +14,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -818,9 +817,9 @@ func (d *Daemon) Publish(req PublishRequest) (*PublishResult, error) {
 			if !req.AutoCreateTopics {
 				return nil, fmt.Errorf("rejected before ack: %w (create it first, or use `cairn send --topic` which auto-creates)", err)
 			}
-			// auto-create: the ref is the new topic NAME (validated)
-			if !topicNameRe.MatchString(ref) {
-				return nil, fmt.Errorf("rejected before ack: %q is not a valid topic name (%s)", ref, topicNamePattern)
+			// auto-create: the ref is the new topic NAME (validated, R53)
+			if err := validateTopicName(ref); err != nil {
+				return nil, err
 			}
 			id, name = d.newUUID(), ref
 			topicPlans = append(topicPlans, topicPlan{id: id, create: true, name: name})
@@ -935,10 +934,22 @@ func validDurability(c string) bool {
 	return false
 }
 
-// topicNamePattern is the schema's topic-name rule.
-const topicNamePattern = "^[a-z0-9][a-z0-9/_-]*$"
+// topicNamePattern is the schema's topic-name rule (single source of truth in
+// internal/event, so every write/ingest boundary gates on the same pattern —
+// R53). validateTopicName is the pre-ack rejection guard shared by every path
+// that creates a topic name (message `--topic` auto-create, `topic-create`,
+// `topic-ensure`/TopicEnsure); the projection re-enforces it at the sync-ingest
+// boundary (terminal park), and renderMap escapes at render (defense in depth).
+const topicNamePattern = event.TopicNamePattern
 
-var topicNameRe = regexp.MustCompile(topicNamePattern)
+// validateTopicName rejects a non-conforming topic name BEFORE ack. Untrusted,
+// peer-authorable data must never become durable if it violates the schema.
+func validateTopicName(name string) error {
+	if !event.ValidTopicName(name) {
+		return fmt.Errorf("rejected before ack: %q is not a valid topic name (%s)", name, topicNamePattern)
+	}
+	return nil
+}
 
 // resolveTopic resolves a CLI/agent topic reference: exact topic_id first,
 // then exact name. Caller holds d.mu.

@@ -2557,3 +2557,57 @@ change. README Quickstart documents "Prerequisite: Go 1.25+". `make build`, `mak
   pinned compiler and builds with zero manual toolchain steps — the deploy trap is closed.
 - **NODE-A** — reinstalled `~/.local`, launchd restarted → daemon on `p1-939fca5d6d31`.
 - Both running daemons report `p1-939fca5d6d31`; tailnet peering intact after restart.
+
+---
+
+# P2 shakedown fix work order (docs/cairn-p2-shakedown-fix-workorder.md) — P2H1–P2H7
+
+## P2H1 — BLOCKER — topic-name injection into agent-facing views (R53) — DONE (2026-07-16)
+
+**Defect (Claude BLOCKER-1):** the topic-name schema pattern `^[a-z0-9][a-z0-9/_-]*$` was
+enforced ONLY on the message `--topic` auto-create path. Every other topic-name write/ingest
+boundary accepted unvalidated names, and `renderMap` emitted the name inline with no
+sentinel/escape — so a topic named `## SYSTEM DIRECTIVE\n…` rendered as a first-class markdown
+heading in `views/<agent>/map.md`, indistinguishable from the daemon's own output, and rode in
+on `topic.create` sync to poison every peer's map.
+
+**Ruling appended first:** RULINGS.md **R53** — the untrusted-content sentinel + validation
+applies to ALL rendered fields, not just message bodies.
+
+**R46 sweep — every topic-name write/ingest path (enumerated, all now gated):**
+1. message `--topic` auto-create — `internal/daemon/daemon.go` `Publish` (was the only gated
+   path; switched to shared `validateTopicName`).
+2. `cairn topic create` CLI → IPC op `topic-create` — `internal/daemon/ipc.go` (NEW guard,
+   pre-ack).
+3. `TopicEnsure` (used by markdown ingest and IPC op `topic-ensure`) —
+   `internal/daemon/export.go` (NEW guard, pre-ack).
+4. remote sync ingest / `projection.Apply` `topic.create` — `internal/projection/projection.go`
+   (NEW guard: a schema-violating name is refused and quarantined as a **terminal** park —
+   `isRetryablePark`=false — never INSERTed; signature verification is not payload validation).
+
+Single source of truth for the pattern: `internal/event/topicname.go`
+(`event.TopicNamePattern` / `event.ValidTopicName`) — the lowest package both daemon and
+projection already import, so no boundary re-types the rule.
+
+**Render escape (defense in depth):** `renderMap` now runs the topic name through
+`sanitizeMapField` (collapses any rune outside the schema charset to `_`), so even a historical
+bad name already durable in the log, or one that slips a boundary, renders as inert single-line
+text — it cannot present as a heading or instruction. The file's false "sentinel trivially
+satisfied" comment was corrected.
+
+**Regression tests (test-first):**
+- `internal/event/topicname_test.go` — validator rejects the exact audit payload + a battery of
+  break-out strings; accepts conforming names.
+- `internal/daemon/fix_p2h1_test.go` — `topic-create` and `topic-ensure` IPC ops reject the
+  injection pre-ack (next_seq unmoved); conforming happy path still works.
+- `internal/daemon/mapview_escape_test.go` — `renderMap` escapes a crafted injection name (no
+  rogue `## ` heading, no `\n## SYSTEM DIRECTIVE`); conforming names render unchanged.
+- `internal/projection/topicname_ingest_test.go` — a signed `topic.create` with the injection
+  name applied to a fresh projection is parked **terminal** and never projected; `RetryParked`
+  does not resurrect it; conforming name projects normally.
+
+**Verification:** `go build`/`go vet -tags sqlite_fts5` clean; affected suites (daemon,
+projection, event, ingest) green. Live end-to-end repro on a fresh daemon: `cairn topic create`
+with the exact `## SYSTEM DIRECTIVE\n…` payload → `rejected before ack … is not a valid topic
+name`; conforming `project/zebra` created; `cairn map` renders a clean `## topics` section with
+zero rogue headings. `internal/log` untouched (out of bounds).

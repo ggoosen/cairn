@@ -3,19 +3,38 @@ package daemon
 // P2-5: local maps + rollups (spec §7.3 map.md, §12). A per-agent navigation
 // view rendered from the projection — a rollup of topics, threads, and pins
 // over the corpus. Local derived state, regenerated on demand (and on the
-// maintenance cadence). Any quoted corpus content is per-line quote-prefixed
-// with the sentinel (§7.3); this view emits only structural metadata, so the
-// sentinel rule is trivially satisfied.
+// maintenance cadence).
+//
+// The only free-form, author-controlled field this view renders is the topic
+// NAME (thread roots are UUIDs, everything else is integer counts). Topic names
+// are untrusted, peer-authorable data (R53), so they are BOTH validated at every
+// write/ingest boundary (see validateTopicName / projection topic.create) AND
+// escaped here at render — sanitizeMapField neutralizes any embedded "##",
+// backtick, or newline so a historical or boundary-slipped bad name renders as
+// inert text in its cell, never as a heading or instruction.
 
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/fsx"
 	"github.com/ggoosen/cairn/internal/projection"
 )
+
+// mapFieldUnsafe matches any rune outside the schema topic-name charset
+// (^[a-z0-9][a-z0-9/_-]*$). A conforming name contains none, so it passes
+// through unchanged; an out-of-charset name — including one durable in the log
+// before the write-boundary validation existed — has every offending rune
+// (newline, '#', backtick, space, uppercase, …) collapsed to '_', rendering it
+// inert and single-line inside its list cell (R53 render leg).
+var mapFieldUnsafe = regexp.MustCompile(`[^a-z0-9/_-]`)
+
+func sanitizeMapField(s string) string {
+	return mapFieldUnsafe.ReplaceAllString(s, "_")
+}
 
 // MapResult reports where the map was written and its rollup headline.
 type MapResult struct {
@@ -68,7 +87,7 @@ func renderMap(nav projection.NavMap, generatedAt string) string {
 		fmt.Fprintf(&b, "_none_\n\n")
 	}
 	for _, t := range nav.Topics {
-		fmt.Fprintf(&b, "- %s — %d message(s)\n", t.Name, t.Count)
+		fmt.Fprintf(&b, "- %s — %d message(s)\n", sanitizeMapField(t.Name), t.Count)
 	}
 	if len(nav.Topics) > 0 {
 		fmt.Fprintf(&b, "\n")

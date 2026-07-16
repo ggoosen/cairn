@@ -395,6 +395,12 @@ func (d *Daemon) TopicEnsure(name string) (topicID string, created bool, err err
 	if err := d.writable(); err != nil {
 		return "", false, err
 	}
+	// R53: gate the untrusted name at the write boundary, before ack — even
+	// though an existing conforming topic short-circuits below, a non-conforming
+	// name must never reach SimpleEvent.
+	if err := validateTopicName(name); err != nil {
+		return "", false, err
+	}
 	if id, err := d.proj.TopicIDByName(name); err != nil {
 		return "", false, err
 	} else if id != "" {
