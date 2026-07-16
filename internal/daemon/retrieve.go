@@ -40,6 +40,12 @@ type SearchOutput struct {
 	Results       []RankedResult `json:"results"`
 	Payload       string         `json:"payload"` // ≤ budget_chars Unicode scalars, metadata included
 	Omitted       int            `json:"omitted,omitempty"`
+	// Partial (P3-3b, spec §7): on a THIN node the local corpus is only a recent
+	// window, so a universal search has no offline completeness guarantee. The
+	// flag is truthful signal to the agent that older material may exist on full
+	// nodes and was not searched here.
+	Partial       bool   `json:"partial,omitempty"`
+	PartialReason string `json:"partial_reason,omitempty"`
 }
 
 // RankedResult is one scored hit.
@@ -249,6 +255,9 @@ func (d *Daemon) finishRetrieval(scored []rank.Scored, rows map[string]projectio
 		Payload:       payload,
 		Omitted:       len(scored) - included,
 	}
+	if r := d.thinSearchPartialReason(); r != "" {
+		out.Partial, out.PartialReason = true, r
+	}
 	var expl []projection.ExplanationRow
 	for i := 0; i < included; i++ {
 		s := scored[i]
@@ -389,6 +398,10 @@ type DigestOutput struct {
 	Included         int    `json:"included"`
 	OmittedMandatory int    `json:"omitted_mandatory_count"`
 	RetrievalMode    string `json:"retrieval_mode"`
+	// Partial (P3-3b, spec §7): true on a thin node — the digest is drawn from a
+	// recent window only, not the whole corpus.
+	Partial       bool   `json:"partial,omitempty"`
+	PartialReason string `json:"partial_reason,omitempty"`
 }
 
 // Digest generates views/<agent>/digest.md: candidates pass the view's hard
@@ -590,6 +603,9 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 		Included:         included,
 		OmittedMandatory: omitted,
 		RetrievalMode:    mode,
+	}
+	if r := d.thinSearchPartialReason(); r != "" {
+		dout.Partial, dout.PartialReason = true, r
 	}
 	so := &SearchOutput{Results: nil, Payload: payload, RetrievalMode: mode, InteractionID: interactionID}
 	for i := 0; i < included; i++ {

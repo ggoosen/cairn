@@ -55,6 +55,17 @@ func (d *Daemon) deviceIsThin(deviceID string) bool {
 	return d.peerRoles[deviceID] == config.RoleThin
 }
 
+// thinSearchPartialReason is the note attached to a thin node's search/digest
+// output (spec §7: no offline universal-search guarantee). Empty when this node
+// is full — a full node's universal search IS complete over local canonical +
+// eager text.
+func (d *Daemon) thinSearchPartialReason() string {
+	if !d.selfIsThin() {
+		return ""
+	}
+	return "thin node: only a recent local window is searched — older material may exist on full nodes (spec §7); fetch it deliberately or query a full node"
+}
+
 // countDurabilityMembers counts the members that back durability: non-revoked
 // FULL nodes. A thin node is excluded from the target (spec §7: "not counted
 // toward durability unless it actually holds the object" — actual holdership is

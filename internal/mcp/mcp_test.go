@@ -355,3 +355,51 @@ func TestN1ServeStdio(t *testing.T) {
 		t.Fatalf("tools/list response: %s", lines[1])
 	}
 }
+
+// startThinMesh is startMesh for a THIN node (P3-3b): its search/digest
+// envelopes must carry the partial marker so the agent knows the local corpus
+// is a recent window only (spec §7).
+func startThinMesh(t *testing.T) *mcp.Server {
+	t.Helper()
+	t.Setenv("CAIRN_DEVICE_STATE_DIR", t.TempDir())
+	t.Setenv("CAIRN_FAKE_VOLUME_STATUS", "encrypted")
+	dir := filepath.Join(t.TempDir(), "cairn")
+	if _, err := identity.Initialize(identity.InitOptions{Dir: dir, Role: config.RoleThin, Out: io.Discard}); err != nil {
+		t.Fatal(err)
+	}
+	d, err := daemon.Start(daemon.Options{Dir: dir, Embedder: cairnembed.BagOfWords{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go d.Serve(ctx)
+	t.Cleanup(func() { cancel(); d.Close() })
+	loaded, err := identity.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caller := func(req daemon.Request) (*daemon.Response, error) { return daemon.Call(loaded.DeviceDir, req) }
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := caller(daemon.Request{Op: "status"}); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("daemon never became reachable")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return mcp.New(caller, "mcp", "mcp", "test")
+}
+
+func TestP33bThinNodeEnvelopePartial(t *testing.T) {
+	s := startThinMesh(t)
+	callTool(t, s, "cairn_send", map[string]any{"body": "hello from a thin node over mcp"}, false)
+	res := callTool(t, s, "cairn_search", map[string]any{"query": "hello", "budget_chars": 2000}, false)
+	if partial, _ := res["partial"].(bool); !partial {
+		t.Fatalf("thin-node search envelope not marked partial: %v", res)
+	}
+	if reason, _ := res["partial_reason"].(string); reason == "" {
+		t.Fatalf("thin-node search envelope missing partial_reason: %v", res)
+	}
+}

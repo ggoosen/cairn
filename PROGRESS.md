@@ -3071,3 +3071,27 @@ full. `-race` clean on sync/durability; `make verify` green.
 **Deferred (P3-3b + hardware):** partial universal-search surfacing on a thin
 node (offline-buildable, next), and the live remote-query dependency + battery/
 metered awareness (hardware-gated).
+
+## P3-3b — Partial universal-search surfacing on thin nodes — DONE (2026-07-16) [Tier 2]
+
+**Build (spec §7, line 175 — "no offline universal-search guarantee"):** a thin
+node's universal search + digest now carry a truthful partial marker so the agent
+knows the local corpus is a recent window only and older material may live on
+full nodes.
+- `SearchOutput.Partial` / `PartialReason` and `DigestOutput.Partial` /
+  `PartialReason`; set from `d.thinSearchPartialReason()` (non-empty only on a
+  thin node) at all output-construction sites (search + digest).
+- Propagated to the agent-facing MCP envelope (`mcp.Envelope.Partial` /
+  `PartialReason`) in both the `cairn_search` and `cairn_digest` handlers.
+
+**Tests:** daemon-level — a thin node's Search AND Digest are partial with a
+reason; a full node's Search is not. MCP-level — the `cairn_search` envelope from
+a thin node carries `partial: true` + `partial_reason` (the agent actually sees
+it). `make verify` green.
+
+**P3-3 (thin-node role) — offline-buildable scope COMPLETE:** role model,
+durability exclusion, role advertisement, and partial-search surfacing. The live
+remote-query dependency (a thin node asking a full node to search for it) and
+battery/metered awareness remain deferred (hardware-gated, recorded in P3-PLAN).
+Next: **P3-4** — iroh transport adapter (interface + `cairn net` diagnostics +
+docs; the live wire hardware-deferred, the P2-7 pattern).

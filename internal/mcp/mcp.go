@@ -85,7 +85,9 @@ type Envelope struct {
 	// kind-specific metadata (all daemon-authored, never message content)
 	InteractionID  string     `json:"interaction_id,omitempty"`
 	RetrievalMode  string     `json:"retrieval_mode,omitempty"`
-	Results        []Envelope `json:"results,omitempty"` // kind=search_results
+	Partial        bool       `json:"partial,omitempty"`        // P3-3b: thin node — recent window only (spec §7)
+	PartialReason  string     `json:"partial_reason,omitempty"` // why the result is partial
+	Results        []Envelope `json:"results,omitempty"`        // kind=search_results
 	Rank           int        `json:"rank,omitempty"`
 	Score          string     `json:"score,omitempty"` // decimal string (no floats)
 	TextClass      string     `json:"text_class,omitempty"`
@@ -218,6 +220,8 @@ func (s *Server) digest(raw json.RawMessage) (any, error) {
 		Content:       &Content{Mime: "text/markdown", Text: d.Payload},
 		InteractionID: d.InteractionID,
 		RetrievalMode: d.RetrievalMode,
+		Partial:       d.Partial,
+		PartialReason: d.PartialReason,
 		Included:      d.Included,
 		Omitted:       d.OmittedMandatory,
 	}, nil
@@ -264,6 +268,8 @@ func (s *Server) search(raw json.RawMessage) (any, error) {
 		Content:       &Content{Mime: "text/plain", Text: out.Payload},
 		InteractionID: out.InteractionID,
 		RetrievalMode: out.RetrievalMode,
+		Partial:       out.Partial,
+		PartialReason: out.PartialReason,
 		Results:       results,
 		Omitted:       out.Omitted,
 	}, nil
