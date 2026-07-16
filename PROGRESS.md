@@ -2870,3 +2870,41 @@ mint refuses a foreign mesh's root key.
 `make verify` green. Next: **P3-2b** — the live pairing handshake over the P3-1
 transport + on-arrival `device.add` append with hard single-use + expiry
 enforcement on the inviting node.
+
+## P3-2b — Append-on-arrival admission (daemon) — DONE (2026-07-16) [Tier 1]
+
+**Build (`internal/daemon/pairing.go`):** `Daemon.AdmitPairedDevice(cert, inviteID)`
+— a live inviting node validates a pre-signed pairing credential (P3-2a) and
+durably appends the `device.add` admitting it, via the daemon's OWN append path
+(`buildEvent` → `d.lg.Append` → `applyProjection`), signed by this device's key
+with root authority carried inside the cert. Same shape as the offline `Approve`
+ceremony, but with NO root key on the live node — so it adds no new chain-verifier
+trust path and no delegation (P4 untouched); on recovery the event verifies
+exactly as an Approve-minted one.
+
+Checks, in order (all pre-append): (1) cert re-verified against OUR mesh root
+(`d.trust.RootPub` — peer-supplied data is never trusted); (2) expiry
+(cert.issued_at + `PairingInviteTTL`, unforgeable); (3) single-use —
+`d.trust.Member`/`Revoked` catches cross-restart replays (the durable device.add
+is in recovered trust) and a new session-scoped `admittedPairings` set
+(d.mu-guarded, added to the Daemon struct) catches replays within one daemon
+lifetime. Cross-node double-admit of the SAME identity is benign (same key, not a
+clone; converges to a redundant device.add).
+
+**Note (deferred to a later P3-2 step):** like every membership change today —
+including a `device.add` replicated in via N6 (`ingestRecords` verifies with a
+fresh `d.trust.Verifier()` snapshot but does NOT write learned keys back to
+`d.trust`) — the admitted device becomes usable on THIS node's live sync listener
+only after a restart rebuilds trust from the log. A live trust refresh (so
+pairing is immediately syncable without restart) is its own step; it also needs
+concurrency-safe trust because `peer.Server` reads `d.trust` from accept
+goroutines.
+
+**Tests (`pairing_test.go`):** durable admission (recovered `MeshTrust` shows the
+device) + HARD single-use (second admit refused); expired invitation refused and
+leaves no member; tampered cert (device-id rewrite breaks the root sig) and a
+cert signed by a NON-root key both refused.
+
+`make verify` green. Next: **P3-2c** — the pairing handshake wire (a transport
+verb + `cairn pair join` client) connecting a new node to `AdmitPairedDevice`,
+then the live-usability trust refresh.

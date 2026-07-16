@@ -99,6 +99,12 @@ type Daemon struct {
 	durab *durabilityRegistry // N7: per-blob peer-holder registry (guarded by d.mu)
 
 	forks map[cairnlog.Origin]*ForkRecord // N8: detected equivocations (guarded by d.mu)
+
+	// admittedPairings records pairing invite_ids (and dev:<device_id>) admitted
+	// THIS session (P3-2b, guarded by d.mu), so a replay within one daemon
+	// lifetime is refused even before d.trust reflects the durable device.add
+	// (which happens on the next restart, like every membership change today).
+	admittedPairings map[string]bool
 }
 
 // syncIdentity returns this node's peer identity for dialing. Caller holds
