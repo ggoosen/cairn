@@ -359,11 +359,11 @@ Threat model documented in-repo. Personal mesh = one trust domain (§2). Keys se
 
 **P1 — trusted personal mesh:** Tailscale; signed membership; reconciliation (§6.2); full canonical/eager text replication; lazy blobs, durability default `normal(2)`; fork detection + `mesh doctor`; MCP adapter + capability enforcement (profiles, launcher, Unix socket); deterministic derivatives (sandboxed); semantic subscriptions (calibrated thresholds, hard filters first, push caps); receiver summary consistency checks.
 
-**P2 — retrieval quality (driven by P0/P1 data):** full additive profiles + salience inputs + calibration loop; saved searches; local maps + rollups; async maintenance worker + degradation ladder tuning; compaction views; heavy derivatives (opt-in).
+**P2 — retrieval quality (driven by P0/P1 data):** full additive profiles + salience inputs + calibration loop; saved searches; local maps + rollups (**structural** topic/thread/pin rollups — deterministic and embedding-free; the embedding-clustered *semantic* map is P4, where it can be trained on real P2 usage/salience data); async maintenance worker + degradation ladder tuning; compaction views; heavy derivatives (opt-in).
 
 **P3 — onboarding/transport:** iroh 1.x; one-time pairing invitations; relay selection/self-host diagnostics + patching story; thin-node role.
 
-**P4 — only if evidence demands:** shared map reducers, automated filing beyond suggestions, multi-human namespaces, payload-level encryption + key epochs, salience propagation, macaroon-style delegation.
+**P4 — only if evidence demands:** shared map reducers, **embedding-clustered self-organising / self-folding knowledge maps** (the semantic map — needs P2 usage/salience data before it can be good; the P2 map is the structural precursor), automated filing beyond suggestions, multi-human namespaces, payload-level encryption + key epochs, salience propagation, macaroon-style delegation.
 
 ## 13. Open Questions (round 3)
 

@@ -2695,3 +2695,20 @@ covered.
 **Harmless while P2 ranking is OFF.** **Regression test:**
 `internal/projection/reference_indegree_test.go` — a root with two replies scores in-degree 2; a
 blob origin re-attached by one onward message scores in-degree 1; leaf/attacher messages score 0.
+
+## P2H6 — Maps are structural rollups, not embedding-backed — DECIDED: Option A (2026-07-16) [Tier 3]
+
+**Finding (Codex P2 shakedown MINOR-1):** the shipped `cairn map` is a structural topic/thread/pin
+rollup (`NavMap` + `renderMap`), not the embedding-clustered semantic map the design brief framed.
+This is a scope decision, not a bug.
+
+**Decision (operator, Option A):** accept structural rollups as the v1 map; update the docs to
+describe what's actually built; defer the embedding-clustered *semantic* map to P4 (where
+self-folding lives, and where it can be trained on real P2 usage/salience data — don't build the
+self-organizing map on zero data). After P2H1, the structural map is safe to enable.
+
+**Docs updated to match reality:** README roadmap (P2 = "local structural navigation maps
+(topic/thread rollups)"; P4 = "embedding-clustered self-folding topic maps"); `docs/spec-v0.3.md`
+P2 + P4 build lists (P2 map is deterministic/embedding-free, semantic map is P4); `P2-PLAN.md`
+P2-5; `internal/daemon/mapview.go` doc comment (this is the structural v1 map; semantic → P4). No
+code change — the implementation already matches the (now-accurate) docs.

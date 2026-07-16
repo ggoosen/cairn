@@ -38,9 +38,9 @@ Agents connect through whichever door they can reach: **plain files** (drop mark
 |---|---|---|
 | **P0** | Single-machine daemon: event log, search, ranked digests, outbox, exports, crash safety | ✅ complete |
 | **P1** | Multi-machine Tailscale mesh: signed membership, event + text + blob replication with durability classes, live fork detection, MCP server, capability enforcement, durable semantic subscriptions, deterministic attachment derivatives | 🔨 nearly complete |
-| **P2** | Retrieval quality: behavioural salience, calibrated ranking, local knowledge maps, entity/typed-edge graph projection | planned |
+| **P2** | Retrieval quality: behavioural salience, calibrated ranking, local **structural** navigation maps (topic/thread rollups), entity/typed-edge graph projection | planned |
 | **P3** | Frictionless onboarding: iroh transport, one-time pairing invites, thin nodes for mobile | planned |
-| **P4** | Self-organising knowledge: automated filing, self-folding topic maps, salience propagation | planned |
+| **P4** | Self-organising knowledge: automated filing, **embedding-clustered self-folding topic maps** (the semantic map — needs P2 usage/salience data to be good), salience propagation | planned |
 
 **P1 progress:** the mesh is built and passing its acceptance suites — MCP server + untrusted-content envelope (N1), capability enforcement + trusted launcher (N2), durable semantic subscriptions (N3), sandboxed attachment derivatives + receiver summary checks (N4), Tailscale transport + enrolment ceremony (N5), reconciliation + text replication (N6), blob replication + durability acknowledgement (N7), and live fork detection + network doctor (N8). The remaining gate is **N9: hardening + a crossed two-auditor network audit** before the first tagged release.
 

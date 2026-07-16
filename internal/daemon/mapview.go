@@ -5,6 +5,11 @@ package daemon
 // over the corpus. Local derived state, regenerated on demand (and on the
 // maintenance cadence).
 //
+// This is the STRUCTURAL v1 map (P2H6, Option A): deterministic topic/thread/pin
+// rollups, embedding-free. The embedding-clustered SEMANTIC map (self-organizing
+// neighborhoods over content vectors) is deferred to P4, where it can be trained
+// on real P2 usage/salience data — don't build the self-folding map on zero data.
+//
 // The only free-form, author-controlled field this view renders is the topic
 // NAME (thread roots are UUIDs, everything else is integer counts). Topic names
 // are untrusted, peer-authorable data (R53), so they are BOTH validated at every
