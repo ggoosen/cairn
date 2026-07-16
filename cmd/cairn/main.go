@@ -108,6 +108,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newDeviceCmd(&dir))
 	root.AddCommand(newPairCmd(&dir))
 	root.AddCommand(newSyncCmd(&dir))
+	root.AddCommand(newNetCmd(&dir))
 	root.AddCommand(newForkCmd(&dir))
 	root.AddCommand(newSavedCmd(&dir))
 	root.AddCommand(newRankStatsCmd(&dir))

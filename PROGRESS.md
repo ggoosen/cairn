@@ -3123,3 +3123,40 @@ verify` green.
 **Next: P3-4b** — `cairn net` connectivity diagnostic + the iroh/relay/self-host/
 patching operator docs. Then P3-4 (and P3) is complete at the offline-buildable
 scope, with the live iroh wire deferred (hardware).
+
+## P3-4b — `cairn net` diagnostic + onboarding/transport docs — DONE (2026-07-16) [Tier 3]
+
+**Build:** `cairn net` (`cmd/cairn/net.go`) — a one-shot connectivity diagnostic
+over `sync-status`: prints transport, role, sync listener state, configured peer
+count, bootstrap-trust note, and an honest relay line (relays are an iroh
+feature; deferred). `--json` emits the raw status. (Leaf command — not a group,
+so no `groupGuard`.)
+
+**Docs:** `docs/cairn-p3-onboarding-transport.md` — operator reference for all of
+P3: the pairing flow (`cairn pair invite` / `join`) + its security properties and
+the private-key-in-token tradeoff; thin nodes (`init --thin`) + their three
+consequences; transport selection (tcp-tailnet default, iroh deferred); and the
+iroh/relay/self-host/patching story to implement when the wire lands.
+
+**Tests:** `cairn net` reports transport (tcp-tailnet), role (thin), listener,
+peers, relays against a live daemon; `--json` carries the fields. `make verify`
+green.
+
+### P3-4 (iroh transport adapter) — offline scope COMPLETE
+Transport is operator-selectable through the P3-1 seam (P3-4a), iroh refuses
+instructively, `cairn net` + docs land (P3-4b). The live iroh binding + relay
+wire remain **deferred (hardware-gated)** — the P2-7 pattern — dropping into the
+unchanged `Transport` interface when built.
+
+### P3 — onboarding/transport — COMPLETE (offline-buildable scope)
+- **P3-1** transport abstraction (the seam).
+- **P3-2** one-time pairing invitations (mint → token → install → wire → durable
+  single-use admission → immediately syncable; `cairn pair invite`/`join`).
+- **P3-3** thin-node role (model + durability exclusion + advertisement + partial
+  search).
+- **P3-4** transport selection + `cairn net` + docs.
+
+**Deferred to hardware/live-network (recorded, not silent):** the iroh 1.x wire +
+relay health/self-host diagnostics + patching mechanism (P3-4); a thin node's
+live remote-query dependency + battery/metered awareness (P3-3). All sit behind
+built interfaces/config and drop in without caller changes.
