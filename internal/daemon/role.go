@@ -11,7 +11,11 @@ package daemon
 // The live remote-query dependency and battery/metered awareness are deferred
 // (hardware-gated).
 
-import "github.com/ggoosen/cairn/internal/config"
+import (
+	"fmt"
+
+	"github.com/ggoosen/cairn/internal/config"
+)
 
 // selfIsThin reports whether THIS node is thin. A read-only restore has no
 // device-local identity (d.loaded.Device == nil) — it is treated as full.
@@ -64,6 +68,51 @@ func (d *Daemon) thinSearchPartialReason() string {
 		return ""
 	}
 	return "thin node: only a recent local window is searched — older material may exist on full nodes (spec §7); fetch it deliberately or query a full node"
+}
+
+// shouldRemoteQuery reports whether this node should consult a full peer for
+// universal search (P3-3d): a THIN node with remote-query opted in and at least
+// one configured sync peer. A full node never remote-queries.
+func (d *Daemon) shouldRemoteQuery() bool {
+	return d.selfIsThin() &&
+		d.loaded != nil && d.loaded.Device != nil &&
+		d.loaded.Device.RemoteQuery &&
+		len(d.loaded.Device.SyncPeers) > 0
+}
+
+// firstSyncPeer is the peer a thin node asks for remote search ("" if none).
+func (d *Daemon) firstSyncPeer() string {
+	if d.loaded == nil || d.loaded.Device == nil || len(d.loaded.Device.SyncPeers) == 0 {
+		return ""
+	}
+	return d.loaded.Device.SyncPeers[0]
+}
+
+// maybeRemoteConsult, on a thin node with remote-query enabled, asks a full peer
+// to run the search and returns its complete, budget-bounded result marked
+// remote-sourced. Best-effort: any failure returns nil so the caller keeps its
+// local (partial) result. It returns the peer's SINGLE budgeted payload — never
+// a merge of two — so the agent's budget invariant (R19) holds.
+func (d *Daemon) maybeRemoteConsult(local *SearchOutput, opts SearchOptions) *SearchOutput {
+	if !d.shouldRemoteQuery() {
+		return nil
+	}
+	addr := d.firstSyncPeer()
+	if addr == "" {
+		return nil
+	}
+	remote, err := d.RemoteSearch(addr, opts.Query, opts.BudgetChars)
+	if err != nil || remote == nil {
+		fmt.Fprintf(d.warn, "remote query to %s failed (%v) — returning local recent results only (partial)\n", addr, err)
+		return nil
+	}
+	// the full peer's view is complete over the mesh; mark provenance and keep the
+	// caller's interaction id so telemetry stays coherent.
+	remote.RemoteSource = addr
+	remote.InteractionID = local.InteractionID
+	remote.Partial = false
+	remote.PartialReason = ""
+	return remote
 }
 
 // countDurabilityMembers counts the members that back durability: non-revoked

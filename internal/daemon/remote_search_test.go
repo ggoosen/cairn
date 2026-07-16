@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/daemon"
 	"github.com/ggoosen/cairn/internal/identity"
 	"github.com/ggoosen/cairn/internal/peer"
@@ -23,6 +24,12 @@ import (
 // daemon, and returns (B's daemon, A's sync addr). A and B use separate
 // device-state bases.
 func setupPairedPair(t *testing.T, ownerRole string) (*daemon.Daemon, string) {
+	return setupPairedPairCfg(t, ownerRole, nil)
+}
+
+// setupPairedPairCfg is setupPairedPair with a hook to mutate B's device config
+// (role, remote_query, sync_peers) BEFORE B's daemon starts.
+func setupPairedPairCfg(t *testing.T, ownerRole string, configB func(dev *config.DeviceConfig, addr string)) (*daemon.Daemon, string) {
 	t.Helper()
 	t.Setenv("CAIRN_SYNC_ALLOW_LOOPBACK", "1")
 	t.Setenv("CAIRN_FAKE_VOLUME_STATUS", "encrypted")
@@ -54,6 +61,16 @@ func setupPairedPair(t *testing.T, ownerRole string) (*daemon.Daemon, string) {
 	if _, err := peer.PairDial(addr, inv.CairnID, payload, priv); err != nil {
 		t.Fatalf("pair: %v", err)
 	}
+	if configB != nil {
+		loadedB, err := identity.Load(dirB)
+		if err != nil {
+			t.Fatal(err)
+		}
+		configB(loadedB.Device, addr)
+		if err := loadedB.Device.SaveDevice(loadedB.DeviceDir); err != nil {
+			t.Fatal(err)
+		}
+	}
 	dB := startDaemon(t, dirB)
 	return dB, addr
 }
@@ -76,5 +93,49 @@ func TestP33cThinNodeRefusesRemoteSearch(t *testing.T) {
 	if _, err := dB.RemoteSearch(addr, "roastery approval", 2000); err == nil ||
 		!strings.Contains(err.Error(), "thin") {
 		t.Fatalf("thin node did not refuse remote search: %v", err)
+	}
+}
+
+// P3-3d: a thin node with remote-query enabled returns a full peer's complete
+// result (marked remote-sourced, not partial); without remote-query it returns
+// its own partial local view.
+func TestP33dThinNodeRemoteConsult(t *testing.T) {
+	// B is thin, remote-query ON, peer = full node A
+	dB, _ := setupPairedPairCfg(t, "", func(dev *config.DeviceConfig, addr string) {
+		dev.Role = config.RoleThin
+		dev.RemoteQuery = true
+		dev.SyncPeers = []string{addr}
+	})
+	out, err := dB.Search(daemon.SearchOptions{Query: "roastery approval", BudgetChars: 2000})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if out.RemoteSource == "" {
+		t.Fatalf("thin node did not consult a full peer (RemoteSource empty): %+v", out)
+	}
+	if out.Partial {
+		t.Fatal("remote-consulted result still marked partial")
+	}
+	if len(out.Results) == 0 {
+		t.Fatal("remote-consulted search returned no results")
+	}
+}
+
+func TestP33dThinNodeWithoutRemoteQueryStaysLocalPartial(t *testing.T) {
+	// B is thin, remote-query OFF — search stays local + partial, no consult
+	dB, _ := setupPairedPairCfg(t, "", func(dev *config.DeviceConfig, addr string) {
+		dev.Role = config.RoleThin
+		dev.RemoteQuery = false
+		dev.SyncPeers = []string{addr}
+	})
+	out, err := dB.Search(daemon.SearchOptions{Query: "roastery approval", BudgetChars: 2000})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if out.RemoteSource != "" {
+		t.Fatalf("thin node remote-consulted with remote_query off: %q", out.RemoteSource)
+	}
+	if !out.Partial {
+		t.Fatal("thin node local search not marked partial")
 	}
 }

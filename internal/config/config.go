@@ -122,6 +122,13 @@ type DeviceConfig struct {
 	// tcp-tailnet.
 	Transport string `toml:"transport,omitempty"`
 
+	// RemoteQuery (P3-3d, spec §7): opt-in for a THIN node — when its local
+	// universal search is partial, consult a configured full peer (the first
+	// sync_peer) and return that node's complete result, marked remote-sourced.
+	// Off by default (a thin node otherwise just returns its partial local view).
+	// Ignored on a full node.
+	RemoteQuery bool `toml:"remote_query,omitempty"`
+
 	// Role (P3-3): the node's role in the mesh — RoleFull (default) or RoleThin.
 	// Device-local (a role is a per-device operational choice, not a mesh fact).
 	// A thin node holds only a recent window + selected objects, is NOT counted

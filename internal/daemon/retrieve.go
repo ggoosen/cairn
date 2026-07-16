@@ -46,6 +46,10 @@ type SearchOutput struct {
 	// nodes and was not searched here.
 	Partial       bool   `json:"partial,omitempty"`
 	PartialReason string `json:"partial_reason,omitempty"`
+	// RemoteSource (P3-3d): set when a thin node satisfied this search by asking a
+	// full peer — the peer's address. The results are that peer's complete view,
+	// not this node's local window.
+	RemoteSource string `json:"remote_source,omitempty"`
 }
 
 // RankedResult is one scored hit.
@@ -185,6 +189,12 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 		return nil, err
 	}
 	d.recordInteraction("search", out.InteractionID, opts.Query, opts.BudgetChars, out, opts.TaskID, opts.AgentSurface, opts.AgentInstanceID, opts.Principal)
+	// P3-3d: on a thin node with remote-query enabled, prefer a full peer's
+	// complete result over our partial local one (best-effort; keeps local on
+	// failure). Last, so no lock is held across the network call.
+	if remote := d.maybeRemoteConsult(out, opts); remote != nil {
+		return remote, nil
+	}
 	return out, nil
 }
 

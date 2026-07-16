@@ -87,6 +87,7 @@ type Envelope struct {
 	RetrievalMode  string     `json:"retrieval_mode,omitempty"`
 	Partial        bool       `json:"partial,omitempty"`        // P3-3b: thin node — recent window only (spec §7)
 	PartialReason  string     `json:"partial_reason,omitempty"` // why the result is partial
+	RemoteSource   string     `json:"remote_source,omitempty"`  // P3-3d: thin node satisfied this via a full peer
 	Results        []Envelope `json:"results,omitempty"`        // kind=search_results
 	Rank           int        `json:"rank,omitempty"`
 	Score          string     `json:"score,omitempty"` // decimal string (no floats)
@@ -270,6 +271,7 @@ func (s *Server) search(raw json.RawMessage) (any, error) {
 		RetrievalMode: out.RetrievalMode,
 		Partial:       out.Partial,
 		PartialReason: out.PartialReason,
+		RemoteSource:  out.RemoteSource,
 		Results:       results,
 		Omitted:       out.Omitted,
 	}, nil

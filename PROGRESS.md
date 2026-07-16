@@ -3195,3 +3195,32 @@ into A's mesh queries A and gets ranked results); a THIN owner refuses with a
 AUTO-consults a configured full peer when its local result is partial, merges +
 marks provenance (remote-sourced), behind an opt-in config toggle. The live
 latency/privacy validation then needs the two-node rig.
+
+## P3-3d — Thin node auto-consults a full peer when partial — DONE (2026-07-17) [Tier 2]
+
+**Build (spec §7):** a thin node's `Search`, after its local (partial) result,
+consults a configured full peer and returns THAT node's complete result when
+remote-query is opted in.
+- `config.DeviceConfig.RemoteQuery` (opt-in, off by default; ignored on a full node).
+- `SearchOutput.RemoteSource` marks a result served by a peer (its address).
+- `Daemon.maybeRemoteConsult` (+ `shouldRemoteQuery`/`firstSyncPeer`): a thin node
+  with remote-query on and ≥1 sync peer calls `RemoteSearch` on the first peer;
+  on success returns the peer's SINGLE budget-bounded result with `RemoteSource`
+  set and `Partial=false` (the budget invariant R19 holds — no two-payload
+  merge); on ANY failure returns the local partial result (graceful degrade).
+  Wired at the end of `Search` (no lock across the network call). Propagated to
+  the MCP `cairn_search` envelope (`remote_source`).
+
+**Contract note (open-q 9, conservative):** the result prefers the full peer's
+complete view over local-recent when online; local-recent-not-yet-synced items
+are not merged in (a documented refinement — a full node syncs quickly). No
+recursion (a full node never remote-queries; a thin peer refuses to serve).
+
+**Tests:** thin + remote-query ON → `RemoteSource` set, not partial, results
+present; thin + remote-query OFF → stays local + partial, no consult. `-race`
+clean; `make verify` green.
+
+**P3-3 (thin-node role) — offline scope now includes remote query.** Remaining
+P3 build-ahead: iroh adapter skeleton + integration plan (P3-4c), battery/metered
+policy hook (P3-3e). The live remote-query latency/privacy validation, the iroh
+wire, and metered sensing need the rig/hardware.
