@@ -94,6 +94,11 @@ func (d *Daemon) SalienceFor(messageID string) (float64, error) {
 type P2Input struct {
 	Salience float64
 	Novelty  float64
+	// Impressions is the raw local exposure count (never leaves the node). It is
+	// carried here only so the retrieval exploration quota (§9.2) can identify
+	// "new items" — those below config.SalienceMinImpressions qualified
+	// impressions — deterministically, without re-deriving it from Novelty.
+	Impressions int
 }
 
 // P2Inputs computes S and N for every message carrying any demand/reference/
@@ -128,8 +133,9 @@ func (d *Daemon) P2Inputs() (map[string]P2Input, error) {
 	out := make(map[string]P2Input, len(ids))
 	for id := range ids {
 		out[id] = P2Input{
-			Salience: rank.Salience(demand.Fetches[id], demand.Impressions[id], refIn[id], sig[id]),
-			Novelty:  rank.NoveltyFromExposure(demand.Impressions[id]),
+			Salience:    rank.Salience(demand.Fetches[id], demand.Impressions[id], refIn[id], sig[id]),
+			Novelty:     rank.NoveltyFromExposure(demand.Impressions[id]),
+			Impressions: demand.Impressions[id],
 		}
 	}
 	return out, nil

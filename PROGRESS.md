@@ -1726,7 +1726,7 @@ node; only bounded S feeds ranking (P2-3 will consume it).
 
 Deferred within P2 (feed forward to P2-3): the 10% exploration quota and
 principal-cluster demal weighting are ranking-time concerns, applied when S
-enters the P2 profile.
+enters the P2 profile. **(Exploration quota implemented in P2H4, 2026-07-16.)**
 
 ### P2-3 — full additive ranking profile (§9.1) — DONE (2026-07-13)
 
@@ -2647,3 +2647,25 @@ sync-listener state. Human-readable by default; `--json` emits the raw object. T
 **Regression test:** `cmd/cairn/fix_p2h3_test.go` — human + `--json` views against a live daemon
 carry the expected fields; against a stopped daemon it returns the standard "daemon not running"
 guidance.
+
+## P2H4 — Salience exploration quota implemented (§9.2) — DONE (2026-07-16) [Tier 2]
+
+**Gap (Codex P2 shakedown MAJOR-2):** spec §9.2 requires a 10% exploration quota for new
+items; the code had the additive novelty term `N` but no quota/reservation, so new content had
+no guaranteed visibility before impressions accumulated — the cold-start smoothing was
+incomplete.
+
+**Fix:** `applyExplorationQuota` (`internal/daemon/retrieve.go`) reserves
+`floor(K × config.ExplorationQuotaFraction)` (=10%) of a search's K result slots for NEW items
+— those below `SalienceMinImpressions` (5) qualified impressions — under the **P2 profile only**
+(P0 keeps the plain top-K cut). Slots fill as: top (K−quota) by score (merit), then up to
+`quota` new items promoted from the cut region in score order, then any unfilled exploration
+slots backfilled with the next-best by merit (never wastes budget). Output preserves global rank
+order; a promoted new item appears where its own score places it. `floor` avoids tiny-K
+starvation (K < 10 keeps the plain cut). `P2Input` gained an `Impressions` field so "new" is
+determined deterministically. `ExplorationQuotaFraction` added to `internal/config/constants.go`.
+
+**Harmless while P2 ranking is OFF** (gated on `profile.IsP2()`); required for the eventual
+calibration to behave correctly. **Regression tests:** `internal/daemon/exploration_quota_test.go`
+— promotes a new item at the cut (displacing the lowest merit item), backfills when no new items
+exist, leaves under-K sets untouched, and does not starve tiny-K searches.

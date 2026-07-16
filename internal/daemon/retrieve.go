@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -163,7 +164,14 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 	}
 
 	scored := rank.Rank(cands, profile, d.now())
-	if len(scored) > opts.K {
+	if profile.IsP2() {
+		// §9.2 exploration quota: reserve a fraction of the K slots for new items
+		// so cold-start content gets exposure (P2H4). P0 profiles have no
+		// exploration term, so they keep the plain top-K cut.
+		scored = applyExplorationQuota(scored, opts.K, func(id string) bool {
+			return p2[id].Impressions < config.SalienceMinImpressions
+		})
+	} else if len(scored) > opts.K {
 		scored = scored[:opts.K]
 	}
 	out, err := d.finishRetrieval(scored, rows, profile, mode, opts.BudgetChars)
@@ -276,6 +284,59 @@ func (d *Daemon) finishRetrieval(scored []rank.Scored, rows map[string]projectio
 func profileWeights(p rank.Profile) (float64, float64, float64) {
 	w := p.Weights()
 	return w.R, w.F, w.P
+}
+
+// applyExplorationQuota implements the §9.2 "10% exploration quota for new
+// items" (P2H4). `scored` is in final rank order (best first). It fills the K
+// result slots as: (1) the top (K−quota) by score = the merit slots; (2) up to
+// `quota` NEW items — impressions < SalienceMinImpressions — promoted from the
+// cut region in score order, so cold-start content that scoring would have
+// buried still surfaces and accrues impressions; (3) any exploration slots left
+// unfilled (not enough new items) backfilled with the next-best by merit, so
+// the quota never wastes budget. The returned slice preserves global rank order
+// (a promoted new item appears where its own score places it, not pinned to the
+// top). quota is floored, so a search too small to reserve a whole slot
+// (K < 1/fraction) keeps the plain top-K cut — no tiny-K starvation.
+func applyExplorationQuota(scored []rank.Scored, k int, isNew func(id string) bool) []rank.Scored {
+	if k <= 0 || len(scored) <= k {
+		return scored // every candidate already fits; nothing to reserve against
+	}
+	quota := int(math.Floor(float64(k)*config.ExplorationQuotaFraction + 1e-9))
+	if quota < 1 {
+		return scored[:k]
+	}
+	merit := k - quota
+
+	chosen := make([]bool, len(scored))
+	count := 0
+	// (1) merit slots — top (K−quota) by score
+	for i := 0; i < len(scored) && count < merit; i++ {
+		chosen[i] = true
+		count++
+	}
+	// (2) exploration slots — new items from the remainder, best score first
+	explored := 0
+	for i := 0; i < len(scored) && explored < quota && count < k; i++ {
+		if !chosen[i] && isNew(scored[i].MessageID) {
+			chosen[i] = true
+			count++
+			explored++
+		}
+	}
+	// (3) backfill any unused exploration slots with the next-best by merit
+	for i := 0; i < len(scored) && count < k; i++ {
+		if !chosen[i] {
+			chosen[i] = true
+			count++
+		}
+	}
+	out := make([]rank.Scored, 0, count)
+	for i := range scored {
+		if chosen[i] {
+			out = append(out, scored[i])
+		}
+	}
+	return out
 }
 
 func topKCosine(heads map[string][]float32, q []float32, k int) []string {

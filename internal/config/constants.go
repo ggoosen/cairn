@@ -164,6 +164,16 @@ const (
 	SaliencePriorMean      = 0.20 // = α/(α+β)
 	SalienceMinImpressions = 5
 
+	// ExplorationQuotaFraction (spec §9.2, "10% exploration quota for new items"):
+	// under the P2 profile, this fraction of a search's K result slots is RESERVED
+	// for new items — those below SalienceMinImpressions qualified impressions —
+	// so cold-start content gets a fair shot at visibility (and accrues the
+	// impressions that let demand be judged) instead of being buried by items that
+	// have already accumulated salience. Slots go to new items only when new items
+	// exist that scoring would otherwise have cut; unused exploration slots
+	// backfill with the next-best by merit, so the quota never wastes budget.
+	ExplorationQuotaFraction = 0.10
+
 	// Reference-graph + operator-signal saturation half-constants: the input
 	// count at which the saturating term 1−2^(−count/k) reaches 0.5.
 	SalienceRefHalf    = 3.0 // reply/citation in-degree
