@@ -618,7 +618,7 @@ func (d *Daemon) dispatch(req Request) Response {
 		peers := append([]string(nil), d.loaded.Device.SyncPeers...)
 		d.mu.Unlock()
 		st := map[string]any{"frontiers": frs, "peers": peers, "bootstrap": d.bootstrapMode,
-			"listener": d.SyncListenState()}
+			"listener": d.SyncListenState(), "transport": d.transportName, "role": d.myRole()}
 		if dur, derr := d.DurabilityStatus(); derr == nil && len(dur) > 0 {
 			st["blobs"] = dur
 		}

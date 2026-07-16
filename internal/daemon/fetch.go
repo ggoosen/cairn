@@ -161,12 +161,12 @@ func (d *Daemon) Run(ctx context.Context, processOutbox func() error) error {
 	// value pins a literal tailnet address. R45: whatever the outcome, a core
 	// subsystem that declines to start says so LOUDLY, with the remedy —
 	// silence is never acceptable.
-	if !d.readOnly {
-		addr, reason := resolveSyncListen(d.loaded.Device.SyncListen, peer.DetectTailnetIP)
+	if !d.readOnly && d.transport != nil {
+		addr, reason := resolveSyncListen(d.loaded.Device.SyncListen, d.transport.LocalAddr)
 		if addr == "" {
 			d.setSyncListenState("disabled: " + reason)
 			fmt.Fprintf(d.warn, "sync listener: %s\n", reason)
-		} else if srv, err := peer.NewServer(addr, peer.Identity{
+		} else if srv, err := peer.NewServerWithTransport(d.transport, addr, peer.Identity{
 			CairnID:  d.loaded.Portable.CairnID,
 			DeviceID: d.loaded.Device.DeviceID,
 			Priv:     d.devPriv,
@@ -198,7 +198,7 @@ func (d *Daemon) Run(ctx context.Context, processOutbox func() error) error {
 	// N6: anti-entropy sweep (R29) — dial every configured peer on a timer
 	// and on every push-on-append kick, running one bidirectional reconcile
 	// per peer. A peer that is offline is logged and retried next tick.
-	if len(d.loaded.Device.SyncPeers) > 0 && !d.readOnly {
+	if len(d.loaded.Device.SyncPeers) > 0 && !d.readOnly && d.transport != nil {
 		go d.antiEntropyLoop(ctx)
 	}
 

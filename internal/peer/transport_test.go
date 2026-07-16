@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"github.com/ggoosen/cairn/internal/config"
 	"net"
 	"strings"
 	"sync"
@@ -166,5 +167,22 @@ func TestP32cPairingDisabledRefused(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(nil)
 	if _, err := PairDialWithTransport(tr, "node-a", "mesh-1", []byte(`{"invite_id":"x"}`), priv); err == nil {
 		t.Fatal("pairing accepted on a node with pairing disabled")
+	}
+}
+
+// P3-4: transport selection resolves the default and refuses iroh instructively.
+func TestP34TransportByName(t *testing.T) {
+	for _, name := range []string{"", config.TransportTCPTailnet} {
+		tr, err := TransportByName(name)
+		if err != nil || tr == nil || tr.Name() != "tcp-tailnet" {
+			t.Fatalf("TransportByName(%q) = (%v, %v)", name, tr, err)
+		}
+	}
+	_, err := TransportByName(config.TransportIroh)
+	if err == nil || !strings.Contains(err.Error(), "iroh") || !strings.Contains(err.Error(), "deferred") {
+		t.Fatalf("iroh not refused instructively: %v", err)
+	}
+	if _, err := TransportByName("bogus"); err == nil {
+		t.Fatal("unknown transport accepted")
 	}
 }

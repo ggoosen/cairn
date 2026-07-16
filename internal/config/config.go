@@ -117,6 +117,11 @@ type DeviceConfig struct {
 	// immediate sweep. Device-local (networking is per-device).
 	SyncPeers []string `toml:"sync_peers,omitempty"`
 
+	// Transport (P3-4): the sync transport — TransportTCPTailnet (default) or
+	// TransportIroh (deferred). Device-local (networking is per-device). Empty =
+	// tcp-tailnet.
+	Transport string `toml:"transport,omitempty"`
+
 	// Role (P3-3): the node's role in the mesh — RoleFull (default) or RoleThin.
 	// Device-local (a role is a per-device operational choice, not a mesh fact).
 	// A thin node holds only a recent window + selected objects, is NOT counted

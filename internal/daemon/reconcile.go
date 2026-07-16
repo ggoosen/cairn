@@ -595,12 +595,16 @@ func (d *Daemon) SyncWith(addr string) (int, error) {
 	}
 	ident := d.syncIdentity()
 	trust := d.trust
+	tr := d.transport
 	d.mu.Unlock()
 	if trust == nil {
 		return 0, errors.New("no mesh trust")
 	}
+	if tr == nil {
+		return 0, errors.New("sync transport unavailable (see the daemon log)")
+	}
 
-	pc, err := peer.Dial(addr, ident, trust)
+	pc, err := peer.DialWithTransport(tr, addr, ident, trust)
 	if err != nil {
 		return 0, err
 	}
@@ -1122,8 +1126,9 @@ func (d *Daemon) ProbeGetObjectForTest(addr, hash string) (served bool, err erro
 	d.mu.Lock()
 	ident := d.syncIdentity()
 	trust := d.trust
+	tr := d.transport
 	d.mu.Unlock()
-	pc, err := peer.Dial(addr, ident, trust)
+	pc, err := peer.DialWithTransport(tr, addr, ident, trust)
 	if err != nil {
 		return false, err
 	}
@@ -1150,8 +1155,9 @@ func (d *Daemon) ProbePutObjectForTest(addr, hash string, data []byte) (accepted
 	d.mu.Lock()
 	ident := d.syncIdentity()
 	trust := d.trust
+	tr := d.transport
 	d.mu.Unlock()
-	pc, err := peer.Dial(addr, ident, trust)
+	pc, err := peer.DialWithTransport(tr, addr, ident, trust)
 	if err != nil {
 		return false, err
 	}

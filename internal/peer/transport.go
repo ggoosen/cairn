@@ -15,8 +15,11 @@ package peer
 // transport (P1) is the default.
 
 import (
+	"fmt"
 	"net"
 	"time"
+
+	"github.com/ggoosen/cairn/internal/config"
 )
 
 // Transport is the byte-moving substrate the authenticated handshake runs over.
@@ -41,6 +44,24 @@ type Transport interface {
 // DetectTailnetIP entry points use it, so no existing caller changes; iroh and
 // tests pass an explicit Transport to the *WithTransport variants.
 var DefaultTransport Transport = tcpTransport{}
+
+// TransportByName resolves a configured transport name (P3-4). The empty name
+// and TransportTCPTailnet select the P1 default. TransportIroh is the P3 target
+// but its live wire is hardware-gated (no mature Go binding; needs real relays),
+// so it refuses INSTRUCTIVELY here rather than pretending — the P2-7 deferral
+// pattern. The P3-1 Transport interface is the seam it drops into with no caller
+// change once the binding lands.
+func TransportByName(name string) (Transport, error) {
+	switch name {
+	case "", config.TransportTCPTailnet:
+		return DefaultTransport, nil
+	case config.TransportIroh:
+		return nil, fmt.Errorf("transport %q is not available in this build: the iroh 1.x wire is deferred (hardware-gated — needs real relays/NAT traversal and a Go binding; see P3-PLAN.md). Use %q (the default) for the tailnet mesh",
+			config.TransportIroh, config.TransportTCPTailnet)
+	default:
+		return nil, fmt.Errorf("unknown transport %q (want %q or %q)", name, config.TransportTCPTailnet, config.TransportIroh)
+	}
+}
 
 // tcpTransport is the tailnet-bound TCP transport. Its addressing rules live in
 // ValidateListenAddr / DetectTailnetIP (peer.go) — the methods delegate there so

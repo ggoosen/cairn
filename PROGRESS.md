@@ -3095,3 +3095,31 @@ remote-query dependency (a thin node asking a full node to search for it) and
 battery/metered awareness remain deferred (hardware-gated, recorded in P3-PLAN).
 Next: **P3-4** — iroh transport adapter (interface + `cairn net` diagnostics +
 docs; the live wire hardware-deferred, the P2-7 pattern).
+
+## P3-4a — Transport selection (P3-1 seam made load-bearing) — DONE (2026-07-16) [Tier 1]
+
+**Build (spec §12 P3):** the sync transport is now operator-selectable through the
+P3-1 `Transport` seam, and iroh is refused instructively (the P2-7 deferral
+pattern) rather than pretended.
+- `config` transport names (`TransportTCPTailnet` default / `TransportIroh`);
+  `DeviceConfig.Transport` field (device-local).
+- `peer.TransportByName(name)` — "" / tcp-tailnet → the P1 TCP transport; iroh →
+  an INSTRUCTIVE "not available in this build (hardware-gated; see P3-PLAN)"
+  error; unknown → error.
+- Daemon resolves `d.transport` once at Start. **This makes the P3-1 seam
+  load-bearing:** the sync listener now uses `NewServerWithTransport(d.transport,
+  …)` and `resolveSyncListen(…, d.transport.LocalAddr)`, and every dial
+  (`SyncWith` + the two probe hooks) uses `DialWithTransport(d.transport, …)`.
+- An unavailable transport (iroh) DISABLES sync loudly (R45) — the listener and
+  anti-entropy loop are gated on `d.transport != nil`, `SyncWith` refuses — but
+  the daemon keeps serving local reads/writes.
+- `sync-status` now reports `transport` + `role`.
+
+**Tests:** `peer.TransportByName` (default resolves; iroh instructive; unknown
+refused). Daemon: selecting iroh disables sync with an iroh-naming message yet
+local publish/search still work and `SyncWith` refuses cleanly (no panic). `make
+verify` green.
+
+**Next: P3-4b** — `cairn net` connectivity diagnostic + the iroh/relay/self-host/
+patching operator docs. Then P3-4 (and P3) is complete at the offline-buildable
+scope, with the live iroh wire deferred (hardware).

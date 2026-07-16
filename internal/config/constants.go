@@ -440,6 +440,14 @@ const (
 	// never advertised as a normal node, and answer universal search partially.
 	RoleFull = "full"
 	RoleThin = "thin"
+
+	// Transports (P3-4, spec §12). TransportTCPTailnet is the P1 default: a TCP
+	// socket bound to the tailnet CGNAT address. TransportIroh is the P3 target
+	// (iroh 1.x endpoint auth + application-layer membership); its live wire is
+	// hardware-gated (no mature Go binding; needs real relays/NAT traversal), so
+	// selecting it currently refuses with an instructive error (the P2-7 pattern).
+	TransportTCPTailnet = "tcp-tailnet"
+	TransportIroh       = "iroh"
 	// SyncDefaultPort — R44: the port the auto-detected tailnet listener binds
 	// (<tailnet-ip>:9700). The listener NEVER binds 0.0.0.0.
 	SyncDefaultPort = 9700

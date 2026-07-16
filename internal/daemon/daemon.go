@@ -111,6 +111,13 @@ type Daemon struct {
 	// device known to be RoleThin is excluded from the durability target
 	// (spec §7). Guarded by d.mu.
 	peerRoles map[string]string
+
+	// transport (P3-4) is the resolved sync transport. nil means the configured
+	// transport is unavailable (e.g. iroh, deferred) → sync is disabled but local
+	// reads/writes continue (R45). transportName is the configured name, for
+	// status. Set once at Start, read-only thereafter.
+	transport     peer.Transport
+	transportName string
 }
 
 // syncIdentity returns this node's peer identity for dialing. Caller holds
@@ -381,6 +388,20 @@ func Start(opts Options) (*Daemon, error) {
 	if err := d.recover(); err != nil {
 		d.Close()
 		return nil, err
+	}
+	// P3-4: resolve the sync transport (P3-1 seam). An unavailable transport
+	// (iroh, deferred) disables sync LOUDLY (R45) without taking the daemon down.
+	d.transportName = config.TransportTCPTailnet
+	if d.loaded.Device != nil {
+		if d.loaded.Device.Transport != "" {
+			d.transportName = d.loaded.Device.Transport
+		}
+		if tr, terr := peer.TransportByName(d.loaded.Device.Transport); terr == nil {
+			d.transport = tr
+		} else if !d.readOnly {
+			fmt.Fprintf(d.warn, "sync transport unavailable: %v — sync DISABLED (local reads/writes unaffected)\n", terr)
+			d.setSyncListenState("disabled: " + terr.Error())
+		}
 	}
 	if !d.readOnly {
 		if err := d.EnsureReserve(); err != nil {
