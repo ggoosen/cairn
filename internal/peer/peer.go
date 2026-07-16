@@ -48,6 +48,10 @@ type hello struct {
 	Nonce    string `json:"nonce"`
 	Sig      string `json:"sig,omitempty"` // over the transcript (responder/final)
 	OK       bool   `json:"ok,omitempty"`
+	// Mode selects the connection protocol: "" (or "sync") runs the N5 mutual
+	// membership handshake; "pair" runs the P3-2c pairing handshake (the dialer
+	// is NOT yet a member — it presents a root-signed invite credential instead).
+	Mode string `json:"mode,omitempty"`
 }
 
 // transcript binds the signature to both nonces, the direction, and the
@@ -202,6 +206,13 @@ type Server struct {
 	// handshake buffered past the last message, so reconciliation MUST read
 	// through it. nil = N5 skeleton: acknowledge + close.
 	OnPeer func(conn net.Conn, r *bufio.Reader, peerDevice string)
+	// OnPair validates an opaque pairing-invite payload (P3-2c) and, if valid,
+	// returns the device public key to challenge for private-key possession plus
+	// an admit closure to run AFTER the challenge passes (the daemon appends the
+	// device.add). The peer layer stays identity-agnostic — the payload is opaque
+	// and all cert/root verification lives in this callback. nil = pairing
+	// disabled (the node refuses pairing dialers).
+	OnPair func(payload []byte) (devicePub ed25519.PublicKey, admit func() (string, error), err error)
 }
 
 // NewServer validates the address and starts listening over DefaultTransport
@@ -248,6 +259,13 @@ func (s *Server) handle(conn net.Conn) {
 	// 1. dialer's hello (unsigned; its proof comes in step 3)
 	their, err := readMsg(r)
 	if err != nil {
+		return
+	}
+	// P3-2c: a pairing dialer is not a member yet — it authenticates by a
+	// root-signed invite credential, not by membership. Branch before the N5
+	// mutual handshake (which would refuse a non-member).
+	if their.Mode == "pair" {
+		s.handlePair(conn, r, their)
 		return
 	}
 	nonceMine, err := newNonce()

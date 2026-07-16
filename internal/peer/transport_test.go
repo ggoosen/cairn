@@ -147,3 +147,24 @@ func TestP31DefaultTransportPreservesTailnetSemantics(t *testing.T) {
 		t.Fatalf("default transport refused a tailnet address: %v", err)
 	}
 }
+
+// P3-2c: a node with pairing disabled (OnPair == nil) refuses pairing dialers
+// cleanly rather than hanging or accepting them.
+func TestP32cPairingDisabledRefused(t *testing.T) {
+	tr := newMemTransport()
+	trust := &fakeTrust{devices: map[string]ed25519.PublicKey{}, revoked: map[string]bool{}}
+	a := newIdent(t, "mesh-1", "device-a", trust, true)
+	warn := &lockedBuf{}
+	srv, err := NewServerWithTransport(tr, "node-a", a, trust, warn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// OnPair deliberately left nil
+	go srv.Serve()
+	t.Cleanup(func() { srv.Close() })
+
+	_, priv, _ := ed25519.GenerateKey(nil)
+	if _, err := PairDialWithTransport(tr, "node-a", "mesh-1", []byte(`{"invite_id":"x"}`), priv); err == nil {
+		t.Fatal("pairing accepted on a node with pairing disabled")
+	}
+}

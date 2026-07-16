@@ -178,6 +178,8 @@ func (d *Daemon) Run(ctx context.Context, processOutbox func() error) error {
 		} else {
 			// N6: reconciliation runs over each authenticated connection.
 			srv.OnPeer = d.serveSync
+			// P3-2c: pairing dialers (not yet members) are admitted via invitation.
+			srv.OnPair = d.servePair
 			fmt.Fprintf(d.warn, "sync: listening on %s (tailnet-only; membership = root-chained certs)\n", srv.Addr())
 			d.mu.Lock()
 			d.syncSrv = srv

@@ -20,6 +20,8 @@ package daemon
 // same key, not a clone, and converges to a redundant device.add.
 
 import (
+	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -27,6 +29,43 @@ import (
 	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/identity"
 )
+
+// servePair is the daemon's peer.Server.OnPair callback (P3-2c). It unmarshals
+// the opaque pairing payload ({cert, invite_id}), re-verifies the cert against
+// OUR mesh root, and returns the device public key to challenge plus an admit
+// closure that appends the device.add once the dialer proves key possession.
+// The payload deliberately carries no private key — key-possession is proven by
+// the peer-layer challenge, so the secret never reaches this node.
+func (d *Daemon) servePair(payload []byte) (ed25519.PublicKey, func() (string, error), error) {
+	var req struct {
+		Cert     identity.DeviceCert `json:"cert"`
+		InviteID string              `json:"invite_id"`
+	}
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, nil, fmt.Errorf("pairing payload: %w", err)
+	}
+	if req.InviteID == "" {
+		return nil, nil, errors.New("pairing payload missing invite_id")
+	}
+	d.mu.Lock()
+	trust := d.trust
+	d.mu.Unlock()
+	if trust == nil {
+		return nil, nil, errors.New("no mesh trust")
+	}
+	// re-verify against our own root — never trust the dialer's word (defense in
+	// depth; AdmitPairedDevice re-checks under the write lock too).
+	if err := req.Cert.Verify(trust.RootPub); err != nil {
+		return nil, nil, fmt.Errorf("pairing cert failed root verification: %w", err)
+	}
+	pub, err := req.Cert.DevicePublicKey()
+	if err != nil {
+		return nil, nil, err
+	}
+	cert, inviteID := req.Cert, req.InviteID
+	admit := func() (string, error) { return d.AdmitPairedDevice(cert, inviteID) }
+	return pub, admit, nil
+}
 
 // AdmitPairedDevice validates a pairing credential and durably appends the
 // device.add admitting it, returning the new device.add event id. It enforces,

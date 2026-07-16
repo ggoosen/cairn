@@ -2908,3 +2908,41 @@ cert signed by a NON-root key both refused.
 `make verify` green. Next: **P3-2c** — the pairing handshake wire (a transport
 verb + `cairn pair join` client) connecting a new node to `AdmitPairedDevice`,
 then the live-usability trust refresh.
+
+## P3-2c — Pairing handshake wire (peer protocol + daemon) — DONE (2026-07-16) [Tier 1]
+
+**Build:** the network wire connecting a new node to `AdmitPairedDevice`.
+- `internal/peer/pair.go` — the pairing handshake, a distinct protocol from the
+  N5 mutual membership handshake (the dialer is NOT a member yet). Selected by
+  `hello.Mode == "pair"` (new field; empty = sync, backward-compatible). Wire:
+  `hello{mode:pair}` → `pairMsg{payload}` → `pairMsg{nonce}` → `pairMsg{sig}` →
+  `pairMsg{ok,event_id}`. The dialer proves possession of the device private key
+  (signs a nonce under `PairingHelloDomain`); the payload carries only
+  `{cert, invite_id}` — **the private key never crosses the wire** to the
+  inviting node. `Server.OnPair` callback keeps the peer layer identity-agnostic
+  (payload opaque; all cert/root verification in the callback). `PairDial` /
+  `PairDialWithTransport` are the dialer side.
+- `handlePair` reads the payload BEFORE any refusal (a synchronous transport
+  would deadlock otherwise, and it drains the message on a buffered one).
+- `internal/daemon/pairing.go` `servePair` — the daemon's `OnPair`: unmarshals
+  `{cert, invite_id}`, re-verifies the cert against OUR mesh root, returns the
+  device pubkey to challenge + an admit closure → `AdmitPairedDevice`. Wired in
+  `fetch.go` (`srv.OnPair = d.servePair`) alongside the existing `OnPeer`.
+
+**Hardening noted (deferred):** the handshake authenticates the DIALER (key
+possession) but not the server to the dialer; a rogue endpoint cannot forge real
+membership (not root/member), so worst case is refuse/false-ack, detectable when
+the new node later fails to sync. Mutual pairing auth is a later step.
+
+**Tests:** end-to-end over the real loopback transport — a listening node mints
+an invitation, a new node pairs, the device.add lands durably on the inviting
+node (recovered `MeshTrust` shows it), and a second pairing with the same invite
+is refused (HARD single-use through the wire); a dialer answering the challenge
+with the WRONG key is refused and admits nothing; a node with pairing disabled
+(`OnPair == nil`) refuses cleanly (peer memTransport test). Tests bind an
+EPHEMERAL loopback port (`SyncListen: 127.0.0.1:0`) so they never contend with a
+real cairn daemon holding the tailnet :9700 on the dev box.
+
+`make verify` green. Next: **P3-2d** — live trust refresh (a paired node syncable
+without a restart; also benefits N6-replicated device.add) with concurrency-safe
+trust, then **P3-2e** the `cairn pair invite` / `cairn pair join` CLI + docs.
