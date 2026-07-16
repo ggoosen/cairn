@@ -106,6 +106,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newSubscriptionCmd(&dir))
 	root.AddCommand(newDerivativeCmd(&dir))
 	root.AddCommand(newDeviceCmd(&dir))
+	root.AddCommand(newPairCmd(&dir))
 	root.AddCommand(newSyncCmd(&dir))
 	root.AddCommand(newForkCmd(&dir))
 	root.AddCommand(newSavedCmd(&dir))

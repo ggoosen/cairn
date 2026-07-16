@@ -21,9 +21,11 @@ package identity
 import (
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,6 +33,38 @@ import (
 	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/fsx"
 )
+
+// invitationTokenPrefix identifies + versions the single-string pairing token so
+// a mis-pasted string fails fast rather than JSON-parsing into garbage.
+const invitationTokenPrefix = "cairn-pair-v1."
+
+// EncodeInvitation renders an invitation as one paste-able token string. The
+// token embeds the device credential — it is a one-time SECRET (treat like a
+// password): base64url(JSON) behind the version prefix.
+func EncodeInvitation(inv *PairingInvitation) (string, error) {
+	blob, err := json.Marshal(inv)
+	if err != nil {
+		return "", err
+	}
+	return invitationTokenPrefix + base64.RawURLEncoding.EncodeToString(blob), nil
+}
+
+// DecodeInvitation parses a token produced by EncodeInvitation.
+func DecodeInvitation(token string) (*PairingInvitation, error) {
+	token = strings.TrimSpace(token)
+	if !strings.HasPrefix(token, invitationTokenPrefix) {
+		return nil, errors.New("not a cairn pairing invitation token (missing cairn-pair-v1 prefix)")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(token, invitationTokenPrefix))
+	if err != nil {
+		return nil, fmt.Errorf("decoding invitation token: %w", err)
+	}
+	var inv PairingInvitation
+	if err := json.Unmarshal(raw, &inv); err != nil {
+		return nil, fmt.Errorf("parsing invitation token: %w", err)
+	}
+	return &inv, nil
+}
 
 // PairingInvitation is the single bearer token the operator hands to a new node.
 type PairingInvitation struct {

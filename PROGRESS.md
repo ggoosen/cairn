@@ -2977,3 +2977,31 @@ complete** end-to-end: mint (offline) → pair over the wire → durable single-
 admission → immediately syncable. Remaining P3-2 work: **P3-2e** the `cairn pair
 invite` / `cairn pair join` CLI + operator docs (thin adapters over the built
 primitives).
+
+## P3-2e — `cairn pair invite` CLI + token encoding — DONE (2026-07-16) [Tier 2]
+
+**Build:** the inviting node's operator-facing half of pairing.
+- `identity.EncodeInvitation` / `DecodeInvitation` — a single paste-able token,
+  `cairn-pair-v1.` + base64url(JSON). The token embeds the device credential, so
+  it is a one-time SECRET (documented as such in help + code).
+- `cmd/cairn/pair.go` `cairn pair invite --name --root-key <restored> [--out]` —
+  thin adapter over `MintPairingInvitation` + `EncodeInvitation`; writes the token
+  to a 0600 file (or stdout) and prints the `cairn pair join <token> <addr>`
+  next-step + the "remove the restored root key" reminder. Registered in main.go
+  between `device` and `sync`.
+
+**Tests (`cmd/cairn/pair_test.go`):** `pair invite` end to end — the written
+token decodes, verifies from genesis, matches the mesh cairn_id, and carries the
+named device credential; garbage / bad-base64 tokens are rejected.
+
+`make verify` green.
+
+**Split recorded:** `cairn pair join` (the NEW-node half) is **P3-2f**, deferred
+to its own turn because it needs a real integration: with append-on-arrival the
+new device is NOT in the chain at install time, so the existing
+`BootstrapTrust`→`VerifyGrantChain` path (which asserts self-membership) doesn't
+fit. `pair join` needs a bootstrap-trust-WITHOUT-self variant (the new node
+legitimately trusts the mesh to authenticate the inviting node, but isn't itself
+admitted until it syncs its own device.add from the inviting node's origin) plus
+the daemon first-sync. Appending at mint would sidestep this but reverts the
+hard-single-use property the operator chose — so the careful path is correct.
