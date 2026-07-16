@@ -33,9 +33,23 @@ type InitOptions struct {
 	DisplayName      string // optional device display name
 	AllowUnencrypted bool   // operator override; persisted device-local
 	SyncListen       string // R44: sync listener (default "auto"); "off" or a tailnet host:port
+	Role             string // P3-3: RoleThin for a thin node; "" / RoleFull otherwise
 	Checker          VolumeChecker
 	Now              func() time.Time
 	Out              io.Writer
+}
+
+// NormalizeRole validates + normalizes a node role: "" → RoleFull; RoleThin
+// stays; anything else is an error (P3-3).
+func NormalizeRole(role string) (string, error) {
+	switch role {
+	case "", config.RoleFull:
+		return config.RoleFull, nil
+	case config.RoleThin:
+		return config.RoleThin, nil
+	default:
+		return "", fmt.Errorf("unknown node role %q (want %q or %q)", role, config.RoleFull, config.RoleThin)
+	}
 }
 
 // InitResult reports what was created.
@@ -152,6 +166,10 @@ func Initialize(opts InitOptions) (*InitResult, error) {
 	if syncListen == "" {
 		syncListen = config.SyncListenAuto // R44: default is auto-detect the tailnet
 	}
+	role, err := NormalizeRole(opts.Role)
+	if err != nil {
+		return nil, err
+	}
 	devCfg := &config.DeviceConfig{
 		ConfigVersion:    config.DeviceConfigVersion,
 		CairnID:          cairnID,
@@ -160,6 +178,7 @@ func Initialize(opts InitOptions) (*InitResult, error) {
 		CreatedAt:        now,
 		AllowUnencrypted: opts.AllowUnencrypted,
 		SyncListen:       syncListen,
+		Role:             role,
 	}
 	if err := devCfg.SaveDevice(deviceDir); err != nil {
 		return nil, err

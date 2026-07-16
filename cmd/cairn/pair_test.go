@@ -73,3 +73,26 @@ func TestP32fPairJoinRejectsBadToken(t *testing.T) {
 		t.Fatalf("pair join accepted a bad token:\n%s", out)
 	}
 }
+
+func TestP33InitThinNode(t *testing.T) {
+	dir := setupEnv(t)
+	if out, err := runCLI(t, "init", "--dir", dir, "--thin"); err != nil {
+		t.Fatalf("init --thin: %v\n%s", err, out)
+	}
+	loaded, err := identity.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.Device.IsThin() {
+		t.Fatalf("init --thin did not persist a thin role: %q", loaded.Device.Role)
+	}
+	// a plain init is full
+	dir2 := setupEnv(t)
+	if out, err := runCLI(t, "init", "--dir", dir2); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	l2, _ := identity.Load(dir2)
+	if l2.Device.IsThin() {
+		t.Fatal("plain init produced a thin node")
+	}
+}

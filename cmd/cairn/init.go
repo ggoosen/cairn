@@ -13,6 +13,7 @@ func newInitCmd(dirFlag *string) *cobra.Command {
 		displayName      string
 		adopt            bool
 		syncListen       string
+		thin             bool
 	)
 	cmd := &cobra.Command{
 		Use:   "init",
@@ -23,11 +24,16 @@ func newInitCmd(dirFlag *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			role := config.RoleFull
+			if thin {
+				role = config.RoleThin
+			}
 			opts := identity.InitOptions{
 				Dir:              dir,
 				DisplayName:      displayName,
 				AllowUnencrypted: allowUnencrypted,
 				SyncListen:       syncListen,
+				Role:             role,
 				Out:              cmd.OutOrStdout(),
 			}
 			if adopt {
@@ -44,5 +50,7 @@ func newInitCmd(dirFlag *string) *cobra.Command {
 	cmd.Flags().BoolVar(&adopt, "adopt", false, "adopt restored portable data lacking device-local identity: archive old history, create a NEW origin identity")
 	cmd.Flags().StringVar(&syncListen, "sync-listen", "auto",
 		`sync listener: "auto" binds the detected tailnet address:9700, "off" disables it, or pin a tailnet host:port (never 0.0.0.0)`)
+	cmd.Flags().BoolVar(&thin, "thin", false,
+		"thin node (mobile/metered): recent window only, not counted toward durability, partial universal search (spec §7)")
 	return cmd
 }

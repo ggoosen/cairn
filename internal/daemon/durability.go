@@ -163,22 +163,15 @@ func durabilityTarget(class string, memberCount int) int {
 	}
 }
 
-// memberCount is the number of non-revoked mesh member devices (all operator
-// nodes). Caller holds d.mu (reads trust). Falls back to 1 without trust.
+// memberCount is the number of non-revoked mesh member devices that back
+// durability: FULL nodes only (P3-3 — a thin node is not counted toward the
+// durability target, spec §7). Caller holds d.mu (reads trust + peerRoles).
+// Falls back to 1 without trust.
 func (d *Daemon) memberCount() int {
 	if d.trust == nil {
 		return 1
 	}
-	n := 0
-	for _, id := range d.trust.Devices() {
-		if !d.trust.Revoked(id) {
-			n++
-		}
-	}
-	if n < 1 {
-		n = 1
-	}
-	return n
+	return countDurabilityMembers(d.trust.Devices(), d.trust.Revoked, d.deviceIsThin)
 }
 
 // blobHolderCount is the current holder count for a blob: self (iff the object

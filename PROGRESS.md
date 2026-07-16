@@ -3040,3 +3040,34 @@ attempt. `-race` clean; `make verify` green.
 **P3-2 — one-time pairing invitations — COMPLETE end-to-end** (mint → token →
 install → pair → durable single-use admission → immediately syncable, both CLI
 verbs). Next: **P3-3** thin-node role, then **P3-4** iroh adapter.
+
+## P3-3a — Thin-node role: model + durability exclusion + advertisement — DONE (2026-07-16) [Tier 2]
+
+**Build (spec §7):** the thin-node role and its two offline-buildable durability
+consequences.
+- `config.DeviceConfig.Role` (`RoleFull` default / `RoleThin`), device-local (a
+  role is a per-device operational choice, not a mesh fact). `IsThin()` helper;
+  `identity.NormalizeRole` validates ("" → full; unknown → error). `cairn init
+  --thin` sets it; `InitOptions.Role`.
+- **Role advertisement (runtime, non-replicated — like blob holdership, §4.5):**
+  `syncMsg.Role` added; both the initiator's and responder's frontier messages
+  carry `d.myRole()`; each side records the other via `recordPeerRole` into a
+  d.mu-guarded `peerRoles` map. `myRole` NEVER lies (a thin node is never
+  advertised as full, §7).
+- **Durability exclusion:** `memberCount` (the important/pinned target = "all
+  member nodes") now excludes known-thin devices via `countDurabilityMembers`
+  (pure, unit-tested) + `deviceIsThin` (self from config, peers from advertised
+  role). A thin node is not counted toward the target (§7); actual holdership is
+  still counted separately by `blobHolderCount`, so a thin node that DOES hold a
+  blob still counts — no double-count, no unreachable target.
+- Nil-safe: a read-only restore (no device-local identity) reads as full (fixed a
+  nil-deref the F6 restore test caught).
+
+**Tests:** `countDurabilityMembers` excludes thin + revoked and floors at 1;
+`myRole` never lies; `deviceIsThin` tracks self + peers and a role never sticks
+thin after re-advertising full; `init --thin` persists the role, plain init is
+full. `-race` clean on sync/durability; `make verify` green.
+
+**Deferred (P3-3b + hardware):** partial universal-search surfacing on a thin
+node (offline-buildable, next), and the live remote-query dependency + battery/
+metered awareness (hardware-gated).

@@ -80,6 +80,7 @@ type syncMsg struct {
 	Bodies   map[string][]byte `json:"bodies,omitempty"` // body_hash → text bytes
 	Bulk     bool              `json:"bulk,omitempty"`   // R30 bulk catch-up marker
 	Err      string            `json:"err,omitempty"`
+	Role     string            `json:"role,omitempty"` // P3-3: sender's node role (full/thin), advertised on the frontier
 
 	// N7 blob replication
 	Hashes  []string `json:"hashes,omitempty"`  // blob_inv: blobs the sender holds
@@ -422,7 +423,11 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 			if d.detectFrontierForkFromPeer(req.Frontier, peerDevice) {
 				d.kickSync()
 			}
-			if err := writeSync(conn, syncMsg{Type: "frontier", Frontier: fr}); err != nil {
+			// P3-3: learn the initiator's node role (durability excludes thin).
+			d.mu.Lock()
+			d.recordPeerRole(peerDevice, req.Role)
+			d.mu.Unlock()
+			if err := writeSync(conn, syncMsg{Type: "frontier", Frontier: fr, Role: d.myRole()}); err != nil {
 				return
 			}
 		case "get_range":
@@ -610,7 +615,7 @@ func (d *Daemon) SyncWith(addr string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := writeSync(pc, syncMsg{Type: "frontier", Frontier: mine}); err != nil {
+	if err := writeSync(pc, syncMsg{Type: "frontier", Frontier: mine, Role: d.myRole()}); err != nil {
 		return 0, err
 	}
 	resp, err := readSync(pc.R)
@@ -623,6 +628,10 @@ func (d *Daemon) SyncWith(addr string) (int, error) {
 	if resp.Type != "frontier" {
 		return 0, fmt.Errorf("expected frontier, got %q", resp.Type)
 	}
+	// P3-3: learn the responder's node role (durability accounting excludes thin).
+	d.mu.Lock()
+	d.recordPeerRole(pc.PeerDevice, resp.Role)
+	d.mu.Unlock()
 	peerFr := map[cairnlog.Origin]originFrontier{}
 	for _, f := range resp.Frontier {
 		peerFr[f.log()] = f

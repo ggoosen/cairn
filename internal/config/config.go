@@ -116,7 +116,18 @@ type DeviceConfig struct {
 	// anti-entropy sweep dials each (R29); a just-appended event kicks an
 	// immediate sweep. Device-local (networking is per-device).
 	SyncPeers []string `toml:"sync_peers,omitempty"`
+
+	// Role (P3-3): the node's role in the mesh — RoleFull (default) or RoleThin.
+	// Device-local (a role is a per-device operational choice, not a mesh fact).
+	// A thin node holds only a recent window + selected objects, is NOT counted
+	// toward durability, is never advertised as a normal node, and its universal
+	// search is partial (spec §7). Empty = full.
+	Role string `toml:"role,omitempty"`
 }
+
+// IsThin reports whether the device is configured as a thin node (spec §7).
+// The empty/unset role is a full node.
+func (c *DeviceConfig) IsThin() bool { return c.Role == RoleThin }
 
 // PortableDir resolves the portable cairn directory: explicit flag value,
 // then $CAIRN_DIR, then ~/cairn.

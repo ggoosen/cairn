@@ -433,6 +433,13 @@ const (
 	// secret. Spec §336: "one-time expiring high-entropy invitation".
 	PairingInviteTTL   = 15 * time.Minute
 	PairingHelloDomain = "cairn-pair-hello-v1" // domain-separates the pairing challenge signature
+
+	// Node roles (P3-3, spec §7). Full nodes hold the canonical + eager text
+	// window and count toward durability; thin nodes (mobile/metered) hold only a
+	// recent window + selected objects, are NOT counted toward durability, are
+	// never advertised as a normal node, and answer universal search partially.
+	RoleFull = "full"
+	RoleThin = "thin"
 	// SyncDefaultPort — R44: the port the auto-detected tailnet listener binds
 	// (<tailnet-ip>:9700). The listener NEVER binds 0.0.0.0.
 	SyncDefaultPort = 9700

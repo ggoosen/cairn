@@ -105,6 +105,12 @@ type Daemon struct {
 	// lifetime is refused even before d.trust reflects the durable device.add
 	// (which happens on the next restart, like every membership change today).
 	admittedPairings map[string]bool
+
+	// peerRoles records each peer's advertised node role (P3-3), learned at the
+	// sync frontier exchange (runtime, non-replicated — like blob holdership). A
+	// device known to be RoleThin is excluded from the durability target
+	// (spec §7). Guarded by d.mu.
+	peerRoles map[string]string
 }
 
 // syncIdentity returns this node's peer identity for dialing. Caller holds
