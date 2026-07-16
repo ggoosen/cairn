@@ -820,3 +820,42 @@ the whole project to an unnecessarily high toolchain floor.
    Quickstart), not a bug to be worked around. Any node installs a modern Go; a
    `GOTOOLCHAIN=auto` (default) toolchain of 1.21+ fetches the pinned build compiler
    automatically.
+
+---
+
+# P2 shakedown ruling — untrusted content in rendered views (P2H1 BLOCKER)
+
+## R53 — The untrusted-content sentinel + validation applies to ALL rendered fields, not just message bodies
+
+The `> [CAIRN] ` sentinel and the schema-pattern validation existed to keep untrusted
+mesh **message bodies** from presenting to an agent as trusted daemon output. The P2
+shakedown (Claude BLOCKER-1, `592df3e`) proved the boundary was drawn one field too
+narrow: a **topic name** — untrusted, peer-authorable, rideable in on `topic.create` sync
+— rendered into `views/<agent>/map.md` inline with no sentinel and no validation, so a
+topic named `## SYSTEM DIRECTIVE\n…` appeared as a first-class markdown heading between the
+daemon's own `## topics` / `## top threads` sections, indistinguishable from Cairn's own
+instructions. This violates the untrusted-content boundary (spec §7.4).
+
+**Ruling.** Any user- or peer-supplied string that is rendered into an **agent-facing
+surface** (map.md, digest, exports, conflicts, any view an agent reads) is untrusted and
+MUST be BOTH:
+
+1. **Validated at every write/ingest boundary** — enumerate EVERY path that creates or
+   ingests the value (CLI, IPC op, helper like `TopicEnsure`, the message-side
+   auto-create path, AND the remote sync-ingest / `projection.Apply` path) and enforce the
+   field's schema pattern at all of them (R46 sweep). A non-conforming value arriving over
+   sync from a nonconforming peer is **refused / quarantined at the projection boundary,
+   never applied**. Signature verification is not validation — a validly-signed event with
+   a schema-violating payload is still rejected.
+2. **Sentinel-delimited or escaped at render** — the renderer emitting the value MUST
+   quote it with the `> [CAIRN] ` sentinel or escape/sanitize it so an embedded `##`,
+   backtick, or newline cannot break out of its cell, **even for a historical bad value
+   already durable in the log**. Render-time defense is independent of write-time defense;
+   both are required (defense in depth), because a value that predates the validation fix,
+   or that arrives by a path the sweep missed, must still render inert.
+
+**Scope.** This generalizes R46 (invariant sweeps) and the §7.4 untrusted-content boundary
+from "message bodies" to "every rendered field". When a new agent-facing renderer is added,
+every untrusted field it emits inherits both obligations. Thread/message IDs are UUIDs and
+integer rollups are ints — those are structurally safe and need no sentinel; the obligation
+attaches to any **free-form author-controlled string**.
