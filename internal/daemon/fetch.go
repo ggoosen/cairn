@@ -170,7 +170,9 @@ func (d *Daemon) Run(ctx context.Context, processOutbox func() error) error {
 			CairnID:  d.loaded.Portable.CairnID,
 			DeviceID: d.loaded.Device.DeviceID,
 			Priv:     d.devPriv,
-		}, d.trust, d.warn); err != nil {
+			// P3-2d: read the CURRENT trust per connection (liveTrust), so a device
+			// admitted live via pairing is accepted without a daemon restart.
+		}, liveTrust{d}, d.warn); err != nil {
 			// A bad bind is loud but not fatal (R45): the daemon still serves
 			// local reads/writes; the operator fixes sync_listen and restarts.
 			d.setSyncListenState(fmt.Sprintf("disabled: cannot bind %s (%v)", addr, err))

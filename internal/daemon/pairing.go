@@ -67,6 +67,34 @@ func (d *Daemon) servePair(payload []byte) (ed25519.PublicKey, func() (string, e
 	return pub, admit, nil
 }
 
+// liveTrust adapts the daemon's CURRENT mesh trust to peer.Trust so the sync
+// listener always reads the latest membership — including a device admitted
+// live via pairing (P3-2d) — instead of a snapshot captured at listener start.
+// Every lookup reads d.trust under d.mu, so a concurrent copy-on-write trust
+// swap (AdmitPairedDevice) is race-free.
+type liveTrust struct{ d *Daemon }
+
+func (t liveTrust) Member(id string) bool {
+	t.d.mu.Lock()
+	defer t.d.mu.Unlock()
+	return t.d.trust != nil && t.d.trust.Member(id)
+}
+
+func (t liveTrust) Revoked(id string) bool {
+	t.d.mu.Lock()
+	defer t.d.mu.Unlock()
+	return t.d.trust != nil && t.d.trust.Revoked(id)
+}
+
+func (t liveTrust) DevicePub(id string) (ed25519.PublicKey, bool) {
+	t.d.mu.Lock()
+	defer t.d.mu.Unlock()
+	if t.d.trust == nil {
+		return nil, false
+	}
+	return t.d.trust.DevicePub(id)
+}
+
 // AdmitPairedDevice validates a pairing credential and durably appends the
 // device.add admitting it, returning the new device.add event id. It enforces,
 // in order: root-signature (re-verified against OUR mesh root — peer-supplied
@@ -127,6 +155,17 @@ func (d *Daemon) AdmitPairedDevice(cert identity.DeviceCert, inviteID string) (s
 		return "", err
 	}
 	d.applyProjection(env, rec)
+
+	// live trust refresh (P3-2d): copy-on-write swap so the sync listener accepts
+	// the new member WITHOUT a restart. We already hold d.mu; the swap is atomic
+	// against liveTrust readers, and old snapshots other goroutines still hold
+	// remain valid (immutable). The durable log is authoritative regardless — if
+	// this fails, a restart rebuilds the identical trust from the log.
+	if nt, terr := d.trust.WithDevice(cert); terr == nil {
+		d.trust = nt
+	} else {
+		fmt.Fprintf(d.warn, "WARNING: paired device %s admitted durably but live trust refresh failed (%v); restart to pick it up\n", cert.DeviceID, terr)
+	}
 
 	if d.admittedPairings == nil {
 		d.admittedPairings = map[string]bool{}

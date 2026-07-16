@@ -111,3 +111,42 @@ func TestP32cPairingRejectsWrongKey(t *testing.T) {
 		t.Fatal("a failed key-possession challenge still admitted the device")
 	}
 }
+
+// P3-2d: a device admitted live via pairing can complete the N5 membership
+// handshake against the inviting node WITHOUT restarting it — the sync listener
+// reads the refreshed trust. Before pairing the same handshake is refused.
+func TestP32dPairedDeviceSyncsWithoutRestart(t *testing.T) {
+	t.Setenv("CAIRN_SYNC_ALLOW_LOOPBACK", "1")
+	dir := initCairnLoopback(t)
+	warn := &syncBuf{}
+	_, cancel, addr := runListeningDaemon(t, dir, warn)
+	defer cancel()
+
+	loaded, err := identity.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cairnID := loaded.Portable.CairnID
+	inv := mintInvite(t, dir, time.Now())
+	priv := invitePriv(t, inv)
+	newIdent := peer.Identity{CairnID: cairnID, DeviceID: inv.Cert.DeviceID, Priv: priv}
+	dialerTrust, _, err := identity.VerifyPairingInvitation(inv, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// before pairing: not a member → membership handshake refused
+	if _, err := peer.Ping(addr, newIdent, dialerTrust); err == nil {
+		t.Fatal("un-paired device completed the membership handshake")
+	}
+
+	// pair over the wire
+	if _, err := peer.PairDial(addr, cairnID, pairPayload(t, inv), priv); err != nil {
+		t.Fatalf("pair: %v", err)
+	}
+
+	// after pairing, WITHOUT restarting the daemon: the handshake now succeeds
+	if _, err := peer.Ping(addr, newIdent, dialerTrust); err != nil {
+		t.Fatalf("paired device cannot sync without a restart (live trust not refreshed): %v", err)
+	}
+}

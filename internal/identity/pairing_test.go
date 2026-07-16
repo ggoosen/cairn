@@ -162,3 +162,40 @@ func TestP32MintRejectsWrongRootKey(t *testing.T) {
 		t.Fatal("minted an invitation with a foreign root key")
 	}
 }
+
+func TestP32WithDeviceCopyOnWrite(t *testing.T) {
+	dir, root := mintTestMesh(t)
+	now := time.Now()
+	inv, err := MintPairingInvitation(MintPairingInvitationOptions{
+		Dir: dir, RootKeyPath: root, DisplayName: "laptop",
+		Now: func() time.Time { return now }, Out: io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust, _, err := VerifyPairingInvitation(inv, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trust.Member(inv.Cert.DeviceID) {
+		t.Fatal("device already a member before WithDevice")
+	}
+	nt, err := trust.WithDevice(inv.Cert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !nt.Member(inv.Cert.DeviceID) {
+		t.Fatal("the copy does not admit the added device")
+	}
+	if trust.Member(inv.Cert.DeviceID) {
+		t.Fatal("WithDevice mutated the receiver (not copy-on-write)")
+	}
+	pub, ok := nt.DevicePub(inv.Cert.DeviceID)
+	if !ok {
+		t.Fatal("copy has no pubkey for the device")
+	}
+	certPub, _ := inv.Cert.DevicePublicKey()
+	if !pub.Equal(certPub) {
+		t.Fatal("copy admitted the wrong key")
+	}
+}

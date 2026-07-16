@@ -2946,3 +2946,34 @@ real cairn daemon holding the tailnet :9700 on the dev box.
 `make verify` green. Next: **P3-2d** — live trust refresh (a paired node syncable
 without a restart; also benefits N6-replicated device.add) with concurrency-safe
 trust, then **P3-2e** the `cairn pair invite` / `cairn pair join` CLI + docs.
+
+## P3-2d — Live trust refresh (paired node syncs without restart) — DONE (2026-07-16) [Tier 1]
+
+**Gap:** after `AdmitPairedDevice` durably appends the device.add, the inviting
+node's sync listener still refused the new device until a restart — `d.trust` was
+the recover-time snapshot captured when the listener started (the same limitation
+every membership change has today, incl. an N6-replicated device.add). Not
+frictionless: pairing then couldn't sync.
+
+**Fix (concurrency-safe, copy-on-write):**
+- `identity.Trust.WithDevice(cert)` — returns a COPY of the trust with one added
+  admitted device; the receiver is untouched, so readers still holding it stay
+  consistent. On restart `MeshTrust` rebuilds the identical set from the log.
+- `daemon.liveTrust` — adapts the daemon's CURRENT `d.trust` to `peer.Trust`,
+  reading it under `d.mu` on every lookup. The sync listener now uses
+  `liveTrust{d}` instead of a startup snapshot, so a trust swap is visible
+  immediately and race-free.
+- `AdmitPairedDevice` swaps `d.trust = d.trust.WithDevice(cert)` under the lock it
+  already holds, after the durable append. The durable log stays authoritative —
+  if the refresh fails it warns and a restart heals.
+
+**Tests:** `identity` copy-on-write (copy admits the device with the right key;
+receiver unmutated). Daemon end-to-end: a device is refused by the N5 membership
+handshake BEFORE pairing, then — after pairing, WITHOUT restarting the daemon —
+completes it (proving live trust). `-race` clean on the pairing + sync suites.
+
+`make verify` green. **P3-2 (one-time pairing invitations) is now functionally
+complete** end-to-end: mint (offline) → pair over the wire → durable single-use
+admission → immediately syncable. Remaining P3-2 work: **P3-2e** the `cairn pair
+invite` / `cairn pair join` CLI + operator docs (thin adapters over the built
+primitives).

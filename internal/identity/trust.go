@@ -104,6 +104,41 @@ func (t *Trust) Verifier() cairnlog.VerifyFunc {
 	return v.Verify
 }
 
+// WithDevice returns a COPY of the trust with one additional admitted device.
+// The cert MUST be root-signed — the caller verifies that (this only extends the
+// membership set). Copy-on-write: the receiver is left unchanged, so any reader
+// still holding it stays consistent; the caller swaps in the returned immutable
+// snapshot under its own lock. Used for live trust refresh after admitting a
+// paired device (P3-2d), so the sync listener accepts the new member without a
+// daemon restart. On restart, MeshTrust rebuilds the identical set from the log.
+func (t *Trust) WithDevice(cert DeviceCert) (*Trust, error) {
+	pub, err := cert.DevicePublicKey()
+	if err != nil {
+		return nil, err
+	}
+	nt := &Trust{
+		CairnID:        t.CairnID,
+		RootPub:        t.RootPub,
+		GenesisEnv:     t.GenesisEnv,
+		GenesisPayload: t.GenesisPayload,
+		keys:           make(map[string]ed25519.PublicKey, len(t.keys)+1),
+		devices:        make(map[string]ed25519.PublicKey, len(t.devices)+1),
+		revoked:        make(map[string]bool, len(t.revoked)),
+	}
+	for k, v := range t.keys {
+		nt.keys[k] = v
+	}
+	for k, v := range t.devices {
+		nt.devices[k] = v
+	}
+	for k, v := range t.revoked {
+		nt.revoked[k] = v
+	}
+	nt.keys[event.KeyID(pub)] = pub
+	nt.devices[cert.DeviceID] = pub
+	return nt, nil
+}
+
 // Member reports whether a device was admitted (genesis or device.add).
 func (t *Trust) Member(deviceID string) bool {
 	_, ok := t.devices[deviceID]
