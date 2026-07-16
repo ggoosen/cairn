@@ -2611,3 +2611,22 @@ projection, event, ingest) green. Live end-to-end repro on a fresh daemon: `cair
 with the exact `## SYSTEM DIRECTIVE\n…` payload → `rejected before ack … is not a valid topic
 name`; conforming `project/zebra` created; `cairn map` renders a clean `## topics` section with
 zero rogue headings. `internal/log` untouched (out of bounds).
+
+## P2H2 — MAJOR — `reindex --lexical` against a live daemon splits the projection — DONE (2026-07-16)
+
+**Defect (Codex P2 shakedown MAJOR-1):** `cairn reindex --lexical` side-builds a fresh
+`index.sqlite` and atomically swaps it into place. A running daemon holds its own open handle
+to the pre-swap file, so after the swap the daemon's in-memory view and the on-disk projection
+diverge until the daemon restarts — any external read of `.cairn/index.sqlite` in that window
+sees stale state. (The log stays immutable and no acked send is lost, so it is not a
+source-deletion BLOCKER — but it caused real operator confusion during the live audits.)
+
+**Fix (work-order option b — least-surprising):** the lexical branch of `cairn reindex` now
+probes for a live daemon (`Op: status`); if one is reachable it REFUSES with guidance — stop the
+service / kill `cairn daemon`, run the reindex, then start it again (the daemon reconciles its
+projection from the log on startup). No silent split. With the daemon stopped the reindex
+proceeds exactly as before. `internal/log` untouched.
+
+**Regression test:** `cmd/cairn/fix_p2h2_test.go` — reindex against a live in-process daemon is
+refused with the stop-the-daemon guidance; the same reindex proceeds and reports a rebuild once
+the daemon is stopped.

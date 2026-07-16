@@ -47,6 +47,21 @@ func newReindexCmd(dirFlag *string) *cobra.Command {
 				fmt.Fprintf(cmd.OutOrStdout(), "semantic reindex embedded %v revisions\n", resp.Status["embedded"])
 			}
 			if lexical {
+				// P2H2 (Codex P2 shakedown MAJOR-1): a lexical reindex side-builds
+				// and ATOMICALLY SWAPS index.sqlite. A running daemon holds its own
+				// open handle to the pre-swap file, so after the swap the daemon's
+				// in-memory view and the on-disk projection diverge until restart —
+				// any external read of index.sqlite in that window sees stale state.
+				// Refuse against a live daemon rather than silently split state; the
+				// daemon reconciles its own projection from the log on startup, so
+				// the correct sequence is stop → reindex → restart.
+				if _, err := call(dirFlag, daemon.Request{Op: "status"}); err == nil {
+					return errors.New("a daemon is running for this cairn — a lexical reindex " +
+						"atomically swaps index.sqlite and would split the running daemon's view " +
+						"from disk until restart. Stop the daemon (stop the launchd/systemd service, " +
+						"or kill `cairn daemon`), run `cairn reindex --lexical`, then start it again " +
+						"(the daemon reconciles its projection from the log on startup).")
+				}
 				fsys := fsx.OS{}
 				store := object.NewStore(fsys, dir)
 				// FIX-J3 (R45): a reindex must be observable and bounded, never a
