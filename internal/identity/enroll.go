@@ -515,11 +515,18 @@ func Join(opts JoinOptions) error {
 	return nil
 }
 
-// BootstrapTrust loads the verified grant chain saved by Join (used by the
-// new node for peer authentication until real segments replicate).
+// BootstrapTrust loads the verified bootstrap chain a new node uses for peer
+// authentication until real segments replicate. A device.join writes a join
+// grant (bootstrap-chain.json, self-membership assured); a `cairn pair join`
+// writes a pairing bootstrap (PairingBootstrapName, NO self-membership because
+// the device.add is appended on arrival). This falls through to the pairing
+// bootstrap when there is no join grant.
 func BootstrapTrust(deviceDir string) (*Trust, error) {
 	blob, err := os.ReadFile(filepath.Join(deviceDir, bootstrapChainName))
 	if err != nil {
+		if os.IsNotExist(err) {
+			return PairingBootstrapTrust(deviceDir)
+		}
 		return nil, err
 	}
 	var grant JoinGrant

@@ -25,6 +25,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -243,4 +245,172 @@ func VerifyPairingInvitation(inv *PairingInvitation, now time.Time) (*Trust, ed2
 			issued.Add(config.PairingInviteTTL).UTC().Format(config.WallTimeFormat), inv.Cert.IssuedAt, config.PairingInviteTTL)
 	}
 	return t, priv, nil
+}
+
+// PairingBootstrapName stores the invitation's identity chain device-locally so
+// a paired node can authenticate the inviting peer BEFORE its own device.add
+// replicates — the append-on-arrival analogue of Join's bootstrap-chain.json.
+// Unlike a join grant it carries NO private key (the key lives in device.key)
+// and does NOT assert this device's membership: the paired device is admitted on
+// arrival, so at install time it is legitimately not yet in the chain.
+const PairingBootstrapName = "pairing-bootstrap.json"
+
+type pairingBootstrap struct {
+	CairnID  string   `json:"cairn_id"`
+	DeviceID string   `json:"device_id"`
+	Chain    []string `json:"chain"` // base64 record_bytes, genesis first
+}
+
+// verifyMeshChain replays base64 chain records through a fresh verifier and
+// returns the resulting genesis-rooted Trust for cairnID. It asserts the chain
+// is genesis-rooted and matches the cairn, but NOT any particular device's
+// membership — the caller adds that where it applies (VerifyGrantChain asserts
+// the joining device; a pairing bootstrap must not, because the paired device is
+// admitted on arrival, not carried in the chain).
+func verifyMeshChain(chain []string, cairnID string) (*Trust, error) {
+	v := NewChainVerifier()
+	for i, b64 := range chain {
+		rec, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			return nil, fmt.Errorf("chain[%d]: %w", i, err)
+		}
+		if _, err := v.Verify(rec); err != nil {
+			return nil, fmt.Errorf("chain[%d] failed verification: %w", i, err)
+		}
+	}
+	t := v.Trust()
+	if t.CairnID != cairnID {
+		return nil, fmt.Errorf("chain cairn_id %s does not match %s", t.CairnID, cairnID)
+	}
+	if t.GenesisEnv == nil {
+		return nil, errors.New("bootstrap chain has no genesis")
+	}
+	return t, nil
+}
+
+// PairingBootstrapTrust loads the pairing bootstrap chain (used by the daemon
+// when a paired node has no local genesis yet — R37, append-on-arrival variant).
+func PairingBootstrapTrust(deviceDir string) (*Trust, error) {
+	blob, err := os.ReadFile(filepath.Join(deviceDir, PairingBootstrapName))
+	if err != nil {
+		return nil, err
+	}
+	var pb pairingBootstrap
+	if err := json.Unmarshal(blob, &pb); err != nil {
+		return nil, err
+	}
+	return verifyMeshChain(pb.Chain, pb.CairnID)
+}
+
+// PairJoinOptions parameterizes installing a paired identity on the new node.
+type PairJoinOptions struct {
+	Invitation       *PairingInvitation
+	Dir              string // portable dir
+	AllowUnencrypted bool
+	Checker          VolumeChecker
+	Now              func() time.Time
+	Out              io.Writer
+}
+
+// PairJoinInstall verifies an invitation and installs the new node's identity
+// from it. The device key travels IN the token (Option-1 tradeoff), so nothing
+// is staged. It writes the portable config, device-local key/cert/config, and
+// the pairing bootstrap chain — but appends NO device.add (that lands on the
+// inviting node when the pairing handshake completes). It is idempotent: a
+// re-run after a failed network handshake finds the matching identity already
+// installed and skips the writes, so `cairn pair join` can be retried. Returns
+// the device private key for the caller to drive the pairing handshake.
+func PairJoinInstall(opts PairJoinOptions) (ed25519.PrivateKey, error) {
+	out := opts.Out
+	if out == nil {
+		out = io.Discard
+	}
+	if opts.Now == nil {
+		opts.Now = time.Now
+	}
+	inv := opts.Invitation
+	if inv == nil {
+		return nil, errors.New("no invitation")
+	}
+	trust, priv, err := VerifyPairingInvitation(inv, opts.Now())
+	if err != nil {
+		return nil, err
+	}
+	// the cert must itself verify against the CHAIN's root (never trust invitation
+	// fields the chain did not prove) — VerifyPairingInvitation already did, but
+	// re-assert against the returned trust for defense in depth.
+	if err := inv.Cert.Verify(trust.RootPub); err != nil {
+		return nil, fmt.Errorf("invitation cert: %w", err)
+	}
+
+	deviceDir, err := config.DeviceStateDir(inv.CairnID)
+	if err != nil {
+		return nil, err
+	}
+	keyPath := filepath.Join(deviceDir, config.DeviceKeyName)
+	// idempotency: an existing key for this cairn must MATCH the invitation, else
+	// this machine already holds a different identity for the mesh.
+	if existing, lerr := LoadKey(keyPath); lerr == nil {
+		if !existing.Public().(ed25519.PublicKey).Equal(priv.Public().(ed25519.PublicKey)) {
+			return nil, fmt.Errorf("this machine already holds a DIFFERENT identity for cairn %s — refusing to overwrite", inv.CairnID)
+		}
+		fmt.Fprintf(out, "identity already installed for cairn %s (device %s) — proceeding to the pairing handshake\n", inv.CairnID, inv.Cert.DeviceID)
+		return priv, nil
+	}
+
+	// portable config (same cairn id; the LOG arrives via first sync)
+	if err := os.MkdirAll(opts.Dir, config.DirPerm); err != nil {
+		return nil, err
+	}
+	portable := &config.PortableConfig{
+		ConfigVersion: config.PortableConfigVersion,
+		CairnID:       inv.CairnID,
+		CreatedAt:     inv.CreatedAt,
+	}
+	if err := portable.SavePortable(opts.Dir); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(deviceDir, config.DirPerm); err != nil {
+		return nil, err
+	}
+	// gate the volume holding device-local state BEFORE writing the key.
+	if err := GateEncryption(deviceDir, opts.Checker, opts.AllowUnencrypted, out); err != nil {
+		return nil, err
+	}
+	if err := SaveKey(keyPath, priv); err != nil {
+		return nil, err
+	}
+	device := &config.DeviceConfig{
+		ConfigVersion:    config.DeviceConfigVersion,
+		CairnID:          inv.CairnID,
+		DeviceID:         inv.Cert.DeviceID,
+		OriginGeneration: config.FirstGeneration,
+		CreatedAt:        inv.CreatedAt,
+		AllowUnencrypted: opts.AllowUnencrypted,
+		SyncListen:       config.SyncListenAuto,
+	}
+	if err := device.SaveDevice(deviceDir); err != nil {
+		return nil, err
+	}
+	certBlob, err := json.MarshalIndent(inv.Cert, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if err := fsx.WriteFileAtomic(fsx.OS{}, filepath.Join(deviceDir, config.DeviceCertName), certBlob, config.KeyFilePerm); err != nil {
+		return nil, err
+	}
+	// the pairing bootstrap chain (no private key; no self-membership assertion)
+	pbBlob, err := json.MarshalIndent(pairingBootstrap{
+		CairnID:  inv.CairnID,
+		DeviceID: inv.Cert.DeviceID,
+		Chain:    inv.Chain,
+	}, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if err := fsx.WriteFileAtomic(fsx.OS{}, filepath.Join(deviceDir, PairingBootstrapName), pbBlob, config.KeyFilePerm); err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(out, "installed identity for cairn %s as device %s (%s) from the invitation\n", inv.CairnID, inv.Cert.DeviceID, inv.Cert.DisplayName)
+	return priv, nil
 }

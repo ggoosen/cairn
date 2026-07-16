@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/fsx"
 	"github.com/ggoosen/cairn/internal/identity"
 	"github.com/ggoosen/cairn/internal/peer"
@@ -148,5 +149,87 @@ func TestP32dPairedDeviceSyncsWithoutRestart(t *testing.T) {
 	// after pairing, WITHOUT restarting the daemon: the handshake now succeeds
 	if _, err := peer.Ping(addr, newIdent, dialerTrust); err != nil {
 		t.Fatalf("paired device cannot sync without a restart (live trust not refreshed): %v", err)
+	}
+}
+
+// P3-2f: the full new-node flow. Node A invites; node B (a SEPARATE device-state
+// base) installs its identity from the token, pairs over the wire, and can then
+// authenticate the mesh via its pairing bootstrap trust — WITHOUT A restarting.
+func TestP32fPairJoinInstallAndAuthenticate(t *testing.T) {
+	t.Setenv("CAIRN_SYNC_ALLOW_LOOPBACK", "1")
+	t.Setenv("CAIRN_FAKE_VOLUME_STATUS", "encrypted")
+
+	// --- node A: inviting node with a listening daemon ---
+	baseA := t.TempDir()
+	t.Setenv("CAIRN_DEVICE_STATE_DIR", baseA)
+	dirA := filepath.Join(t.TempDir(), "cairnA")
+	if _, err := identity.Initialize(identity.InitOptions{Dir: dirA, SyncListen: "127.0.0.1:0", Out: io.Discard}); err != nil {
+		t.Fatal(err)
+	}
+	_, cancel, addr := runListeningDaemon(t, dirA, &syncBuf{})
+	defer cancel()
+	loadedA, err := identity.Load(dirA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv := mintInvite(t, dirA, time.Now())
+
+	// carry the token (exercise encode → decode)
+	token, err := identity.EncodeInvitation(inv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv2, err := identity.DecodeInvitation(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// --- node B: install from the token under a SEPARATE device-state base ---
+	baseB := t.TempDir()
+	t.Setenv("CAIRN_DEVICE_STATE_DIR", baseB)
+	dirB := filepath.Join(t.TempDir(), "cairnB")
+	priv, err := identity.PairJoinInstall(identity.PairJoinOptions{
+		Invitation: inv2, Dir: dirB, Now: time.Now, Out: io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("pair join install: %v", err)
+	}
+
+	// B's bootstrap trust admits the mesh (the inviting node) but NOT B yet
+	deviceDirB, err := config.DeviceStateDir(inv2.CairnID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bt, err := identity.PairingBootstrapTrust(deviceDirB)
+	if err != nil {
+		t.Fatalf("pairing bootstrap trust: %v", err)
+	}
+	if !bt.Member(loadedA.Device.DeviceID) {
+		t.Fatal("bootstrap trust does not admit the inviting node")
+	}
+	if bt.Member(inv2.Cert.DeviceID) {
+		t.Fatal("bootstrap trust admits self before pairing (device.add is append-on-arrival)")
+	}
+
+	// pair over the wire
+	payload, err := json.Marshal(map[string]any{"cert": inv2.Cert, "invite_id": inv2.InviteID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peer.PairDial(addr, inv2.CairnID, payload, priv); err != nil {
+		t.Fatalf("pair dial: %v", err)
+	}
+
+	// B authenticates the mesh (membership handshake against A) via bootstrap trust
+	newIdent := peer.Identity{CairnID: inv2.CairnID, DeviceID: inv2.Cert.DeviceID, Priv: priv}
+	if _, err := peer.Ping(addr, newIdent, bt); err != nil {
+		t.Fatalf("paired node cannot authenticate the mesh via bootstrap trust: %v", err)
+	}
+
+	// re-install is idempotent (safe to retry after a network hiccup)
+	if _, err := identity.PairJoinInstall(identity.PairJoinOptions{
+		Invitation: inv2, Dir: dirB, Now: time.Now, Out: io.Discard,
+	}); err != nil {
+		t.Fatalf("pair join install not idempotent: %v", err)
 	}
 }

@@ -62,3 +62,14 @@ func TestP32eInvitationTokenRoundTripRejectsGarbage(t *testing.T) {
 		t.Fatal("decoded an invalid-base64 token")
 	}
 }
+
+func TestP32fPairJoinRejectsBadToken(t *testing.T) {
+	dir := setupEnv(t)
+	if out, err := runCLI(t, "init", "--dir", dir); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	// a non-token first arg is rejected before any network attempt
+	if out, err := runCLI(t, "pair", "join", "not-a-real-token", "127.0.0.1:9", "--dir", dir); err == nil {
+		t.Fatalf("pair join accepted a bad token:\n%s", out)
+	}
+}

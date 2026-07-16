@@ -7,6 +7,7 @@ package main
 // (P3-2f) consumes it. See DOGFOOD.md for the operator runbook.
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/identity"
+	"github.com/ggoosen/cairn/internal/peer"
 )
 
 func newPairCmd(dirFlag *string) *cobra.Command {
@@ -60,6 +62,52 @@ func newPairCmd(dirFlag *string) *cobra.Command {
 	invite.MarkFlagRequired("root-key")
 	invite.Flags().StringVar(&out, "out", "pair-invite.token", `write the token to this file ("" = stdout)`)
 	cmd.AddCommand(invite)
+
+	var joinAllowUnenc bool
+	join := &cobra.Command{
+		Use:   "join <token-or-file> <peer-host:port>",
+		Short: "NEW NODE: verify a pairing invitation, install this device's identity, and pair over the network",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// arg0 may be the token string OR a file containing it
+			token := args[0]
+			if blob, err := os.ReadFile(args[0]); err == nil {
+				token = string(blob)
+			}
+			inv, err := identity.DecodeInvitation(token)
+			if err != nil {
+				return err
+			}
+			dir, err := config.PortableDir(*dirFlag)
+			if err != nil {
+				return err
+			}
+			priv, err := identity.PairJoinInstall(identity.PairJoinOptions{
+				Invitation: inv, Dir: dir, AllowUnencrypted: joinAllowUnenc,
+				Now: time.Now, Out: cmd.OutOrStdout(),
+			})
+			if err != nil {
+				return err
+			}
+			// pair over the wire: the inviting node appends our device.add. The
+			// payload carries only {cert, invite_id} — the private key stays here.
+			payload, err := json.Marshal(map[string]any{"cert": inv.Cert, "invite_id": inv.InviteID})
+			if err != nil {
+				return err
+			}
+			evID, err := peer.PairDial(args[1], inv.CairnID, payload, priv)
+			if err != nil {
+				return fmt.Errorf("identity installed, but the pairing handshake failed: %w\n"+
+					"(the invitation may have expired or already been used; if it succeeded once, just start the daemon to sync — re-running join is safe)", err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(),
+				"paired! admitted by device.add %s.\nstart the daemon to sync the mesh log:  cairn daemon\n", evID)
+			return nil
+		},
+	}
+	join.Flags().BoolVar(&joinAllowUnenc, "allow-unencrypted", false,
+		"operator override: install the device key on an unencrypted/unknown volume (persisted device-local; warns on every start)")
+	cmd.AddCommand(join)
 
 	groupGuard(cmd)
 	return cmd

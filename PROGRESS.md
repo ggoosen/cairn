@@ -3005,3 +3005,38 @@ legitimately trusts the mesh to authenticate the inviting node, but isn't itself
 admitted until it syncs its own device.add from the inviting node's origin) plus
 the daemon first-sync. Appending at mint would sidestep this but reverts the
 hard-single-use property the operator chose — so the careful path is correct.
+
+## P3-2f — `cairn pair join` (new-node install + bootstrap-without-self) — DONE (2026-07-16) [Tier 1]
+
+**Build:** the new node's half of pairing — verify token → install identity →
+pair over the wire.
+- `identity.PairJoinInstall` — verifies the invitation, installs the identity
+  FROM the token (the key travels in it, Option-1 tradeoff — nothing staged):
+  portable config + device-local key/cert/config + a pairing bootstrap chain. It
+  is **idempotent** (a re-run after a network hiccup finds the matching identity
+  installed and skips the writes; a DIFFERENT existing identity is refused).
+  Returns the device key for the handshake.
+- `identity.PairingBootstrapTrust` + `pairingBootstrap` file (`PairingBootstrapName`)
+  — the append-on-arrival analogue of Join's bootstrap-chain.json: it carries the
+  invitation chain (genesis + device.*) but **no private key** and asserts NO
+  self-membership, because the paired device is admitted on arrival, not in the
+  chain. New `verifyMeshChain` helper does the genesis-rooted replay without the
+  device-membership assertion `VerifyGrantChain` makes.
+- `BootstrapTrust` now falls through to the pairing bootstrap when there is no
+  join grant — so the daemon's existing R37 freshly-joined recovery path works
+  for a paired node unchanged.
+- `cairn pair join <token-or-file> <peer-addr>` (`cmd/cairn/pair.go`): decode →
+  `PairJoinInstall` → `peer.PairDial` (payload is `{cert, invite_id}` only; the
+  key stays local) → prints "start the daemon to sync". Accepts the token inline
+  or as a file.
+
+**Tests:** daemon-level end-to-end under SEPARATE device-state bases — A invites,
+B installs from the token, B's bootstrap trust admits the inviting node but not
+itself (append-on-arrival), B pairs over the wire, then B completes the N5
+membership handshake against A via bootstrap trust (proving the whole chain), and
+re-install is idempotent. CLI: `pair join` rejects a bad token before any network
+attempt. `-race` clean; `make verify` green.
+
+**P3-2 — one-time pairing invitations — COMPLETE end-to-end** (mint → token →
+install → pair → durable single-use admission → immediately syncable, both CLI
+verbs). Next: **P3-3** thin-node role, then **P3-4** iroh adapter.
