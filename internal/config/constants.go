@@ -396,6 +396,14 @@ const (
 	HeavyDeriveTimeout    = 60 * time.Second
 	HeavyExtractorVersion = "1"
 
+	// HeavyExtractorWaitDelay (P2H7 / shakedown FIND-3): grace after ctx
+	// cancellation before the subprocess's I/O pipes are force-closed. Without a
+	// WaitDelay, if a FUTURE extractor spawned a child that inherited stdout,
+	// cmd.Output() could block past the kill deadline waiting on that pipe.
+	// tesseract spawns no such child, so this is defensive today; it becomes
+	// load-bearing the moment a heavier/child-spawning extractor is added.
+	HeavyExtractorWaitDelay = 5 * time.Second
+
 	// FIX-H5 (R48): decompression-bomb / pixel guards that run BEFORE any heavy
 	// extractor. Mesh attachments are untrusted, and tesseract decodes the FULL
 	// image — an adversarial image (tiny file, enormous declared dimensions)

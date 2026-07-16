@@ -2712,3 +2712,19 @@ self-organizing map on zero data). After P2H1, the structural map is safe to ena
 P2 + P4 build lists (P2 map is deterministic/embedding-free, semantic map is P4); `P2-PLAN.md`
 P2-5; `internal/daemon/mapview.go` doc comment (this is the structural v1 map; semantic → P4). No
 code change — the implementation already matches the (now-accurate) docs.
+
+## P2H7 — Deferred hardening notes for real ML extractors — RECORDED (2026-07-16) [Tier 3]
+
+Not fixing now (the shipped deterministic extractors don't need it), but recorded as deferred so
+a future extractor addition trips over the reminder (Claude shakedown FIND-2 / FIND-3, both LOW):
+
+- **FIND-2 — OS-enforced network isolation.** The heavy extractors' network isolation is BY
+  CONSTRUCTION (tesseract + the pure-Go metadata reader make no network calls), not OS-enforced
+  (no sandbox-exec/seccomp/netns around the subprocess). A prominent DEFERRED-HARDENING comment
+  now sits on `heavyRegistry` (`internal/derive/heavy.go`): before registering ANY
+  network-capable or heavier ML extractor, wrap the subprocess in an OS-level network/process
+  sandbox first — the by-construction guarantee does not survive an extractor that CAN network.
+- **FIND-3 — subprocess WaitDelay (applied).** Added `cmd.WaitDelay = config.HeavyExtractorWaitDelay`
+  (5s) to the tesseract command so a future child that inherited stdout could not keep
+  `cmd.Output()` blocked past the ctx kill deadline. Inert for tesseract (no child), load-bearing
+  for any future child-spawning extractor.

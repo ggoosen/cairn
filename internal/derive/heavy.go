@@ -37,6 +37,17 @@ type HeavyExtractor interface {
 
 // heavyRegistry is tried in order; the first SUCCESS wins. Tesseract (real OCR)
 // is preferred; the pure-Go metadata extractor is the always-available floor.
+//
+// DEFERRED HARDENING — READ BEFORE ADDING AN EXTRACTOR (P2H7 / shakedown FIND-2):
+// network isolation for the current extractors is BY CONSTRUCTION — tesseract
+// and the pure-Go metadata reader make no network calls — NOT OS-enforced. There
+// is no sandbox-exec / seccomp / network namespace around the subprocess. Before
+// registering ANY network-capable or heavier ML extractor here (a captioning
+// model, a transcription service client, anything that could open a socket),
+// wrap the subprocess in an OS-level network/process sandbox first; the
+// by-construction guarantee does not survive an extractor that CAN network. The
+// per-process WaitDelay (see tesseractExtractor.Extract) and stripped env are
+// also best-effort, not a jail.
 var heavyRegistry = []HeavyExtractor{tesseractExtractor{}, imageMetadataExtractor{}}
 
 // SniffHeavy detects P2 heavy-derivative content kinds from the BYTES.
@@ -188,6 +199,11 @@ func (tesseractExtractor) Extract(ctx context.Context, data []byte) (*Result, er
 	// `tesseract <in> stdout` — no network by construction; ctx bounds runtime.
 	cmd := exec.CommandContext(ctx, bin, f.Name(), "stdout")
 	cmd.Env = []string{} // no inherited environment (best-effort isolation)
+	// P2H7 / shakedown FIND-3: bound cleanup after a ctx-kill so a child that
+	// inherited stdout could not keep Output() blocked past the deadline. Inert
+	// for tesseract (no child); load-bearing for any future child-spawning
+	// extractor. See config.HeavyExtractorWaitDelay.
+	cmd.WaitDelay = config.HeavyExtractorWaitDelay
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("tesseract OCR failed: %w", err)
