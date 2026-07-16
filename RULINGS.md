@@ -859,3 +859,59 @@ from "message bodies" to "every rendered field". When a new agent-facing rendere
 every untrusted field it emits inherits both obligations. Thread/message IDs are UUIDs and
 integer rollups are ints — those are structurally safe and need no sentinel; the obligation
 attaches to any **free-form author-controlled string**.
+
+---
+
+# P3 onboarding ruling — `cairn mcp-install` merges client config, never overwrites (FIX-MCP1)
+
+## R54 — MCP client config is merged (cairn key only), backed up, and refused-not-clobbered when malformed; Claude Code is driven through its sanctioned CLI
+
+`cairn mcp-install` wires the Cairn MCP server (`cairn mcp`) into MCP client apps so
+the operator never hand-edits a JSON config. Client config files are third-party state that
+hold OTHER servers and unrelated settings (the live `~/.claude.json` is ~165 KB of Claude
+Code state; `claude_desktop_config.json` may carry several servers). The command therefore
+operates under strict, non-negotiable invariants — the same defense-in-depth posture R53
+demands of rendered surfaces, applied here to config we mutate on the operator's behalf.
+
+**Ruling.**
+
+1. **Registry, not special-cases.** Supported apps live in one registry
+   (`internal/mcpinstall.Registry()`): `{Name, detect, configPath, optional managing CLI}`.
+   Adding a client later is one entry — no new command logic.
+
+2. **Merge, never overwrite.** Only the `cairn` server entry is added / updated / removed.
+   Every other MCP server and every unrelated top-level setting is preserved. Reserializing
+   as 2-space JSON (Go maps reorder keys) is acceptable — "preserve formatting *as
+   reasonably as possible*" — but never dropping data is mandatory, not best-effort.
+
+3. **The command is the currently-running binary.** The installed entry's `command` is
+   `os.Executable()` (absolute), never a hardcoded path. A pre-existing entry whose command
+   points elsewhere is treated as STALE and rewritten to the running binary — this is also
+   the fix for the MCP-side stale-binary problem, so `--list` reports staleness and install
+   repairs it.
+
+4. **Idempotent.** A second identical run makes no change and no backup, and says so.
+
+5. **Back up before any write.** Before the first mutating write, the existing config is
+   copied to `<path>.cairn-backup-<unix-ts>` and the path is reported. A no-op run writes
+   nothing and backs up nothing.
+
+6. **Refuse malformed, never clobber.** If an existing config is not valid JSON, that app is
+   backed up and SKIPPED with an error — Cairn does not overwrite state it cannot safely
+   parse. Validity is checked before the merge and the rendered bytes are re-parsed before
+   rename (write-time defense is independent of read-time defense).
+
+7. **Prefer the app's sanctioned MCP CLI over hand-editing its config.** For Claude Code the
+   `claude mcp add/remove --scope user` CLI is the write path when `claude` is on PATH
+   (falling back to a direct merge of `~/.claude.json` only when it is not), because the CLI
+   is less likely to break across Claude Code versions and owns that store. Claude Desktop
+   has no such CLI, so it is a direct config-file merge. Detection/`--list` always reads the
+   underlying store (`~/.claude.json`, `claude_desktop_config.json`) since the CLI writes it.
+   The command reports which path (CLI vs file) it used per app.
+
+8. **After writing, tell the operator what to do; do not do it.** Print per-app next steps
+   ("Restart Claude Desktop to load Cairn"). `mcp-install` NEVER restarts the client apps.
+
+**Scope.** This is onboarding plumbing: it touches only client config files (and one
+external CLI). It does not touch the event log, the daemon, or any Cairn state — the binary
+path it writes is the only Cairn-side coupling.
