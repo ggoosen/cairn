@@ -2669,3 +2669,29 @@ determined deterministically. `ExplorationQuotaFraction` added to `internal/conf
 calibration to behave correctly. **Regression tests:** `internal/daemon/exploration_quota_test.go`
 — promotes a new item at the cut (displacing the lowest merit item), backfills when no new items
 exist, leaves under-K sets untouched, and does not starve tiny-K searches.
+
+## P2H5 — Salience reference graph broadened beyond replies (§9.2) — DONE (2026-07-16) [Tier 2]
+
+**Gap (Codex P2 shakedown MAJOR-3):** `ReferenceInDegree()` counted only replies, so salience's
+reference-graph input reflected threading alone, not the full §9.2 edge set ("replies, citations,
+onward attachment, supersedes edges").
+
+**Fix:** `ReferenceInDegree` (`internal/projection/rankq.go`) now sums the structurally-projected
+inbound cross-message edges:
+- **replies** (as before) — counted at message_id granularity, so a reply to a since-SUPERSEDED
+  revision still counts for its message: the supersedes edge is honored implicitly (§9.2 / spec
+  line 135, "the supersedes edge is part of the reference graph" — references survive revision,
+  they are not lost or re-homed).
+- **onward attachment** (NEW) — the earliest non-retracted attacher of each blob is the origin;
+  every later distinct attacher contributes +1 to the origin's in-degree.
+
+**Deferred (documented, not a silent gap):** CITATIONS in later message bodies — the remaining
+§9.2 edge type — have no structured edge in the P0/P2 event set; detecting them means scanning
+every body for message-id references, an O(corpus²) pass on the hot ranking path. Deferred to a
+future indexed citation extractor or an explicit citation event (noted in the `ReferenceInDegree`
+doc comment). This is the one §9.2 edge that isn't structurally available; the other three are now
+covered.
+
+**Harmless while P2 ranking is OFF.** **Regression test:**
+`internal/projection/reference_indegree_test.go` — a root with two replies scores in-degree 2; a
+blob origin re-attached by one onward message scores in-degree 1; leaf/attacher messages score 0.

@@ -168,27 +168,81 @@ func (p *Projection) CountPendingEmbeddings() (int, error) {
 	return n, err
 }
 
-// ReferenceInDegree returns each message's reference-graph in-degree — the
-// count of non-retracted messages that reply to it (P2 salience, spec §9.2).
+// ReferenceInDegree returns each message's reference-graph in-degree for P2
+// salience (spec §9.2: "replies, citations, onward attachment, supersedes
+// edges"). It sums the structurally-projected inbound edges from OTHER,
+// non-retracted messages (P2H5 — was replies-only, which only reflected
+// threading):
+//
+//   - REPLIES: a non-retracted message whose reply_to_message_id points at the
+//     target. Counted at message_id granularity, so a reply to a since-
+//     SUPERSEDED revision still counts for its message — this is how the
+//     supersedes edge is honored (§9.2 / spec line 135, "the supersedes edge is
+//     part of the reference graph"): references survive revision, they are not
+//     re-homed or lost.
+//   - ONWARD ATTACHMENT: a message that (re-)attaches a blob first introduced by
+//     another message references that origin message. For each object_hash, the
+//     earliest non-retracted attacher is the origin; every later distinct
+//     attacher contributes +1 to the origin's in-degree.
+//
+// CITATIONS in later message bodies (the remaining §9.2 edge type) have no
+// structured edge in the P0/P2 event set — a citation is free text inside a
+// body, and detecting it means scanning every body for message-id references,
+// an O(corpus²) pass on a hot ranking path. It is DEFERRED to a future indexed
+// citation extractor (or an explicit citation event); see PROGRESS P2H5.
 func (p *Projection) ReferenceInDegree() (map[string]int, error) {
 	out := map[string]int{}
-	rows, err := p.db.Query(`
+
+	// reply edges
+	replies, err := p.db.Query(`
 		SELECT reply_to_message_id, count(*) FROM messages
 		WHERE reply_to_message_id IS NOT NULL AND retracted=0
 		GROUP BY reply_to_message_id`)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
+	defer replies.Close()
+	for replies.Next() {
 		var id string
 		var n int
-		if err := rows.Scan(&id, &n); err != nil {
+		if err := replies.Scan(&id, &n); err != nil {
 			return nil, err
 		}
-		out[id] = n
+		out[id] += n
 	}
-	return out, rows.Err()
+	if err := replies.Err(); err != nil {
+		return nil, err
+	}
+
+	// onward-attachment edges: the earliest non-retracted attacher of each blob
+	// is the origin; every later DISTINCT attacher is one onward reference to it.
+	onward, err := p.db.Query(`
+		SELECT origin_msg, count(*) FROM (
+			SELECT a.message_id AS attacher,
+				(SELECT a2.message_id FROM attachments a2
+					JOIN messages m2 ON m2.message_id = a2.message_id
+					WHERE a2.object_hash = a.object_hash AND m2.retracted = 0
+					ORDER BY m2.created_at ASC, m2.message_id ASC
+					LIMIT 1) AS origin_msg
+			FROM attachments a
+			JOIN messages m ON m.message_id = a.message_id
+			WHERE m.retracted = 0
+		)
+		WHERE origin_msg IS NOT NULL AND attacher <> origin_msg
+		GROUP BY origin_msg`)
+	if err != nil {
+		return nil, err
+	}
+	defer onward.Close()
+	for onward.Next() {
+		var id string
+		var n int
+		if err := onward.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] += n
+	}
+	return out, onward.Err()
 }
 
 // OperatorSignalWeight returns each message's summed operator-signal weight
