@@ -409,8 +409,8 @@ const (
 	// image — an adversarial image (tiny file, enormous declared dimensions)
 	// would OOM the enricher. These bounds are checked from the image HEADER
 	// (image.DecodeConfig — no pixel allocation) and reject before decode.
-	HeavyMaxImageDimension    = 20000       // per-side pixel cap (declared dims)
-	HeavyMaxImagePixels       = 40_000_000  // total pixel ceiling (~40 MP)
+	HeavyMaxImageDimension     = 20000      // per-side pixel cap (declared dims)
+	HeavyMaxImagePixels        = 40_000_000 // total pixel ceiling (~40 MP)
 	HeavyMaxDecompressionRatio = 200        // decoded-RGBA-bytes / compressed-bytes
 
 	// Receiver summary topical-consistency check (N4, spec §8.4): the
@@ -426,6 +426,13 @@ const (
 	// N5 transport + membership (R27/R28).
 	EnrollRequestTTL = 1 * time.Hour // R28: enrolment requests expire
 	SyncHelloTimeout = 10 * time.Second
+	// PairingInviteTTL (P3-2): a one-time pairing invitation expires this long
+	// after it is minted. The expiry anchor is the root-signed cert's issued_at,
+	// so it cannot be forged; the inviting node refuses an expired invite. Short
+	// by design — the invitation carries a device credential and is a bearer
+	// secret. Spec §336: "one-time expiring high-entropy invitation".
+	PairingInviteTTL   = 15 * time.Minute
+	PairingHelloDomain = "cairn-pair-hello-v1" // domain-separates the pairing challenge signature
 	// SyncDefaultPort — R44: the port the auto-detected tailnet listener binds
 	// (<tailnet-ip>:9700). The listener NEVER binds 0.0.0.0.
 	SyncDefaultPort = 9700

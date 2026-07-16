@@ -2773,3 +2773,100 @@ contract:
 
 `make verify` green (untagged guard + full tagged suite). Pure refactor: no
 behavioural change to P1 sync.
+
+## P3-2 — One-time pairing invitations — DESIGN FORK, ruling requested (2026-07-16)
+
+### Author rulings needed
+
+**The pairing trust model (blocking P3-2).** Spec §12/§336 wants "one-time
+expiring high-entropy invitation or PAKE" for frictionless onboarding, but the
+existing trust model constrains HOW:
+
+- The chain verifier admits a `device.add` ONLY if its embedded `DeviceCert`
+  carries a valid **root signature** (`chain.go:127` → `Cert.Verify(rootPub)`).
+- The root key is **offline-only** — it never lives on a running node (enroll.go
+  ceremony; hard rule "device private keys … never in the portable dir"; root
+  restored transiently only during approve/revoke).
+- The current enrol ceremony ALSO deliberately keeps the **device private key
+  from ever moving** — the new node generates its own keypair; only the pubkey
+  travels in the request (enroll.go: "the private key NEVER moves").
+
+A pairing invitation that lets a NEW device be admitted without the root key
+present at join time forces a fork, and one branch reverses that deliberate
+"private key never moves" property. The three viable shapes:
+
+1. **Pre-signed credential invitation (no new trust path, no delegation).** One
+   offline root ceremony mints the invitation: generate the new device keypair,
+   root-sign its cert, package {cert + its private key + identity chain + invite
+   secret + expiry} into a single one-time token; remove the root key. Join
+   installs the carried identity; the `device.add` (root-signed cert) is appended
+   via the existing Approve-style path (by the minting node offline, or by a live
+   inviting node after a bearer-secret pairing handshake). **Reuses the existing
+   verifier trust path unchanged; needs no delegation (stays out of P4).**
+   Tradeoff: the device private key travels inside the one-time invitation —
+   regresses "the private key never moves." Mitigated by expiry + single-use +
+   treating the token as a secret.
+
+2. **Delegated enroller (key never moves, but pulls P4 forward).** Root signs an
+   enrolment authority; a live node admits devices whose own-generated pubkey it
+   receives during pairing. Private key never moves, cleanest onboarding — but
+   this is macaroon-style **delegation**, which the spec explicitly defers to P4.
+   Adds a new admission path to the security-critical chain verifier.
+
+3. **Same trust model, smoother UX only.** Keep request/approve/join exactly as
+   is; just wrap it in a nicer CLI + compact token/QR encoding. Zero security-
+   model change; least frictionless (still needs a root-key restore at approve).
+
+**Conservative default if unanswered:** Option 1 with a **live bearer-secret
+pairing handshake** (append-on-arrival) so single-use is HARD (device.add
+appended exactly once, invite-id marker refuses replay) and there are no phantom
+devices — it reuses the existing root-signed-cert verifier path, needs no
+delegation, and exercises the P3-1 transport seam. `// RULING-NEEDED:` will mark
+the mint ceremony. Recorded here; asking the operator because Option 1 reverses a
+deliberately-chosen security property and the three options are genuinely
+different products.
+
+**RULING (operator, 2026-07-16): Option 1 — pre-signed credential invitation,
+append-on-arrival.** One offline root ceremony mints the whole invitation (device
+keypair generated + cert root-signed + private key packaged into the token); the
+device.add is appended by a LIVE inviting node when the new node arrives and
+proves possession, giving HARD single-use (a device.add for that cert.DeviceID is
+appended exactly once; replay refused). Root stays offline; the existing
+root-signed-cert verifier path is reused unchanged; no delegation (P4 untouched).
+Accepted tradeoff: the device private key travels inside the one-time, expiring,
+single-use invitation secret. Build order: P3-2a invitation format + mint +
+verification core (identity layer); P3-2b live pairing handshake + on-arrival
+device.add append (transport + daemon); P3-2c `cairn pair` CLI + docs.
+
+## P3-2a — Pairing invitation format + mint + verify (identity core) — DONE (2026-07-16) [Tier 1]
+
+**Build (`internal/identity/pairing.go`):** the security-critical crypto core of
+the chosen Option-1 pairing model.
+- `PairingInvitation` — the single bearer token: `{v, cairn_id, created_at,
+  invite_id (UUIDv7 single-use marker), cert (root-signed), device_priv_b64
+  (SECRET), chain (genesis..current, NOT this device.add)}`.
+- `MintPairingInvitation` — the ONE offline root ceremony: generates the device
+  keypair, root-signs the cert (issued_at = the unforgeable expiry anchor),
+  packages the credential + verifiable chain. Appends NOTHING to the log (no
+  daemon lock needed) — the device.add is appended on arrival (P3-2b). Refuses a
+  foreign root key.
+- `VerifyPairingInvitation(inv, now)` — validates against nothing but genesis:
+  replays the chain through a fresh `ChainVerifier`, checks the cert's root
+  signature against the CHAIN's root (reuses the existing `Cert.Verify` trust
+  path — no new admission path, no delegation), confirms the carried private key
+  matches the certified pubkey, asserts the device is NOT already a member (it's
+  admitted on arrival), and enforces expiry (cert.issued_at + `PairingInviteTTL`,
+  15 min). Returns the verified Trust (minus this device) + the device key.
+
+**Config:** `PairingInviteTTL = 15m`, `PairingHelloDomain` (for the P3-2b
+challenge) added to `constants.go`.
+
+**Tests (`pairing_test.go`):** mint→verify round-trip (device NOT a member at
+mint; cert root-signed against the verified root); expiry boundary (accepted at
+TTL−1s, refused at TTL+1s); tamper matrix — mismatched private key, forged cert
+(device-id rewrite invalidates the root sig), truncated chain, bad version;
+mint refuses a foreign mesh's root key.
+
+`make verify` green. Next: **P3-2b** — the live pairing handshake over the P3-1
+transport + on-arrival `device.add` append with hard single-use + expiry
+enforcement on the inviting node.
