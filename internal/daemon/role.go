@@ -67,16 +67,25 @@ func (d *Daemon) thinSearchPartialReason() string {
 	if !d.selfIsThin() {
 		return ""
 	}
-	return "thin node: only a recent local window is searched — older material may exist on full nodes (spec §7); fetch it deliberately or query a full node"
+	base := "thin node: only a recent local window is searched — older material may exist on full nodes (spec §7); fetch it deliberately or query a full node"
+	// P3-3e: explain WHY the local view wasn't supplemented when remote-query is
+	// configured but metered suppressed it — otherwise the agent can't tell.
+	if d.loaded != nil && d.loaded.Device != nil && d.loaded.Device.RemoteQuery && d.loaded.Device.Metered {
+		base += " (remote query is configured but suppressed: the connection is metered)"
+	}
+	return base
 }
 
 // shouldRemoteQuery reports whether this node should consult a full peer for
 // universal search (P3-3d): a THIN node with remote-query opted in and at least
-// one configured sync peer. A full node never remote-queries.
+// one configured sync peer — and NOT on a metered connection (P3-3e: a metered
+// thin node does not auto-spend data on remote query). A full node never
+// remote-queries.
 func (d *Daemon) shouldRemoteQuery() bool {
 	return d.selfIsThin() &&
 		d.loaded != nil && d.loaded.Device != nil &&
 		d.loaded.Device.RemoteQuery &&
+		!d.loaded.Device.Metered &&
 		len(d.loaded.Device.SyncPeers) > 0
 }
 

@@ -129,6 +129,13 @@ type DeviceConfig struct {
 	// Ignored on a full node.
 	RemoteQuery bool `toml:"remote_query,omitempty"`
 
+	// Metered (P3-3e, spec §7 battery/metered awareness): the connection is
+	// data-metered. POLICY only — this is a manual flag; automatic sensing of the
+	// network state is platform-specific and deferred (hardware). When set, a
+	// thin node does NOT auto-spend data on remote query (its search stays local
+	// and partial). Ignored on a full node.
+	Metered bool `toml:"metered,omitempty"`
+
 	// Role (P3-3): the node's role in the mesh — RoleFull (default) or RoleThin.
 	// Device-local (a role is a per-device operational choice, not a mesh fact).
 	// A thin node holds only a recent window + selected objects, is NOT counted

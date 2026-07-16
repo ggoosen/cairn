@@ -3224,3 +3224,55 @@ clean; `make verify` green.
 P3 build-ahead: iroh adapter skeleton + integration plan (P3-4c), battery/metered
 policy hook (P3-3e). The live remote-query latency/privacy validation, the iroh
 wire, and metered sensing need the rig/hardware.
+
+## P3-3e — Metered policy (battery/metered awareness, policy half) — DONE (2026-07-17) [Tier 3]
+
+**Build (spec §7 battery/metered awareness):** the POLICY half, offline-buildable.
+- `config.DeviceConfig.Metered` (manual flag; automatic network-state SENSING is
+  platform-specific and deferred — hardware).
+- `shouldRemoteQuery` returns false when metered: a metered thin node does NOT
+  auto-spend data on remote query — its search stays local + partial.
+- `thinSearchPartialReason` explains the suppression when remote-query is
+  configured but metered (so the agent understands why the result is partial
+  despite remote-query being on).
+
+**Tests:** metered thin + remote_query on → no consult, partial, reason mentions
+"metered". `make verify` green.
+
+## P3-4c — iroh integration plan (the honest artifact for the deferred wire) — DONE (2026-07-17) [Tier 3]
+
+The iroh wire cannot be honestly built offline (no mature Go binding; value needs
+real relays/NAT). Committing non-functional skeleton code would violate the
+"green + tested" discipline, so the deliverable is a **concrete implementation
+plan**: `docs/cairn-p3-iroh-integration-plan.md`. It covers the P3-1 seam it drops
+into, the binding decision (cgo FFI vs sidecar — recommends starting with the
+sidecar), the `Transport`-method → iroh-1.x-API mapping, the relay/self-host/
+patching operational story, and the four rig tests (separate-NAT hole-punch,
+pairing-over-iroh, membership-still-enforced, relay self-host) + definition of
+done. `TransportByName("iroh")` keeps its instructive refusal until the wire lands.
+
+---
+
+## P3 — onboarding/transport — OFFLINE-BUILDABLE SCOPE COMPLETE (2026-07-17)
+
+Everything for P3 that can be built and tested without live hardware is built and
+tested, on `master`, `make verify` green throughout, `-race` clean on the
+concurrency-sensitive paths:
+
+- **P3-1** transport abstraction (the seam) — load-bearing (P3-4a).
+- **P3-2** one-time pairing invitations, end to end (2a–2f): mint → token →
+  install → wire → durable hard-single-use admission → immediately syncable;
+  `cairn pair invite` / `cairn pair join`.
+- **P3-3** thin-node role: model + durability exclusion + advertisement (3a);
+  partial universal search (3b); remote-query mechanism (3c) + auto-consult with
+  graceful degrade (3d); metered policy (3e).
+- **P3-4** transport selection + `cairn net` + docs (4a/4b); iroh integration
+  plan (4c).
+
+**Everything that remains needs the rig/hardware** (recorded, behind built
+interfaces, drops in with no caller changes):
+1. Live two-node checkout of pairing / thin-role / transport / remote-query on the
+   NODE-B tailnet rig.
+2. The iroh 1.x wire (per `docs/cairn-p3-iroh-integration-plan.md`): a Go↔iroh
+   binding + two nodes on separate NATs + a relay box.
+3. Automatic metered/battery SENSING (a real metered device; the policy is built).

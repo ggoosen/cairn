@@ -139,3 +139,27 @@ func TestP33dThinNodeWithoutRemoteQueryStaysLocalPartial(t *testing.T) {
 		t.Fatal("thin node local search not marked partial")
 	}
 }
+
+// P3-3e: a metered thin node does NOT auto-spend data on remote query even with
+// remote_query on — it stays local + partial, and the reason says why.
+func TestP33eMeteredThinNodeSuppressesRemoteQuery(t *testing.T) {
+	dB, _ := setupPairedPairCfg(t, "", func(dev *config.DeviceConfig, addr string) {
+		dev.Role = config.RoleThin
+		dev.RemoteQuery = true
+		dev.Metered = true // metered suppresses the auto-consult
+		dev.SyncPeers = []string{addr}
+	})
+	out, err := dB.Search(daemon.SearchOptions{Query: "roastery approval", BudgetChars: 2000})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if out.RemoteSource != "" {
+		t.Fatalf("metered thin node still remote-consulted: %q", out.RemoteSource)
+	}
+	if !out.Partial {
+		t.Fatal("metered thin node search not partial")
+	}
+	if !strings.Contains(out.PartialReason, "metered") {
+		t.Fatalf("partial reason does not explain metered suppression: %q", out.PartialReason)
+	}
+}
