@@ -915,3 +915,29 @@ demands of rendered surfaces, applied here to config we mutate on the operator's
 **Scope.** This is onboarding plumbing: it touches only client config files (and one
 external CLI). It does not touch the event log, the daemon, or any Cairn state — the binary
 path it writes is the only Cairn-side coupling.
+
+### R54.1 — the invariants are format-agnostic; Codex CLI (TOML) added (FIX-MCP2)
+
+R54 was written for JSON clients (Claude Desktop / Claude Code). Codex CLI (OpenAI) is a
+third registry app whose config is **TOML** (`~/.codex/config.toml`, one
+`[mcp_servers.<name>]` table per server). Every invariant above holds identically — only the
+serialization differs:
+
+1. **Merge core is format-agnostic.** JSON (`mcpServers`) and TOML (`mcp_servers`) both decode
+   to `map[string]any`, so the add/update/remove/stale logic is shared; each registry app
+   carries a `codec{serversKey, parse, marshal}`. TOML uses `github.com/BurntSushi/toml`
+   (emits top-level scalars before table headers — required for valid TOML — and round-trips
+   `args = ["mcp"]` so the idempotency comparison holds). "Refuse malformed, never clobber"
+   (R54 §6) applies to malformed **TOML** exactly as to malformed JSON.
+
+2. **Prefer the sanctioned CLI** (R54 §7) applies: `codex mcp add cairn -- <abs> mcp` /
+   `codex mcp remove cairn` is the write path when `codex` is on PATH, falling back to a
+   direct TOML merge otherwise. Codex's MCP config is **global (no `--scope`)** — unlike
+   Claude Code's `--scope user` — so CLI argument vectors are per-app builders, not a shared
+   template. Detection: `codex` on PATH or `~/.codex/` present.
+
+3. **`cairn mcp-install --status`** reports, for every registry app, detected? / configured? /
+   command current-or-stale — the R54 §3 staleness surface, in one compact table.
+
+Adding a further client remains one registry entry (R54 §1): its `codec` picks the format,
+its optional `cliAdd/cliRemove` pick the CLI vector.

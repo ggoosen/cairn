@@ -20,7 +20,7 @@ If you run multiple AI agent sessions — Claude Code here, Codex there, a chat 
 - **`cairn fetch <id>`** — deliberately pull the full original, with provenance back to the signed source event
 - **`cairn why-ranked <id>`** — see the exact arithmetic behind every ranking. No black boxes.
 
-Agents connect through whichever door they can reach: **plain files** (drop markdown in an outbox, read a generated digest — works with literally anything), the **CLI**, or **MCP** (`cairn mcp`, for Claude Desktop / Claude Code — every result wrapped in an untrusted-content envelope with full provenance). One daemon per machine; every app and session is just a named consumer.
+Agents connect through whichever door they can reach: **plain files** (drop markdown in an outbox, read a generated digest — works with literally anything), the **CLI**, or **MCP** (`cairn mcp`, for Claude Desktop / Claude Code / Codex — every result wrapped in an untrusted-content envelope with full provenance). One daemon per machine; every app and session is just a named consumer.
 
 ## How it's built
 
