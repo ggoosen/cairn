@@ -7,3 +7,10 @@ bin/
 # Machine-local and enormous — never commit.
 /.gocache/
 /.gomodcache/
+
+# audit artifacts
+*REPORT*.md
+*BRIEF*.md
+RIG-STATUS.md
+docs/cairn-*workorder*.md
+docs/cairn-rig-*.md
