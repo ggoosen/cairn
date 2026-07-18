@@ -426,6 +426,275 @@ func TestClaudeCodeStaleAndUninstallViaCLI(t *testing.T) {
 	}
 }
 
+// ============================================================================
+// FIX-MCP2: Codex CLI (TOML) — regression tests mirroring the JSON suite above.
+// The merge invariants (preserve other servers + unrelated tables, idempotent,
+// malformed-refused, stale-fixed, create-from-absent) must hold identically for
+// the TOML codec and Codex's [mcp_servers.<name>] schema.
+// ============================================================================
+
+// codexEnv is a hermetic Env whose only recognized CLI is `codex`.
+func codexEnv(t *testing.T, cliAvailable bool, calls *[][]string) Env {
+	t.Helper()
+	home := t.TempDir()
+	return Env{
+		Home: home,
+		Cwd:  home,
+		Self: "/opt/cairn/bin/cairn",
+		LookPath: func(name string) (string, error) {
+			if name == "codex" && cliAvailable {
+				return "/opt/homebrew/bin/codex", nil
+			}
+			return "", os.ErrNotExist
+		},
+		Run: func(name string, args ...string) error {
+			if calls != nil {
+				*calls = append(*calls, append([]string{name}, args...))
+			}
+			return nil
+		},
+		Now: func() int64 { return 1700000000 },
+	}
+}
+
+func codexApp(t *testing.T) App {
+	t.Helper()
+	a, ok := Lookup("codex")
+	if !ok {
+		t.Fatal("codex not registered")
+	}
+	return a
+}
+
+func writeRaw(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readTOML(t *testing.T, path string) map[string]any {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := parseTOML(b)
+	if err != nil {
+		t.Fatalf("re-read config is not valid TOML: %v", err)
+	}
+	return m
+}
+
+// codexCmd reads the configured cairn command from a Codex (mcp_servers) config.
+func codexCmd(cfg map[string]any) (string, bool) { return cairnCommand(cfg, "mcp_servers") }
+
+// TEST: TOML merge preserves other MCP servers AND unrelated tables/settings.
+func TestCodexInstallPreservesOtherTOML(t *testing.T) {
+	e := codexEnv(t, false, nil) // no codex CLI → file-merge path
+	app := codexApp(t)
+	path, _ := app.configPath(e)
+	writeRaw(t, path, `model = "gpt-5.5"
+model_reasoning_effort = "medium"
+
+[mcp_servers.existing]
+command = "node"
+args = ["srv.js"]
+
+[projects."/home/x/proj"]
+trust_level = "trusted"
+`)
+
+	r, err := app.Install(e)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if !r.Changed || r.Method != "file" {
+		t.Fatalf("expected file change, got %+v", r)
+	}
+	if r.BackupPath == "" {
+		t.Fatal("no backup before mutating write")
+	}
+
+	merged := readTOML(t, path)
+	if merged["model"] != "gpt-5.5" || merged["model_reasoning_effort"] != "medium" {
+		t.Error("unrelated top-level settings lost")
+	}
+	if _, ok := merged["projects"].(map[string]any)["/home/x/proj"]; !ok {
+		t.Error("unrelated [projects] table lost")
+	}
+	servers := merged["mcp_servers"].(map[string]any)
+	if _, ok := servers["existing"]; !ok {
+		t.Error("existing MCP server lost")
+	}
+	if cmd, present := codexCmd(merged); !present || cmd != e.Self {
+		t.Errorf("cairn command = %q (present=%v), want %q", cmd, present, e.Self)
+	}
+}
+
+// TEST: idempotent second install (TOML round-trip) = no change, no backup.
+func TestCodexInstallIdempotent(t *testing.T) {
+	e := codexEnv(t, false, nil)
+	app := codexApp(t)
+
+	if r, err := app.Install(e); err != nil || !r.Changed {
+		t.Fatalf("first install should change: %+v %v", r, err)
+	}
+	r2, err := app.Install(e)
+	if err != nil {
+		t.Fatalf("second install: %v", err)
+	}
+	if r2.Changed {
+		t.Error("second identical install should be a no-op after TOML round-trip")
+	}
+	if !strings.Contains(r2.Message, "already up to date") {
+		t.Errorf("message = %q, want 'already up to date'", r2.Message)
+	}
+	if r2.BackupPath != "" {
+		t.Error("no-op run should not create a backup")
+	}
+}
+
+// TEST: malformed TOML is refused, not clobbered, and backed up.
+func TestCodexInstallRefusesMalformedTOML(t *testing.T) {
+	e := codexEnv(t, false, nil)
+	app := codexApp(t)
+	path, _ := app.configPath(e)
+	original := "[mcp_servers.cairn\ncommand = " // unterminated table header
+	writeRaw(t, path, original)
+
+	r, err := app.Install(e)
+	if err == nil {
+		t.Fatal("expected refusal on malformed TOML")
+	}
+	if got, _ := os.ReadFile(path); string(got) != original {
+		t.Error("malformed TOML was clobbered")
+	}
+	if r.BackupPath == "" {
+		t.Fatal("malformed TOML not backed up")
+	}
+	if b, _ := os.ReadFile(r.BackupPath); string(b) != original {
+		t.Error("backup does not match original malformed content")
+	}
+}
+
+// TEST: a stale Codex command path is detected and updated (file path).
+func TestCodexInstallFixesStalePath(t *testing.T) {
+	e := codexEnv(t, false, nil)
+	app := codexApp(t)
+	path, _ := app.configPath(e)
+	writeRaw(t, path, `[mcp_servers.cairn]
+command = "/stale/cairn"
+args = ["mcp"]
+`)
+	r, err := app.Install(e)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if !r.Changed || r.PrevCmd != "/stale/cairn" {
+		t.Fatalf("stale path not detected: %+v", r)
+	}
+	if !strings.Contains(r.Message, "/stale/cairn") || !strings.Contains(r.Message, e.Self) {
+		t.Errorf("message should report the stale fix: %q", r.Message)
+	}
+	if cmd, _ := codexCmd(readTOML(t, path)); cmd != e.Self {
+		t.Errorf("command not updated on disk: %q", cmd)
+	}
+}
+
+// TEST: create-from-absent produces a schema-valid Codex TOML config.
+func TestCodexInstallCreatesFromAbsent(t *testing.T) {
+	e := codexEnv(t, false, nil)
+	app := codexApp(t)
+	path, _ := app.configPath(e)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("precondition: config should be absent")
+	}
+	r, err := app.Install(e)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if !r.Changed || r.Method != "file" {
+		t.Fatalf("expected fresh file write, got %+v", r)
+	}
+	if r.BackupPath != "" {
+		t.Error("create-from-absent should not back up")
+	}
+	cfg := readTOML(t, path) // fails the test if not valid TOML
+	if cmd, present := codexCmd(cfg); !present || cmd != e.Self {
+		t.Errorf("fresh config missing correct cairn entry: %q %v", cmd, present)
+	}
+}
+
+// TEST: when the codex CLI is on PATH, writes go through it with the sanctioned
+// args (global add, no --scope), never a hand-edited file.
+func TestCodexDrivesCLI(t *testing.T) {
+	var calls [][]string
+	e := codexEnv(t, true, &calls)
+	app := codexApp(t)
+
+	r, err := app.Install(e)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if r.Method != "cli" {
+		t.Fatalf("expected CLI method, got %q", r.Method)
+	}
+	want := []string{"codex", "mcp", "add", "cairn", "--", e.Self, "mcp"}
+	if len(calls) != 1 || !reflect.DeepEqual(calls[0], want) {
+		t.Fatalf("CLI args = %v, want single %v", calls, want)
+	}
+	if s := app.Inspect(e); !s.ViaCLI || !strings.Contains(s.ConfigPath, "via CLI") {
+		t.Errorf("expected via-CLI status, got %+v", s)
+	}
+}
+
+// TEST: a stale Codex entry is replaced via remove-then-add, and uninstall
+// removes via the CLI (no --scope).
+func TestCodexStaleAndUninstallViaCLI(t *testing.T) {
+	var calls [][]string
+	e := codexEnv(t, true, &calls)
+	app := codexApp(t)
+	path, _ := app.configPath(e)
+	writeRaw(t, path, `[mcp_servers.cairn]
+command = "/stale/cairn"
+args = ["mcp"]
+
+[mcp_servers.existing]
+command = "node"
+`)
+	r, err := app.Install(e)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if !r.Changed || r.BackupPath == "" {
+		t.Fatalf("stale replace should change and back up: %+v", r)
+	}
+	if len(calls) != 2 || calls[0][2] != "remove" || calls[1][2] != "add" {
+		t.Fatalf("expected remove then add, got %v", calls)
+	}
+	// no --scope in the Codex CLI vector
+	for _, c := range calls {
+		for _, arg := range c {
+			if arg == "--scope" {
+				t.Errorf("codex CLI must not use --scope: %v", c)
+			}
+		}
+	}
+
+	calls = nil
+	ur, err := app.Uninstall(e)
+	if err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	if !ur.Changed || len(calls) != 1 || calls[0][2] != "remove" {
+		t.Fatalf("uninstall should CLI-remove once: %+v %v", ur, calls)
+	}
+}
+
 // TEST: uninstall (file path) removes only cairn and preserves the rest.
 func TestUninstallFilePreservesOthers(t *testing.T) {
 	e := testEnv(t, false, nil)

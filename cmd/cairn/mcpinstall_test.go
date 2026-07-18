@@ -45,6 +45,43 @@ func TestMCPInstallListDefault(t *testing.T) {
 	}
 }
 
+// --status lists every registry app (codex included) with detected/configured
+// columns, and reflects a codex install via the TOML file-merge path.
+func TestMCPInstallStatusIncludesCodex(t *testing.T) {
+	home := hermeticHome(t)
+	// before: codex not configured
+	out, err := runCLI(t, "mcp-install", "--status")
+	if err != nil {
+		t.Fatalf("mcp-install --status: %v\n%s", err, out)
+	}
+	for _, want := range []string{"DETECTED", "CONFIGURED", "COMMAND", "codex"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("--status output missing %q:\n%s", want, out)
+		}
+	}
+
+	// install into codex (file-merge: no codex on the scrubbed PATH) then re-check
+	if out, err := runCLI(t, "mcp-install", "--app", "codex"); err != nil {
+		t.Fatalf("install codex: %v\n%s", err, out)
+	}
+	cfgPath := filepath.Join(home, ".codex", "config.toml")
+	b, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("codex config not written: %v", err)
+	}
+	if !strings.Contains(string(b), "[mcp_servers.cairn]") {
+		t.Errorf("codex config missing cairn table:\n%s", b)
+	}
+	out, err = runCLI(t, "mcp-install", "--status")
+	if err != nil {
+		t.Fatalf("status after install: %v\n%s", err, out)
+	}
+	// the codex row should now report the current command, not stale/none
+	if !strings.Contains(out, "codex") || !strings.Contains(out, "current") {
+		t.Errorf("--status should show codex as current:\n%s", out)
+	}
+}
+
 func TestMCPInstallUninstallRoundTrip(t *testing.T) {
 	home := hermeticHome(t)
 	path := desktopConfigPath(home)

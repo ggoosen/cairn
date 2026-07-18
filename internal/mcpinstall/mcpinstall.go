@@ -1,20 +1,28 @@
 // Package mcpinstall wires Cairn's MCP server into MCP client apps
-// (Claude Desktop, Claude Code) without the operator hand-editing a config
-// file. It is P3 onboarding plumbing — it never touches the event log or the
-// daemon; it only reads and merges client config files (or drives a client's
-// sanctioned MCP CLI).
+// (Claude Desktop, Claude Code, Codex CLI) without the operator hand-editing a
+// config file. It is P3 onboarding plumbing — it never touches the event log or
+// the daemon; it only reads and merges client config files (or drives a
+// client's sanctioned MCP CLI).
 //
 // The supported apps live in a REGISTRY (Registry()): adding a new client is
-// one App entry — {Name, detect, configPath, and optionally a managing CLI}.
+// one App entry — {Name, detect, configPath, a config codec, and optionally a
+// managing CLI}.
 //
-// Two hard invariants (see RULINGS.md R54):
+// Config formats differ per client — Claude uses JSON (top-level "mcpServers"),
+// Codex uses TOML ([mcp_servers.<name>] tables). Both decode to the same
+// map[string]any shape, so the merge/remove/read logic is format-agnostic; only
+// the servers key and the parse/marshal codec vary (see codec).
+//
+// Two hard invariants (see RULINGS.md R54), identical across JSON and TOML:
 //   - MERGE, never overwrite. Only the "cairn" server entry is added/updated/
-//     removed; every other MCP server and every unrelated setting is preserved.
+//     removed; every other MCP server and every unrelated setting/table is
+//     preserved.
 //   - A malformed existing config is REFUSED, never clobbered — it is backed up
 //     and that app is skipped.
 package mcpinstall
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -22,6 +30,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"time"
+
+	"github.com/BurntSushi/toml"
 )
 
 // Env carries the (injectable, for tests) environment the registry resolves
@@ -68,11 +78,35 @@ type App struct {
 	detect func(Env) (bool, string)
 	// configPath is the file the app reads its MCP servers from.
 	configPath func(Env) (string, error)
+	// codec is the config format (JSON for Claude, TOML for Codex): the servers
+	// key plus parse/marshal. Reads and the file-merge fallback go through it.
+	codec codec
 	// cliName, when non-empty and found on PATH, is the sanctioned CLI used for
 	// WRITES instead of hand-editing the config file. Reads/detection still go
 	// through configPath (the CLI writes the same store).
 	cliName string
-	cliScope string // scope argument for the CLI (e.g. "user")
+	// cliAdd / cliRemove build the CLI argument vector (after cliName) for the
+	// add/remove of the cairn server. They differ per client (e.g. Claude takes
+	// --scope user; Codex is global with no scope).
+	cliAdd    func(self string) []string
+	cliRemove func() []string
+}
+
+// codec captures a config format: which top-level key holds the MCP servers,
+// and how the file is parsed/serialized. JSON (Claude) and TOML (Codex) both
+// decode to map[string]any, so the merge core is shared; only this varies.
+type codec struct {
+	serversKey string
+	parse      func([]byte) (map[string]any, error)
+	marshal    func(map[string]any) ([]byte, error)
+}
+
+func jsonCodec() codec {
+	return codec{serversKey: "mcpServers", parse: parseJSON, marshal: marshalJSON}
+}
+
+func tomlCodec() codec {
+	return codec{serversKey: "mcp_servers", parse: parseTOML, marshal: marshalTOML}
 }
 
 // Registry is the ordered list of supported apps. Add an app here — nothing
@@ -92,6 +126,7 @@ func Registry() []App {
 				return false, "not installed"
 			},
 			configPath: func(e Env) (string, error) { return claudeDesktopPath(e), nil },
+			codec:      jsonCodec(),
 			// Claude Desktop has no MCP CLI: direct config-file merge.
 		},
 		{
@@ -106,8 +141,43 @@ func Registry() []App {
 				return false, "not installed"
 			},
 			configPath: func(e Env) (string, error) { return claudeCodePath(e), nil },
+			codec:      jsonCodec(),
 			cliName:    "claude",
-			cliScope:   "user",
+			cliAdd: func(self string) []string {
+				return []string{"mcp", "add", "cairn", "--scope", "user", "--", self, "mcp"}
+			},
+			cliRemove: func() []string {
+				return []string{"mcp", "remove", "cairn", "--scope", "user"}
+			},
+		},
+		{
+			// Codex CLI (OpenAI). Config is TOML at ~/.codex/config.toml, one
+			// [mcp_servers.<name>] table per server. Codex ships a sanctioned
+			// MCP CLI (`codex mcp add/remove/list`) which we PREFER for writes,
+			// exactly as with Claude Code; the TOML file-merge is the fallback
+			// when the codex binary is not on PATH. `codex mcp add` overwrites an
+			// existing entry cleanly, so the remove-then-add replace works too.
+			Name: "codex",
+			detect: func(e Env) (bool, string) {
+				if _, err := e.LookPath("codex"); err == nil {
+					return true, "codex CLI on PATH"
+				}
+				dir := filepath.Join(e.Home, ".codex")
+				if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+					return true, "~/.codex dir present"
+				}
+				return false, "not installed"
+			},
+			configPath: func(e Env) (string, error) { return codexPath(e), nil },
+			codec:      tomlCodec(),
+			cliName:    "codex",
+			cliAdd: func(self string) []string {
+				// codex mcp add cairn -- <self> mcp   (global; no scope flag)
+				return []string{"mcp", "add", "cairn", "--", self, "mcp"}
+			},
+			cliRemove: func() []string {
+				return []string{"mcp", "remove", "cairn"}
+			},
 		},
 	}
 }
@@ -122,19 +192,18 @@ func claudeCodePath(e Env) string {
 	return filepath.Join(e.Home, ".claude.json")
 }
 
-// ---- pure config-merge core (regression-tested in mcpinstall_test.go) ----
-
-// DesiredEntry is the cairn server entry we install: the current binary + ["mcp"].
-// The args slice is []any{"mcp"} so it compares equal (reflect.DeepEqual) to the
-// same entry after a JSON round-trip.
-func DesiredEntry(self string) map[string]any {
-	return map[string]any{"command": self, "args": []any{"mcp"}}
+func codexPath(e Env) string {
+	// Codex reads global MCP servers from ~/.codex/config.toml under
+	// [mcp_servers.<name>] tables — the same store `codex mcp add` writes.
+	return filepath.Join(e.Home, ".codex", "config.toml")
 }
 
-// ParseConfig parses a client config. A nil/empty input yields an empty config
-// (create-from-absent). Malformed JSON returns an error so callers can refuse
-// rather than clobber.
-func ParseConfig(raw []byte) (map[string]any, error) {
+// ---- config codecs (JSON for Claude, TOML for Codex) ----
+
+// parseJSON parses a JSON client config. A nil/empty input yields an empty
+// config (create-from-absent). Malformed JSON returns an error so callers can
+// refuse rather than clobber.
+func parseJSON(raw []byte) (map[string]any, error) {
 	if len(raw) == 0 {
 		return map[string]any{}, nil
 	}
@@ -148,9 +217,9 @@ func ParseConfig(raw []byte) (map[string]any, error) {
 	return cfg, nil
 }
 
-// MarshalConfig renders a config as 2-space-indented JSON with a trailing
+// marshalJSON renders a config as 2-space-indented JSON with a trailing
 // newline. (Go maps reorder keys; RULINGS.md R54 accepts reserialization.)
-func MarshalConfig(cfg map[string]any) ([]byte, error) {
+func marshalJSON(cfg map[string]any) ([]byte, error) {
 	b, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return nil, err
@@ -158,9 +227,56 @@ func MarshalConfig(cfg map[string]any) ([]byte, error) {
 	return append(b, '\n'), nil
 }
 
-// CairnCommand returns the command currently configured for the cairn server.
-func CairnCommand(cfg map[string]any) (cmd string, present bool) {
-	servers, _ := cfg["mcpServers"].(map[string]any)
+// parseTOML parses a TOML client config (Codex). Empty input yields an empty
+// config; malformed TOML errors so callers refuse rather than clobber. Nested
+// tables ([mcp_servers.cairn]) decode to nested map[string]any, so the shared
+// merge core operates on them exactly as on JSON.
+func parseTOML(raw []byte) (map[string]any, error) {
+	if len(raw) == 0 {
+		return map[string]any{}, nil
+	}
+	var cfg map[string]any
+	if err := toml.Unmarshal(raw, &cfg); err != nil {
+		return nil, fmt.Errorf("malformed TOML: %w", err)
+	}
+	if cfg == nil {
+		cfg = map[string]any{}
+	}
+	return cfg, nil
+}
+
+// marshalTOML renders a config as TOML. BurntSushi emits top-level scalars
+// before table headers (required for valid TOML) and sorts keys, so the output
+// is deterministic. RULINGS.md R54 accepts reserialization (comments/formatting
+// of the file-merge fallback are not preserved; the CLI path is preferred).
+func marshalTOML(cfg map[string]any) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(cfg); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// ---- pure config-merge core (regression-tested in mcpinstall_test.go) ----
+
+// DesiredEntry is the cairn server entry we install: the current binary + ["mcp"].
+// The args slice is []any{"mcp"} so it compares equal (reflect.DeepEqual) to the
+// same entry after a JSON *or* TOML round-trip (both decode arrays to []any).
+func DesiredEntry(self string) map[string]any {
+	return map[string]any{"command": self, "args": []any{"mcp"}}
+}
+
+// ParseConfig parses a JSON client config. Retained as the JSON entry point used
+// by the CLI-surface tests; format-aware callers use App.codec.parse.
+func ParseConfig(raw []byte) (map[string]any, error) { return parseJSON(raw) }
+
+// MarshalConfig renders a config as JSON (see ParseConfig).
+func MarshalConfig(cfg map[string]any) ([]byte, error) { return marshalJSON(cfg) }
+
+// cairnCommand returns the command configured for the cairn server under the
+// given servers key ("mcpServers" for JSON, "mcp_servers" for TOML).
+func cairnCommand(cfg map[string]any, serversKey string) (cmd string, present bool) {
+	servers, _ := cfg[serversKey].(map[string]any)
 	entry, ok := servers["cairn"].(map[string]any)
 	if !ok {
 		return "", false
@@ -169,27 +285,41 @@ func CairnCommand(cfg map[string]any) (cmd string, present bool) {
 	return c, true
 }
 
-// MergeCairn adds or updates ONLY the cairn server entry, preserving every
-// other server and setting. It reports whether anything changed and the
-// previous cairn command (empty if none), so callers can detect stale paths.
-func MergeCairn(cfg map[string]any, self string) (changed bool, prevCmd string) {
-	servers, _ := cfg["mcpServers"].(map[string]any)
+// CairnCommand reads the cairn command from a JSON config ("mcpServers"). Kept
+// for the CLI-surface tests; format-aware callers use cairnCommand.
+func CairnCommand(cfg map[string]any) (cmd string, present bool) {
+	return cairnCommand(cfg, "mcpServers")
+}
+
+// mergeCairn adds or updates ONLY the cairn server entry under serversKey,
+// preserving every other server, table, and setting. It reports whether
+// anything changed and the previous cairn command (empty if none), so callers
+// can detect stale paths.
+func mergeCairn(cfg map[string]any, self, serversKey string) (changed bool, prevCmd string) {
+	servers, _ := cfg[serversKey].(map[string]any)
 	if servers == nil {
 		servers = map[string]any{}
 	}
-	prevCmd, _ = CairnCommand(cfg)
+	prevCmd, _ = cairnCommand(cfg, serversKey)
 	desired := DesiredEntry(self)
 	if reflect.DeepEqual(servers["cairn"], desired) {
 		return false, prevCmd
 	}
 	servers["cairn"] = desired
-	cfg["mcpServers"] = servers
+	cfg[serversKey] = servers
 	return true, prevCmd
 }
 
-// RemoveCairn removes ONLY the cairn server entry, leaving everything else.
-func RemoveCairn(cfg map[string]any) (changed bool) {
-	servers, _ := cfg["mcpServers"].(map[string]any)
+// MergeCairn merges into a JSON config ("mcpServers"). Kept for the CLI-surface
+// tests; format-aware callers use mergeCairn.
+func MergeCairn(cfg map[string]any, self string) (changed bool, prevCmd string) {
+	return mergeCairn(cfg, self, "mcpServers")
+}
+
+// removeCairn removes ONLY the cairn server entry under serversKey, leaving
+// everything else.
+func removeCairn(cfg map[string]any, serversKey string) (changed bool) {
+	servers, _ := cfg[serversKey].(map[string]any)
 	if servers == nil {
 		return false
 	}
@@ -198,6 +328,12 @@ func RemoveCairn(cfg map[string]any) (changed bool) {
 	}
 	delete(servers, "cairn")
 	return true
+}
+
+// RemoveCairn removes from a JSON config ("mcpServers"). Kept for the CLI-surface
+// tests; format-aware callers use removeCairn.
+func RemoveCairn(cfg map[string]any) (changed bool) {
+	return removeCairn(cfg, "mcpServers")
 }
 
 // ---- read / write / backup ----
@@ -234,14 +370,14 @@ func backup(e Env, path string) (string, error) {
 	return dst, nil
 }
 
-// writeConfigFile atomically writes cfg, validating that the rendered bytes
-// re-parse as JSON before rename (belt-and-suspenders on the marshal).
-func writeConfigFile(path string, cfg map[string]any) error {
-	out, err := MarshalConfig(cfg)
+// writeConfigFile atomically writes cfg via the app's codec, validating that
+// the rendered bytes re-parse before rename (belt-and-suspenders on the marshal).
+func writeConfigFile(path string, cfg map[string]any, c codec) error {
+	out, err := c.marshal(cfg)
 	if err != nil {
 		return err
 	}
-	if _, err := ParseConfig(out); err != nil {
+	if _, err := c.parse(out); err != nil {
 		return fmt.Errorf("refusing to write config that does not re-parse: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -313,12 +449,12 @@ func (a App) Inspect(e Env) Status {
 	if !exists {
 		return s
 	}
-	cfg, perr := ParseConfig(raw)
+	cfg, perr := a.codec.parse(raw)
 	if perr != nil {
 		s.Malformed = true
 		return s
 	}
-	cmd, present := CairnCommand(cfg)
+	cmd, present := cairnCommand(cfg, a.codec.serversKey)
 	s.Configured = present
 	s.CurrentCmd = cmd
 	s.Stale = present && cmd != e.Self
@@ -339,7 +475,7 @@ func (a App) Install(e Env) (Result, error) {
 	if err != nil {
 		return r, err
 	}
-	cfg, perr := ParseConfig(raw)
+	cfg, perr := a.codec.parse(raw)
 	if perr != nil {
 		// refuse: back up the malformed file and skip (never clobber)
 		bp, _ := backup(e, path)
@@ -347,7 +483,7 @@ func (a App) Install(e Env) (Result, error) {
 		return r, fmt.Errorf("existing config is malformed, backed up to %s and skipped: %w", bp, perr)
 	}
 
-	changed, prevCmd := MergeCairn(cfg, e.Self)
+	changed, prevCmd := mergeCairn(cfg, e.Self, a.codec.serversKey)
 	if !changed {
 		r.Message = "already up to date"
 		return r, nil
@@ -365,16 +501,17 @@ func (a App) Install(e Env) (Result, error) {
 
 	if a.viaCLI(e) {
 		r.Method = "cli"
-		// The CLI errors if the name already exists, so replace: remove-then-add.
+		// The CLI errors (Claude) or overwrites (Codex) if the name already
+		// exists, so replace uniformly: remove-then-add. remove is best-effort.
 		if prevCmd != "" {
-			_ = e.Run(a.cliName, "mcp", "remove", "cairn", "--scope", a.cliScope)
+			_ = e.Run(a.cliName, a.cliRemove()...)
 		}
-		if err := e.Run(a.cliName, "mcp", "add", "cairn", "--scope", a.cliScope, "--", e.Self, "mcp"); err != nil {
+		if err := e.Run(a.cliName, a.cliAdd(e.Self)...); err != nil {
 			return r, err
 		}
 	} else {
 		r.Method = "file"
-		if err := writeConfigFile(path, cfg); err != nil {
+		if err := writeConfigFile(path, cfg, a.codec); err != nil {
 			return r, err
 		}
 	}
@@ -403,13 +540,13 @@ func (a App) Uninstall(e Env) (Result, error) {
 		r.Message = "not configured, nothing to remove"
 		return r, nil
 	}
-	cfg, perr := ParseConfig(raw)
+	cfg, perr := a.codec.parse(raw)
 	if perr != nil {
 		bp, _ := backup(e, path)
 		r.BackupPath = bp
 		return r, fmt.Errorf("existing config is malformed, backed up to %s and skipped: %w", bp, perr)
 	}
-	if !RemoveCairn(cfg) {
+	if !removeCairn(cfg, a.codec.serversKey) {
 		r.Message = "not configured, nothing to remove"
 		return r, nil
 	}
@@ -421,12 +558,12 @@ func (a App) Uninstall(e Env) (Result, error) {
 	}
 	if a.viaCLI(e) {
 		r.Method = "cli"
-		if err := e.Run(a.cliName, "mcp", "remove", "cairn", "--scope", a.cliScope); err != nil {
+		if err := e.Run(a.cliName, a.cliRemove()...); err != nil {
 			return r, err
 		}
 	} else {
 		r.Method = "file"
-		if err := writeConfigFile(path, cfg); err != nil {
+		if err := writeConfigFile(path, cfg, a.codec); err != nil {
 			return r, err
 		}
 	}
@@ -440,6 +577,8 @@ func (a App) nextStep() string {
 		return "Restart Claude Desktop to load Cairn."
 	case "claude-code":
 		return "Cairn is available in new Claude Code sessions (run `claude mcp list` to confirm)."
+	case "codex":
+		return "Cairn is available in new Codex sessions (run `codex mcp list` to confirm)."
 	default:
 		return "Restart the app to load Cairn."
 	}

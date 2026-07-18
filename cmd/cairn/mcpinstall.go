@@ -29,7 +29,7 @@ func resolveApps(env mcpinstall.Env, apps []string, all bool) ([]mcpinstall.App,
 		for _, name := range apps {
 			a, ok := mcpinstall.Lookup(name)
 			if !ok {
-				return nil, fmt.Errorf("unknown app %q (supported: claude-desktop, claude-code)", name)
+				return nil, fmt.Errorf("unknown app %q (supported: claude-desktop, claude-code, codex)", name)
 			}
 			out = append(out, a)
 		}
@@ -43,7 +43,7 @@ func resolveApps(env mcpinstall.Env, apps []string, all bool) ([]mcpinstall.App,
 		}
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("no supported MCP client apps detected; pass --app claude-desktop|claude-code explicitly")
+		return nil, fmt.Errorf("no supported MCP client apps detected; pass --app claude-desktop|claude-code|codex explicitly")
 	}
 	return out, nil
 }
@@ -58,10 +58,10 @@ func mcpEnv() (mcpinstall.Env, error) {
 
 func newMCPInstallCmd(_ *string) *cobra.Command {
 	var apps []string
-	var all, list bool
+	var all, list, status bool
 	cmd := &cobra.Command{
 		Use:   "mcp-install",
-		Short: "Wire `cairn mcp` into Claude Desktop / Claude Code (merge-only; backs up first). No args → --list.",
+		Short: "Wire `cairn mcp` into Claude Desktop / Claude Code / Codex (merge-only; backs up first). No args → --list.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			env, err := mcpEnv()
@@ -70,6 +70,10 @@ func newMCPInstallCmd(_ *string) *cobra.Command {
 			}
 			out := cmd.OutOrStdout()
 
+			// --status: compact per-app table (detected / configured / path state)
+			if status {
+				return runMCPStatus(cmd, env)
+			}
 			// default (no --all/--app) with no explicit install intent → list
 			if list || (!all && len(apps) == 0) {
 				return runMCPList(cmd, env)
@@ -108,9 +112,10 @@ func newMCPInstallCmd(_ *string) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringSliceVar(&apps, "app", nil, "target app(s): claude-desktop, claude-code (repeatable)")
+	cmd.Flags().StringSliceVar(&apps, "app", nil, "target app(s): claude-desktop, claude-code, codex (repeatable)")
 	cmd.Flags().BoolVar(&all, "all", false, "configure every installed supported app")
 	cmd.Flags().BoolVar(&list, "list", false, "detect apps and report state; change nothing (default with no flags)")
+	cmd.Flags().BoolVar(&status, "status", false, "compact table: for every registry app — detected? configured? command current or stale?")
 	return cmd
 }
 
@@ -154,7 +159,7 @@ func newMCPUninstallCmd(_ *string) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringSliceVar(&apps, "app", nil, "target app(s): claude-desktop, claude-code (repeatable)")
+	cmd.Flags().StringSliceVar(&apps, "app", nil, "target app(s): claude-desktop, claude-code, codex (repeatable)")
 	cmd.Flags().BoolVar(&all, "all", false, "remove from every installed supported app")
 	return cmd
 }
@@ -183,5 +188,36 @@ func runMCPList(cmd *cobra.Command, env mcpinstall.Env) error {
 		fmt.Fprintf(out, "  %-14s   cairn:  %s\n", "", state)
 	}
 	fmt.Fprintln(out, "\nrun `cairn mcp-install --all` to configure every installed app, or --app <name> for one.")
+	return nil
+}
+
+// runMCPStatus prints a compact one-line-per-app table answering, for every
+// registry app: detected? configured? is the configured command current or
+// stale? It mutates nothing (Inspect is read-only).
+func runMCPStatus(cmd *cobra.Command, env mcpinstall.Env) error {
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "cairn binary: %s\n\n", env.Self)
+	fmt.Fprintf(out, "  %-14s %-9s %-12s %s\n", "APP", "DETECTED", "CONFIGURED", "COMMAND")
+	for _, a := range mcpinstall.Registry() {
+		s := a.Inspect(env)
+		detected := "no"
+		if s.Installed {
+			detected = "yes"
+		}
+		configured := "no"
+		command := "—"
+		switch {
+		case s.Malformed:
+			configured = "malformed"
+			command = "config not parseable; will back up & skip"
+		case s.Configured && s.Stale:
+			configured = "yes"
+			command = fmt.Sprintf("STALE → %s (run `cairn mcp-install --app %s`)", s.CurrentCmd, s.App)
+		case s.Configured:
+			configured = "yes"
+			command = "current"
+		}
+		fmt.Fprintf(out, "  %-14s %-9s %-12s %s\n", s.App, detected, configured, command)
+	}
 	return nil
 }

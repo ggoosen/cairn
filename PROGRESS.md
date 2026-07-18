@@ -3276,3 +3276,37 @@ interfaces, drops in with no caller changes):
 2. The iroh 1.x wire (per `docs/cairn-p3-iroh-integration-plan.md`): a Go↔iroh
    binding + two nodes on separate NATs + a relay box.
 3. Automatic metered/battery SENSING (a real metered device; the policy is built).
+
+## FIX-MCP2 — Codex CLI registry entry (`internal/mcpinstall`) — DONE (2026-07-18) [Tier 3]
+
+Added Codex CLI (OpenAI) as the third `mcp-install` registry app, alongside
+claude-desktop and claude-code. All FIX-MCP1 / R54 safety invariants preserved
+(merge-only, backup-before-write, malformed-refused, idempotent, `os.Executable()`
+path, stale-path auto-fix).
+
+- **TOML, not JSON.** Codex config is `~/.codex/config.toml` with one
+  `[mcp_servers.<name>]` table per server. The merge core was generalized: JSON
+  and TOML both decode to `map[string]any`, so `mergeCairn/removeCairn/
+  cairnCommand` now take a `serversKey` (`mcpServers` vs `mcp_servers`) and the
+  format is a `codec{serversKey, parse, marshal}` on each `App`. TOML parse/
+  marshal via `github.com/BurntSushi/toml` (already a dep). BurntSushi emits
+  top-level scalars before table headers (valid TOML) and round-trips
+  `args=["mcp"]` to `[]any{"mcp"}`, so idempotency's `reflect.DeepEqual` holds.
+  The exported JSON `ParseConfig/MarshalConfig/MergeCairn/RemoveCairn/CairnCommand`
+  remain as thin JSON wrappers (backward compat for the FIX-MCP1 tests).
+- **Prefers the sanctioned CLI**, same as Claude Code. Verified on this machine:
+  `codex mcp add cairn -- <abs> mcp` / `codex mcp remove cairn` (global; **no
+  `--scope`** — that differs from Claude, so CLI arg vectors are now per-app
+  `cliAdd/cliRemove` builders). `codex mcp add` overwrites cleanly, so the
+  remove-then-add replace path works. End-to-end validated against the real codex
+  binary in an isolated `CODEX_HOME`: merge-only (preserved `model` + an existing
+  server), idempotent, uninstall leaves everything else, and real `codex mcp list`
+  then sees `cairn`. Detection: `codex` on PATH or `~/.codex/` present.
+- **`cairn mcp-install --status`**: compact table — for every registry app,
+  detected? / configured? / command current-or-stale. `--list` already
+  auto-includes codex (it iterates `Registry()`).
+- **Tests** (`internal/mcpinstall`, mirroring the JSON suite; + a CLI-surface
+  `--status`/codex round-trip in `cmd/cairn`): preserves other MCP servers +
+  unrelated TOML tables, idempotent, malformed TOML refused-not-clobbered, stale
+  path updated, create-from-absent valid, CLI-driven add/remove with the correct
+  no-scope vector. Full tagged suite + vet green. `internal/log` untouched.
