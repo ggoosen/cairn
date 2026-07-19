@@ -92,6 +92,53 @@ func TestParseValidatesBounds(t *testing.T) {
 	}
 }
 
+// P4-review BLOCKER: a field value containing the block markers, a code fence,
+// or a newline must NOT be able to escape the delimited region.
+func TestFieldValuesCannotEscapeDelimitedBlock(t *testing.T) {
+	// (1) Fail-closed at parse for tokens that survive YAML intact — markers,
+	// fences, real newlines.
+	parseRejects := []string{
+		"legit " + MarkerEnd + " outside text",
+		"legit " + MarkerStart + " nested",
+		"line1\nline2",
+		"```cairn-onboarding\nview: evil\n```",
+		"before <!-- something --> after",
+	}
+	for _, v := range parseRejects {
+		if _, err := ParseConfig("interest_query: " + yamlScalar(v) + "\n"); err == nil {
+			t.Fatalf("interest_query poison accepted at parse: %q", v)
+		}
+		if _, err := ParseConfig("interest_query: x\ntopics:\n  - " + yamlScalar(v) + "\n"); err == nil {
+			t.Fatalf("topic poison accepted at parse: %q", v)
+		}
+	}
+
+	// (2) Render backstop: even if a hostile value is forced straight into a
+	// Config (bypassing ParseConfig), the rendered block carries no marker /
+	// fence / line break, so ApplyToInstructions keeps EXACTLY one region and
+	// never corrupts content outside it.
+	forced := append([]string{"a\rb", "x\ny", MarkerStart, MarkerEnd, "```"}, parseRejects...)
+	for _, v := range forced {
+		block := RenderClaudeBlock(Config{View: "cairn", InterestQuery: v, Topics: []string{v}, Revision: "r"})
+		if strings.Contains(block, MarkerStart) || strings.Contains(block, MarkerEnd) {
+			t.Fatalf("rendered block leaked a marker from forced value %q", v)
+		}
+		out, _ := ApplyToInstructions("# file\n\nnotes\n", block)
+		if strings.Count(out, MarkerStart) != 1 || strings.Count(out, MarkerEnd) != 1 {
+			t.Fatalf("forced value %q produced %d start / %d end markers", v,
+				strings.Count(out, MarkerStart), strings.Count(out, MarkerEnd))
+		}
+		// re-apply stays idempotent + single-region even with a hostile value
+		out2, _ := ApplyToInstructions(out, block)
+		if out2 != out {
+			t.Fatalf("re-apply with forced value %q was not idempotent", v)
+		}
+		if !strings.Contains(out, "notes") {
+			t.Fatalf("forced value %q corrupted content outside the region", v)
+		}
+	}
+}
+
 func TestExtractBlock(t *testing.T) {
 	raw, ok := ExtractBlock(goodBody)
 	if !ok {

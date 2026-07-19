@@ -120,11 +120,13 @@ func (p *Projection) MessagesInTopicIDs(topicIDs []string) (map[string]bool, err
 	return out, rows.Err()
 }
 
-// LatestTopicMessage returns the message_id of the most-recent non-retracted
-// head message linked to the named topic (R56 onboarding-record lookup), or ""
-// if the topic does not exist or has no messages. Recency is created_at then
-// message_id (a stable tiebreak), matching the digest's ordering convention.
-func (p *Projection) LatestTopicMessage(topicName string) (string, error) {
+// LatestTopicMessageBySender returns the message_id of the most-recent
+// non-retracted head message on the named topic authored by senderPrincipal, or
+// "" if none (R56 onboarding-record lookup). Filtering by author in SQL means a
+// non-operator writer cannot SHADOW the operator's onboarding record by posting
+// a newer message (a denial the P4 review flagged) — only operator messages are
+// ever located. Recency is created_at then message_id (stable tiebreak).
+func (p *Projection) LatestTopicMessageBySender(topicName, senderPrincipal string) (string, error) {
 	topicID, err := p.TopicIDByName(topicName)
 	if err != nil || topicID == "" {
 		return "", err // absent topic is not an error: no record yet
@@ -133,8 +135,8 @@ func (p *Projection) LatestTopicMessage(topicName string) (string, error) {
 	err = p.db.QueryRow(`
 		SELECT m.message_id FROM messages m
 		JOIN topic_links l ON l.message_id = m.message_id AND l.removed = 0
-		WHERE m.retracted = 0 AND l.topic_id = ?
-		ORDER BY m.created_at DESC, m.message_id DESC LIMIT 1`, topicID).Scan(&id)
+		WHERE m.retracted = 0 AND l.topic_id = ? AND m.sender_principal_id = ?
+		ORDER BY m.created_at DESC, m.message_id DESC LIMIT 1`, topicID, senderPrincipal).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}

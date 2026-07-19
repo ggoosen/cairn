@@ -136,13 +136,16 @@ func ParseConfig(raw string) (Config, error) {
 	if cfg.View != "" && !validName(cfg.View) {
 		return Config{}, fmt.Errorf("onboarding view %q is not a valid view name", cfg.View)
 	}
+	if bad := inlineViolation(cfg.InterestQuery); bad != "" {
+		return Config{}, fmt.Errorf("onboarding interest_query contains a disallowed %s (single-line only)", bad)
+	}
 	for _, tp := range r.Topics {
 		tp = strings.TrimSpace(tp)
 		if tp == "" {
 			continue
 		}
-		if strings.ContainsAny(tp, "\n\r\t") {
-			return Config{}, fmt.Errorf("onboarding topic %q contains control characters", tp)
+		if bad := inlineViolation(tp); bad != "" {
+			return Config{}, fmt.Errorf("onboarding topic %q contains a disallowed %s", tp, bad)
 		}
 		cfg.Topics = append(cfg.Topics, tp)
 	}
@@ -150,6 +153,35 @@ func ParseConfig(raw string) (Config, error) {
 		return Config{}, fmt.Errorf("onboarding digest_budget %d out of range (0..%d)", cfg.DigestBudget, MaxDigestBudget)
 	}
 	return cfg, nil
+}
+
+// inlineViolation reports the first STRUCTURAL token that must never appear in a
+// single-line config value (interest_query, a topic). Any of these could break a
+// field's rendered text out of the delimited instructions block (BLOCKER-class,
+// found in P4 review): newlines, code fences, or HTML/onboarding comment
+// markers. Rejecting here is fail-closed; RenderClaudeBlock ALSO neutralizes as
+// defense in depth so a value can never escape the region regardless.
+func inlineViolation(s string) string {
+	switch {
+	case strings.ContainsAny(s, "\n\r"):
+		return "newline"
+	case strings.Contains(s, "```"):
+		return "code fence"
+	case strings.Contains(s, "<!--") || strings.Contains(s, "-->"):
+		return "comment marker"
+	}
+	return ""
+}
+
+// neutralizeInline is the render-time backstop for inlineViolation: even if a
+// value somehow reaches rendering, it can carry no newline, fence, or comment
+// marker into the managed block.
+func neutralizeInline(s string) string {
+	return strings.NewReplacer(
+		"\n", " ", "\r", " ",
+		"```", "ˋˋˋ",
+		"<!--", "<! --", "-->", "-- >",
+	).Replace(s)
 }
 
 // validName rejects path traversal / separators in a view name (mirrors the
@@ -177,7 +209,7 @@ func RenderClaudeBlock(cfg Config) string {
 	}
 	fmt.Fprintf(&b, "- START OF SESSION: run `cairn digest --view %s --budget %d` and read it.\n", cfg.View, budget)
 	if cfg.InterestQuery != "" {
-		fmt.Fprintf(&b, "- This view's standing interest (already applied to your local config): _%s_\n", cfg.InterestQuery)
+		fmt.Fprintf(&b, "- This view's standing interest (already applied to your local config): _%s_\n", neutralizeInline(cfg.InterestQuery))
 	}
 	if len(cfg.Topics) > 0 {
 		fmt.Fprintf(&b, "- Topic taxonomy this view cares about: %s\n", strings.Join(backticked(cfg.Topics), ", "))
@@ -189,7 +221,7 @@ func RenderClaudeBlock(cfg Config) string {
 func backticked(xs []string) []string {
 	out := make([]string, len(xs))
 	for i, x := range xs {
-		out[i] = "`" + x + "`"
+		out[i] = "`" + neutralizeInline(x) + "`"
 	}
 	return out
 }

@@ -14,6 +14,7 @@ package daemon
 import (
 	"fmt"
 
+	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/onboarding"
 )
 
@@ -45,9 +46,12 @@ func (d *Daemon) OnboardingRecord(view string) (*OnboardingResult, error) {
 	if !validViewName(view) {
 		return nil, fmt.Errorf("invalid view %q", view)
 	}
+	// Locate the latest OPERATOR-authored record only: a non-operator writer
+	// cannot shadow it by posting newer noise to the topic (defence in depth on
+	// bound 1 — Verify below is still the authoritative authorship gate).
 	var topic, msgID string
 	for _, t := range onboardingTopics(view) {
-		id, err := d.proj.LatestTopicMessage(t)
+		id, err := d.proj.LatestTopicMessageBySender(t, config.SignalOperatorPrincipal)
 		if err != nil {
 			return nil, err
 		}

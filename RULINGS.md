@@ -1017,7 +1017,28 @@ imposed yet (it would bar the operator's other devices). Widening or tightening 
 anchor is a future R-number.
 
 **Scope.** `internal/onboarding` (pure security core), `Daemon.OnboardingRecord` +
-`onboarding-get` IPC (capRead), `Projection.LatestTopicMessage`, `cairn onboarding
+`onboarding-get` IPC (capRead), `Projection.LatestTopicMessageBySender`, `cairn onboarding
 publish|show|apply`, and the skill/`CLAUDE.md` self-config standing instruction. The event log is
-untouched (the record is an ordinary canonical message; no new event type). Crossed adversarial
-review focused on the three bounds precedes merge.
+untouched (the record is an ordinary canonical message; no new event type).
+
+### R56.1 — bound-3 hardening from the crossed review (2 fixes)
+
+The crossed adversarial review found a BLOCKER against bound 3 and a MINOR availability gap;
+both are fixed and regression-tested:
+
+1. **Field values cannot escape the delimited block (was BLOCKER).** `interest_query` / `topics`
+   are single-line values rendered into the managed block. A value containing the region markers
+   (`<!-- cairn:onboarding end/start -->`), a code fence, or a newline could break out of the
+   region on the next apply and land attacker-chosen text OUTSIDE the markers as unmarked,
+   apparently-hand-written (trusted) instructions. Fixed two ways: `ParseConfig` REJECTS such
+   values fail-closed (`inlineViolation`), and `RenderClaudeBlock` additionally NEUTRALIZES
+   newlines / fences / comment markers (`neutralizeInline`) so a value can never carry a
+   structural token into the block even if forced past parse. (Note: this vector needed an
+   *operator-authored* record — bound 1 was never breached — but a plausible operator input
+   like a query referencing the markers would silently propagate to every applying project.)
+2. **Non-operator cannot shadow the operator record (was MINOR/DoS).** Record selection now uses
+   `LatestTopicMessageBySender(topic, "operator")` — only operator-authored messages are located,
+   so a non-operator writer can neither become config (bound 1) nor SUPPRESS onboarding by posting
+   newer noise to the topic. `Verify` remains the authoritative authorship gate (defence in depth).
+
+Verdict after fixes: re-reviewed SAFE-TO-MERGE.

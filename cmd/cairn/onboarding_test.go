@@ -95,7 +95,8 @@ func TestR56OnboardingCLI(t *testing.T) {
 	}
 
 	// AUTHORSHIP GATE end to end: a non-operator publishes a NEWER record on the
-	// same topic. It becomes the latest, but must be REFUSED as config.
+	// same topic. It must have ZERO effect — it cannot shadow the operator
+	// record (selection is operator-filtered) and can never become config.
 	resp, err := daemon.Call(loaded.DeviceDir, daemon.Request{
 		Op: "session-create", SessionProfile: "agent-standard", SessionName: "attacker"})
 	if err != nil {
@@ -110,27 +111,22 @@ func TestR56OnboardingCLI(t *testing.T) {
 		t.Fatalf("attacker publish: %v", err)
 	}
 
+	// show still resolves the OPERATOR record (the poison is invisible), and
+	// apply still applies the operator config — never "pwned".
 	out, err = runCLI(t, "onboarding", "show", "--view", "cairn", "--dir", dir)
 	if err != nil {
 		t.Fatalf("show after poison: %v\n%s", err, out)
 	}
 	var res2 daemon.OnboardingResult
 	json.Unmarshal([]byte(out), &res2)
-	if !res2.Found {
-		t.Fatalf("poison record not found: %s", out)
+	if !res2.Found || !res2.Verified || res2.Sender != "operator" {
+		t.Fatalf("poison shadowed the operator record: %s", out)
 	}
-	if res2.Verified {
-		t.Fatalf("BLOCKER: non-operator record was verified as config: %s", out)
+	if res2.Config == nil || strings.Contains(res2.Config.InterestQuery, "pwned") {
+		t.Fatalf("BLOCKER: non-operator record leaked into config: %s", out)
 	}
-	if res2.Sender == "operator" || !strings.Contains(res2.Refusal, "operator") {
-		t.Fatalf("refusal not attributed to non-operator authorship: %s", out)
-	}
-
-	// apply now refuses and does NOT overwrite the local interest with "pwned"
 	if out, err := runCLI(t, "onboarding", "apply", "--view", "cairn", "--instructions", claudeMd, "--dir", dir); err != nil {
 		t.Fatalf("apply after poison: %v\n%s", err, out)
-	} else if !strings.Contains(out, "NOT applied") {
-		t.Fatalf("apply did not refuse the poison record: %s", out)
 	}
 	blob2, _ := os.ReadFile(filepath.Join(dir, "views", "cairn", "view.json"))
 	var vc2 daemon.ViewConfig
