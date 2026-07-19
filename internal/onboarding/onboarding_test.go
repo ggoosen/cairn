@@ -111,30 +111,39 @@ func TestFieldValuesCannotEscapeDelimitedBlock(t *testing.T) {
 		if _, err := ParseConfig("interest_query: x\ntopics:\n  - " + yamlScalar(v) + "\n"); err == nil {
 			t.Fatalf("topic poison accepted at parse: %q", v)
 		}
+		// the view field is rendered into the block too — it must reject the
+		// same structural tokens (P4 re-review: view was the residual escape).
+		if _, err := ParseConfig("view: " + yamlScalar(v) + "\ninterest_query: x\n"); err == nil {
+			t.Fatalf("view poison accepted at parse: %q", v)
+		}
 	}
 
 	// (2) Render backstop: even if a hostile value is forced straight into a
-	// Config (bypassing ParseConfig), the rendered block carries no marker /
-	// fence / line break, so ApplyToInstructions keeps EXACTLY one region and
-	// never corrupts content outside it.
+	// Config (bypassing ParseConfig) in ANY record-derived field, the rendered
+	// block carries no marker / fence / line break, so ApplyToInstructions keeps
+	// EXACTLY one region and never corrupts content outside it.
 	forced := append([]string{"a\rb", "x\ny", MarkerStart, MarkerEnd, "```"}, parseRejects...)
 	for _, v := range forced {
-		block := RenderClaudeBlock(Config{View: "cairn", InterestQuery: v, Topics: []string{v}, Revision: "r"})
-		if strings.Contains(block, MarkerStart) || strings.Contains(block, MarkerEnd) {
-			t.Fatalf("rendered block leaked a marker from forced value %q", v)
-		}
-		out, _ := ApplyToInstructions("# file\n\nnotes\n", block)
-		if strings.Count(out, MarkerStart) != 1 || strings.Count(out, MarkerEnd) != 1 {
-			t.Fatalf("forced value %q produced %d start / %d end markers", v,
-				strings.Count(out, MarkerStart), strings.Count(out, MarkerEnd))
-		}
-		// re-apply stays idempotent + single-region even with a hostile value
-		out2, _ := ApplyToInstructions(out, block)
-		if out2 != out {
-			t.Fatalf("re-apply with forced value %q was not idempotent", v)
-		}
-		if !strings.Contains(out, "notes") {
-			t.Fatalf("forced value %q corrupted content outside the region", v)
+		for _, cfg := range []Config{
+			{View: "cairn", InterestQuery: v, Topics: []string{v}, Revision: "r"},
+			{View: v, InterestQuery: "x", Revision: v}, // view + revision poisoned
+		} {
+			block := RenderClaudeBlock(cfg)
+			if strings.Contains(block, MarkerStart) || strings.Contains(block, MarkerEnd) {
+				t.Fatalf("rendered block leaked a marker from forced cfg %+v", cfg)
+			}
+			out, _ := ApplyToInstructions("# file\n\nnotes\n", block)
+			if strings.Count(out, MarkerStart) != 1 || strings.Count(out, MarkerEnd) != 1 {
+				t.Fatalf("forced cfg %+v produced %d start / %d end markers", cfg,
+					strings.Count(out, MarkerStart), strings.Count(out, MarkerEnd))
+			}
+			out2, _ := ApplyToInstructions(out, block)
+			if out2 != out {
+				t.Fatalf("re-apply with forced cfg %+v was not idempotent", cfg)
+			}
+			if !strings.Contains(out, "notes") {
+				t.Fatalf("forced cfg %+v corrupted content outside the region", cfg)
+			}
 		}
 	}
 }

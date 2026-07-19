@@ -1041,4 +1041,14 @@ both are fixed and regression-tested:
    so a non-operator writer can neither become config (bound 1) nor SUPPRESS onboarding by posting
    newer noise to the topic. `Verify` remains the authoritative authorship gate (defence in depth).
 
-Verdict after fixes: re-reviewed SAFE-TO-MERGE.
+### R56.2 — close the `view`-field residual (same escape class)
+
+The re-review confirmed R56.1's two fixes but found the SAME delimited-block escape reopened through
+the **`view`** field: it is rendered into the managed block (the heading + the `cairn digest --view`
+line) but R56.1 sanitized only `interest_query`/`topics`. A record with `view` containing the region
+marker/newline (reachable via the mesh-wide `cairn/onboarding` fallback topic, all operator-authored)
+escaped the region on re-apply. Fixed: `view` (and, defensively, the machine-set `revision`) now go
+through `inlineViolation` at parse and `neutralizeInline` at render — ALL record-derived values that
+reach the block are covered. Regression case added to `TestFieldValuesCannotEscapeDelimitedBlock`.
+
+Verdict after fixes: re-review pending confirmation (R56.2).

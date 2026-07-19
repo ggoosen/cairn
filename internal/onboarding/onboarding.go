@@ -136,6 +136,11 @@ func ParseConfig(raw string) (Config, error) {
 	if cfg.View != "" && !validName(cfg.View) {
 		return Config{}, fmt.Errorf("onboarding view %q is not a valid view name", cfg.View)
 	}
+	if bad := inlineViolation(cfg.View); bad != "" {
+		// view is rendered into the managed block too — it must not carry a
+		// structural token any more than interest_query/topics (P4 re-review).
+		return Config{}, fmt.Errorf("onboarding view contains a disallowed %s", bad)
+	}
 	if bad := inlineViolation(cfg.InterestQuery); bad != "" {
 		return Config{}, fmt.Errorf("onboarding interest_query contains a disallowed %s (single-line only)", bad)
 	}
@@ -199,15 +204,18 @@ func RenderClaudeBlock(cfg Config) string {
 	var b strings.Builder
 	b.WriteString("<!-- Managed by `cairn onboarding apply` (R56). Do not edit inside the markers;\n")
 	b.WriteString("     hand edits here are overwritten on the next apply. Edit outside them. -->\n")
-	fmt.Fprintf(&b, "## Cairn onboarding — view `%s`\n\n", cfg.View)
+	// every record-derived value that reaches the block is neutralized so no
+	// structural token (marker/fence/newline) can escape the delimited region.
+	viewText := neutralizeInline(cfg.View)
+	fmt.Fprintf(&b, "## Cairn onboarding — view `%s`\n\n", viewText)
 	if cfg.Revision != "" {
-		fmt.Fprintf(&b, "_Applied onboarding revision: `%s`_\n\n", cfg.Revision)
+		fmt.Fprintf(&b, "_Applied onboarding revision: `%s`_\n\n", neutralizeInline(cfg.Revision))
 	}
 	budget := cfg.DigestBudget
 	if budget <= 0 {
 		budget = config.MCPDigestBudgetDefault
 	}
-	fmt.Fprintf(&b, "- START OF SESSION: run `cairn digest --view %s --budget %d` and read it.\n", cfg.View, budget)
+	fmt.Fprintf(&b, "- START OF SESSION: run `cairn digest --view %s --budget %d` and read it.\n", viewText, budget)
 	if cfg.InterestQuery != "" {
 		fmt.Fprintf(&b, "- This view's standing interest (already applied to your local config): _%s_\n", neutralizeInline(cfg.InterestQuery))
 	}
