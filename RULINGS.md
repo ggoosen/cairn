@@ -1051,4 +1051,18 @@ escaped the region on re-apply. Fixed: `view` (and, defensively, the machine-set
 through `inlineViolation` at parse and `neutralizeInline` at render — ALL record-derived values that
 reach the block are covered. Regression case added to `TestFieldValuesCannotEscapeDelimitedBlock`.
 
-Verdict after fixes: re-review pending confirmation (R56.2).
+**Verdict after fixes: crossed review SAFE-TO-MERGE** (re-verified end-to-end on the real
+`publish → apply → apply` CLI flow). Authorship (bound 1) was never breached; the
+delimited-block escape / file-corruption class (bound 3) is closed on all four record-derived
+fields (`view`/`interest_query`/`topics`/`revision`) at BOTH the parse and render layers; the
+operator-only record selection (no non-operator shadowing) holds without breaking legit operator
+updates.
+
+### R56.3 — daemon-defaulted view runs the strict inline gate too (review MINOR)
+
+The review's one residual: a record that OMITS `view:` inherits the *requested* view, which passed
+only the looser `validViewName` (blocks `/ \ ..`), so a marker/newline requested-view reached
+`RenderClaudeBlock` having skipped `ParseConfig`'s `inlineViolation`. The render backstop already
+contained it (no escape, idempotent), but for layer symmetry `Daemon.OnboardingRecord` now runs
+`onboarding.InlineViolation` on the effective (defaulted) view and refuses on violation. Both
+parse- and daemon-supplied view names now face the identical strict gate.

@@ -3359,7 +3359,7 @@ config), config-by-exception with three bounds (root authorship, schema
 whitelist, bounded effect). Needs its own R-number and its own crossed review
 before build (plan §D).
 
-## AFFORDANCE P4 — self-bootstrapping onboarding record (R56) — BUILT, re-review pending (2026-07-19)
+## AFFORDANCE P4 — self-bootstrapping onboarding record (R56) — DONE, review SAFE-TO-MERGE (2026-07-19)
 
 Operator signed off the config-by-exception model (2026-07-19). Built the ONE
 trusted-config exception, bounded on three axes (RULINGS R56 + R56.1):
@@ -3380,11 +3380,13 @@ trusted-config exception, bounded on three axes (RULINGS R56 + R56.1):
 - **Docs** — skill + CLAUDE.md self-config standing instruction (security framing
   verbatim); DOGFOOD §9a operator howto.
 
-**Crossed review (independent agent):** first pass NOT-SAFE — one BLOCKER (record
+**Crossed review (independent agent, 3 rounds):** round 1 NOT-SAFE — one BLOCKER (record
 field values could escape the delimited block via embedded markers/newlines) +
-one MINOR (non-operator could shadow the record). Both fixed in R56.1
-(parse-reject + render-neutralize; operator-filtered selection); re-review in
-flight. Deviation from plan §D (recorded in R56): no message-pin primitive
+one MINOR (non-operator could shadow the record). Fixed in R56.1 (parse-reject +
+render-neutralize; operator-filtered selection). Round 2 caught a residual of the
+SAME class via the `view` field (R56.2) — fixed. Round 3: **SAFE-TO-MERGE**,
+verified end-to-end on the real publish→apply→apply CLI flow; one leftover MINOR
+(daemon-defaulted view) closed in R56.3. Deviation from plan §D (recorded in R56): no message-pin primitive
 exists (pins are object-durability), so the authoritative record is the latest
 operator message on the topic; its head revision is the re-apply trigger.
 

@@ -88,6 +88,15 @@ func (d *Daemon) OnboardingRecord(view string) (*OnboardingResult, error) {
 	if cfg.View == "" {
 		cfg.View = view
 	}
+	// A record that omits `view:` inherits the REQUESTED view, which passed only
+	// the looser validViewName (blocks / \ ..). Re-check it against the strict
+	// inline gate so a marker/newline requested-view can never reach the block
+	// (defence-in-depth symmetry with ParseConfig; the render backstop already
+	// contains it, but keep both layers uniform — P4 re-review).
+	if bad := onboarding.InlineViolation(cfg.View); bad != "" {
+		res.Refusal = fmt.Sprintf("view %q contains a disallowed %s: not applied", cfg.View, bad)
+		return res, nil
+	}
 	// Defence in depth (bound 3a): a record's declared view must match the view
 	// being onboarded — an operator record for view A can never reconfigure B.
 	if cfg.View != view {

@@ -178,6 +178,12 @@ func inlineViolation(s string) string {
 	return ""
 }
 
+// InlineViolation is the exported form for callers that supply a value NOT
+// sourced from ParseConfig — notably the daemon-defaulted requested view (when a
+// record omits `view:`), which otherwise reaches RenderClaudeBlock having passed
+// only the looser validViewName check. Returns "" if the value is safe.
+func InlineViolation(s string) string { return inlineViolation(s) }
+
 // neutralizeInline is the render-time backstop for inlineViolation: even if a
 // value somehow reaches rendering, it can carry no newline, fence, or comment
 // marker into the managed block.
