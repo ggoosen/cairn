@@ -3310,3 +3310,51 @@ path, stale-path auto-fix).
   unrelated TOML tables, idempotent, malformed TOML refused-not-clobbered, stale
   path updated, create-from-absent valid, CLI-driven add/remove with the correct
   no-scope vector. Full tagged suite + vet green. `internal/log` untouched.
+
+## AFFORDANCE P0–P3 — agents can shape their own relevance (self-subscribe) — DONE (2026-07-19)
+
+Work-order: `CAIRN-AFFORDANCE-PLAN.md`. Problem: the relevance machinery existed
+but was invisible/unreachable to agents — the agent-facing docs taught only
+digest/search/send/fetch/found/not-found, and the MCP door had no subscribe. So
+relevance was operator-configured; agents were passive.
+
+- **P0 (ruling):** operator confirmed (2026-07-19) MCP/agent self-subscription =
+  the R25 LOCAL tier only. Recorded as **R55** in RULINGS.md: no events, no
+  capability escalation, own view only; the durable/replicated tier stays
+  operator-CLI and is never exposed to MCP.
+- **P1 (docs):** taught the affordance on every agent-facing surface — the global
+  `~/.claude/skills/cairn/SKILL.md` ("Shape what you receive" section), repo
+  `CLAUDE.md` Cairn block, README wiring one-liner, DOGFOOD §9. CLI form
+  `cairn subscribe "<…>" --view <VIEW>` (local default, NOT `--durable`).
+- **P2 (code):** `cairn_subscribe` / `cairn_subscriptions` on the MCP server
+  (`internal/mcp/mcp.go`) → daemon `subscribe-local` / `subscription-local-get`
+  IPC ops (capRead) → `SubscribeLocal` / `LocalSubscriptionFor` writing only
+  `views/<view>/view.json` (`internal/daemon/subs.go`). No event; strict decode
+  rejects durable knobs / view override. topics==nil preserves operator-set hard
+  topics. `TestR55LocalSubscribe` asserts no event (status.next_seq unchanged) +
+  no durable row + strict decode + view isolation. `make verify` green.
+  - **Crossed adversarial review (independent agent, built HEAD, ran tests):
+    SAFE-TO-MERGE**, zero BLOCKER/MAJOR. Attacked all five R25 boundary points;
+    all held.
+- **P3 (live verify):** drove the real `cairn mcp` stdio binary end-to-end — the
+  digest ranked the subscribed-to message #1 after `cairn_subscribe`; durable
+  subscription list stayed empty; `view.json` written locally. Semantic matching
+  will sharpen once the embedding backlog drains (currently lexical_only).
+
+**Deviation (recorded):** plan §B suggested `top_n`/`percentile`/`mode` args on
+the MCP tool, but the local tier is `view.json` (interest_query + topics only) —
+those durable-tier knobs don't exist at the session tier, so they're omitted by
+design. MCP `cairn_subscribe` takes `interest_query` only.
+
+**Known future-hardening (MINOR, not gating — from the crossed review):** the
+IPC `subscribe-local` op doesn't bind the target view to the session principal
+(only `validViewName` guards path traversal). Unreachable via MCP (the tool
+hardcodes `s.view`) and consistent with the pre-existing `digest`/`fetch` IPC
+view-trust model under R22 (profiles prevent accidents, not a malicious local
+process). Revisit only if per-view auth is ever introduced.
+
+**Phase 4 (self-bootstrapping onboarding record) — NOT STARTED.** Blocked on an
+operator sign-off: it is a genuine trust-model widening (mesh content → self-
+config), config-by-exception with three bounds (root authorship, schema
+whitelist, bounded effect). Needs its own R-number and its own crossed review
+before build (plan §D).
