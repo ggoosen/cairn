@@ -3358,3 +3358,34 @@ operator sign-off: it is a genuine trust-model widening (mesh content → self-
 config), config-by-exception with three bounds (root authorship, schema
 whitelist, bounded effect). Needs its own R-number and its own crossed review
 before build (plan §D).
+
+## AFFORDANCE P4 — self-bootstrapping onboarding record (R56) — BUILT, re-review pending (2026-07-19)
+
+Operator signed off the config-by-exception model (2026-07-19). Built the ONE
+trusted-config exception, bounded on three axes (RULINGS R56 + R56.1):
+
+- **internal/onboarding** — pure security core: `Verify` (authorship gate),
+  `ExtractBlock`, `ParseConfig` (four-field whitelist; unknown fields + all prose
+  ignored; `inlineViolation` rejects marker/fence/newline in values),
+  `RenderClaudeBlock` (`neutralizeInline` render backstop), `ApplyToInstructions`
+  (idempotent, delimited rewrite), `RenderRecordBody`. Hard unit tests incl. the
+  injection-vector test.
+- **Daemon** — `OnboardingRecord` locates the latest OPERATOR-authored message on
+  `cairn/onboarding/<view>` (fallback `cairn/onboarding`) via
+  `Projection.LatestTopicMessageBySender(…, "operator")`, verifies it, returns
+  typed config or a refusal. `onboarding-get` IPC (capRead).
+- **CLI** — `cairn onboarding publish|show|apply`. `apply` reuses the R25
+  `subscribe-local` path + the delimited rewrite. Integration test incl. an
+  end-to-end authorship attack (non-operator record has zero effect).
+- **Docs** — skill + CLAUDE.md self-config standing instruction (security framing
+  verbatim); DOGFOOD §9a operator howto.
+
+**Crossed review (independent agent):** first pass NOT-SAFE — one BLOCKER (record
+field values could escape the delimited block via embedded markers/newlines) +
+one MINOR (non-operator could shadow the record). Both fixed in R56.1
+(parse-reject + render-neutralize; operator-filtered selection); re-review in
+flight. Deviation from plan §D (recorded in R56): no message-pin primitive
+exists (pins are object-durability), so the authoritative record is the latest
+operator message on the topic; its head revision is the re-apply trigger.
+
+**This completes the CAIRN-AFFORDANCE-PLAN work-order (Phases 0–4).**
