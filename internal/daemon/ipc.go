@@ -84,6 +84,9 @@ type Request struct {
 	SubUpdate      *SubUpdateRequest `json:"sub_update,omitempty"`
 	SubscriptionID string            `json:"subscription_id,omitempty"`
 
+	// R25 session (local) tier — view.json only, never events (subscribe-local)
+	LocalSub *LocalSubRequest `json:"local_sub,omitempty"`
+
 	// reads
 	Query            string `json:"query,omitempty"`
 	K                int    `json:"k,omitempty"`
@@ -112,6 +115,7 @@ type Response struct {
 	Status     map[string]any               `json:"status,omitempty"`
 	Subs       []projection.SubscriptionRow `json:"subscriptions,omitempty"`
 	Sub        *SubscribeResult             `json:"subscription,omitempty"`
+	LocalSub   *LocalSubscription           `json:"local_subscription,omitempty"` // R25 session tier
 	Derivs     []projection.DerivativeRow   `json:"derivatives,omitempty"`
 	Summary    *projection.SummaryRow       `json:"summary,omitempty"`
 	Staged     *StagedAttachment            `json:"staged,omitempty"` // G6: stage-attachment result
@@ -392,6 +396,25 @@ func (d *Daemon) dispatch(req Request) Response {
 			return fail(err)
 		}
 		return Response{OK: true, Subs: subs}
+
+	// R25 session tier: subscribe-local writes THIS view's view.json only. It
+	// appends NO event and NEVER reaches SubscribeDurable — capRead, own view.
+	case "subscribe-local":
+		if req.LocalSub == nil {
+			return fail(errors.New("local_sub payload missing"))
+		}
+		res, err := d.SubscribeLocal(req.LocalSub.View, req.LocalSub.InterestQuery, req.LocalSub.Topics)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, LocalSub: res}
+
+	case "subscription-local-get":
+		res, err := d.LocalSubscriptionFor(req.AgentView)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, LocalSub: res}
 
 	case "publish":
 		if req.Publish == nil {

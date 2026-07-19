@@ -27,7 +27,7 @@ import (
 
 // startMesh initializes a cairn, runs a daemon + IPC socket, and returns an
 // MCP server wired to it the same way `cairn mcp` wires one.
-func startMesh(t *testing.T) (*mcp.Server, *daemon.Daemon) {
+func startMesh(t *testing.T) (*mcp.Server, *daemon.Daemon, func(daemon.Request) (*daemon.Response, error)) {
 	t.Helper()
 	t.Setenv("CAIRN_DEVICE_STATE_DIR", t.TempDir())
 	t.Setenv("CAIRN_FAKE_VOLUME_STATUS", "encrypted")
@@ -64,7 +64,7 @@ func startMesh(t *testing.T) (*mcp.Server, *daemon.Daemon) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	return mcp.New(caller, "mcp", "mcp", "test"), d
+	return mcp.New(caller, "mcp", "mcp", "test"), d, caller
 }
 
 // rpc drives one JSON-RPC exchange through the wire-level handler.
@@ -110,7 +110,7 @@ func callTool(t *testing.T, s *mcp.Server, name string, args any, wantErr bool) 
 }
 
 func TestN1HandshakeAndToolList(t *testing.T) {
-	s, _ := startMesh(t)
+	s, _, _ := startMesh(t)
 
 	init := rpc(t, s, 1, "initialize", map[string]any{
 		"protocolVersion": "2025-03-26",
@@ -132,9 +132,10 @@ func TestN1HandshakeAndToolList(t *testing.T) {
 	list := rpc(t, s, 2, "tools/list", nil)
 	tools := list["result"].(map[string]any)["tools"].([]any)
 	want := []string{"cairn_digest", "cairn_search", "cairn_peek", "cairn_fetch",
-		"cairn_send", "cairn_reply", "cairn_signal", "cairn_outcome", "cairn_why_ranked"}
+		"cairn_send", "cairn_reply", "cairn_signal", "cairn_outcome", "cairn_why_ranked",
+		"cairn_subscribe", "cairn_subscriptions"}
 	if len(tools) != len(want) {
-		t.Fatalf("tool count %d, want %d (§5.5: these nine, nothing else)", len(tools), len(want))
+		t.Fatalf("tool count %d, want %d (§5.5 nine + R55 two, nothing else)", len(tools), len(want))
 	}
 	for i, tl := range tools {
 		tool := tl.(map[string]any)
@@ -168,7 +169,7 @@ func TestN1HandshakeAndToolList(t *testing.T) {
 // outcome (plus peek/reply/signal/why_ranked) with envelope checks on every
 // content-bearing result.
 func TestN1FullRoundTrip(t *testing.T) {
-	s, d := startMesh(t)
+	s, d, _ := startMesh(t)
 
 	sent := callTool(t, s, "cairn_send", map[string]any{
 		"body": "the council planning approval for the roastery was granted on tuesday",
@@ -281,7 +282,7 @@ func TestN1FullRoundTrip(t *testing.T) {
 
 // R19: over-budget digest truncates exactly; search obeys its budget too.
 func TestN1BudgetTruncatesExactly(t *testing.T) {
-	s, _ := startMesh(t)
+	s, _, _ := startMesh(t)
 	for i := 0; i < 12; i++ {
 		callTool(t, s, "cairn_send", map[string]any{
 			"body": fmt.Sprintf("budget filler message %d with enough words to consume digest space quickly", i),
@@ -309,7 +310,7 @@ func TestN1BudgetTruncatesExactly(t *testing.T) {
 // R20: no force-class equivalent, unknown args reject, unresolved topics
 // reject BEFORE ack instead of auto-creating.
 func TestN1SendPolicy(t *testing.T) {
-	s, _ := startMesh(t)
+	s, _, _ := startMesh(t)
 
 	for _, args := range []map[string]any{
 		{"body": "x", "operator_override": true},
@@ -338,7 +339,7 @@ func TestN1SendPolicy(t *testing.T) {
 // ServeStdio: the actual wire loop — newline-delimited, responses only for
 // id-bearing messages, clean EOF exit.
 func TestN1ServeStdio(t *testing.T) {
-	s, _ := startMesh(t)
+	s, _, _ := startMesh(t)
 	in := strings.NewReader(
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}` + "\n" +
 			`{"jsonrpc":"2.0","method":"notifications/initialized"}` + "\n" +
@@ -401,5 +402,122 @@ func TestP33bThinNodeEnvelopePartial(t *testing.T) {
 	}
 	if reason, _ := res["partial_reason"].(string); reason == "" {
 		t.Fatalf("thin-node search envelope missing partial_reason: %v", res)
+	}
+}
+
+// nextSeq reads the daemon's log high-water mark (status.next_seq) — the exact
+// counter that would advance if ANY event were appended.
+func nextSeq(t *testing.T, caller func(daemon.Request) (*daemon.Response, error)) float64 {
+	t.Helper()
+	resp, err := caller(daemon.Request{Op: "status"})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	n, ok := resp.Status["next_seq"].(float64)
+	if !ok {
+		t.Fatalf("status.next_seq missing/not a number: %v", resp.Status)
+	}
+	return n
+}
+
+// TestR55LocalSubscribe is the Phase 2 acceptance for the R25/R55 local tier:
+// cairn_subscribe declares an interest for THIS view and it shows in
+// cairn_subscriptions; it appends NO event of any kind (the log high-water mark
+// is unchanged) and materializes NO durable subscription; strict decode rejects
+// every durable knob and any view override; and it touches only the caller's
+// view.
+func TestR55LocalSubscribe(t *testing.T) {
+	s, _, caller := startMesh(t) // server is bound to view "mcp"
+
+	// (start) no interest yet
+	before := callTool(t, s, "cairn_subscriptions", map[string]any{}, false)
+	if before["kind"] != "local_subscription" || before["tier"] != "local" {
+		t.Fatalf("subscriptions shape: %v", before)
+	}
+	if q, _ := before["interest_query"].(string); q != "" {
+		t.Fatalf("expected no initial interest, got %q", q)
+	}
+
+	seqBefore := nextSeq(t, caller)
+
+	// (a) subscribe creates a local interest, echoed back with creates_events=false
+	sub := callTool(t, s, "cairn_subscribe", map[string]any{
+		"interest_query": "roastery council planning approvals",
+	}, false)
+	if sub["kind"] != "local_subscription" || sub["tier"] != "local" {
+		t.Fatalf("subscribe shape: %v", sub)
+	}
+	if sub["creates_events"] != false {
+		t.Fatalf("subscribe must advertise creates_events=false: %v", sub)
+	}
+	if sub["view"] != "mcp" {
+		t.Fatalf("subscribe bound to wrong view: %v", sub["view"])
+	}
+	if sub["interest_query"] != "roastery council planning approvals" {
+		t.Fatalf("interest not stored: %v", sub)
+	}
+
+	// (a) it shows in cairn_subscriptions
+	after := callTool(t, s, "cairn_subscriptions", map[string]any{}, false)
+	if after["interest_query"] != "roastery council planning approvals" {
+		t.Fatalf("subscriptions does not reflect the interest: %v", after)
+	}
+
+	// (b) NO event was appended — the log high-water mark is unchanged
+	if seqAfter := nextSeq(t, caller); seqAfter != seqBefore {
+		t.Fatalf("local subscribe advanced the log: next_seq %v → %v (R25: no events)", seqBefore, seqAfter)
+	}
+	// (b) and NO durable subscription materialized (the projection is empty)
+	dur, err := caller(daemon.Request{Op: "subscription-list", AgentView: "mcp"})
+	if err != nil {
+		t.Fatalf("subscription-list: %v", err)
+	}
+	if len(dur.Subs) != 0 {
+		t.Fatalf("local subscribe created a DURABLE subscription: %v", dur.Subs)
+	}
+
+	// re-subscribe overwrites (reversible) and still appends no event
+	callTool(t, s, "cairn_subscribe", map[string]any{"interest_query": "blob durability classes"}, false)
+	if got := callTool(t, s, "cairn_subscriptions", map[string]any{}, false)["interest_query"]; got != "blob durability classes" {
+		t.Fatalf("re-subscribe did not overwrite: %v", got)
+	}
+	if seqAfter := nextSeq(t, caller); seqAfter != seqBefore {
+		t.Fatalf("re-subscribe advanced the log: %v → %v", seqBefore, seqAfter)
+	}
+
+	// (c) strict decode: no durable knobs, no capability/tier override, no view
+	// override — every hidden field rejects (R20).
+	for _, args := range []map[string]any{
+		{"interest_query": "x", "durable": true},
+		{"interest_query": "x", "top_n": 10},
+		{"interest_query": "x", "percentile": 90},
+		{"interest_query": "x", "mode": "percentile"},
+		{"interest_query": "x", "push_cap": 100},
+		{"interest_query": "x", "view": "operator"},
+		{"interest_query": "x", "owner_view": "operator"},
+	} {
+		res := callTool(t, s, "cairn_subscribe", args, true)
+		if !strings.Contains(res["error"].(string), "invalid arguments") {
+			t.Fatalf("hidden knob accepted: %v → %v", args, res)
+		}
+	}
+	// missing/empty interest rejects
+	if res := callTool(t, s, "cairn_subscribe", map[string]any{}, true); !strings.Contains(res["error"].(string), "interest_query") {
+		t.Fatalf("empty subscribe accepted: %v", res)
+	}
+	// cairn_subscriptions takes no args
+	if res := callTool(t, s, "cairn_subscriptions", map[string]any{"view": "operator"}, true); !strings.Contains(res["error"].(string), "invalid arguments") {
+		t.Fatalf("subscriptions accepted an arg: %v", res)
+	}
+
+	// (d) view isolation: another view's local interest is untouched. The MCP
+	// tool never accepts a view, so the caller could only ever write "mcp";
+	// confirm "operator" saw nothing.
+	other, err := caller(daemon.Request{Op: "subscription-local-get", AgentView: "operator"})
+	if err != nil {
+		t.Fatalf("operator local-get: %v", err)
+	}
+	if other.LocalSub != nil && other.LocalSub.InterestQuery != "" {
+		t.Fatalf("caller leaked interest into another view: %v", other.LocalSub)
 	}
 }

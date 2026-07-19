@@ -3,8 +3,9 @@
 //
 // The tool layer is transport-agnostic (CallTool works over any framing) so
 // a later HTTP mount reuses it unchanged; only ServeStdio knows about
-// newline-delimited JSON-RPC. Tools mirror spec §5.5 exactly — nine tools,
-// nothing else. Rulings in force:
+// newline-delimited JSON-RPC. Tools are the spec §5.5 nine plus the two R55
+// session-tier affordance tools (cairn_subscribe / cairn_subscriptions) —
+// eleven, nothing else. Rulings in force:
 //
 //   - R18: every content-bearing result is wrapped in the spec §7.4
 //     untrusted-content envelope, and every tool description states that
@@ -104,7 +105,7 @@ type Envelope struct {
 	BodyLen        int64      `json:"body_len,omitempty"`
 }
 
-// --- tool registry (spec §5.5 — these nine, nothing else) -------------------
+// --- tool registry (spec §5.5 nine + the two R55 local-tier tools) ----------
 
 // Tool is one MCP tool listing entry.
 type Tool struct {
@@ -122,7 +123,7 @@ func schema(props string, required ...string) json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{` + props + `},"required":` + req + `,"additionalProperties":false}`)
 }
 
-// Tools lists the nine §5.5 tools in spec order.
+// Tools lists the §5.5 tools in spec order, then the two R55 local-tier tools.
 func (s *Server) Tools() []Tool {
 	return []Tool{
 		{"cairn_digest", "Generate the ranked, budget-capped digest for this agent view: what changed in the mesh that you should know." + untrustedNote,
@@ -143,6 +144,13 @@ func (s *Server) Tools() []Tool {
 			schema(`"interaction_id":{"type":"string"},"outcome":{"type":"string","enum":["found","not_found","manual_workaround"]},"message_id":{"type":"string","description":"the message that resolved the interaction, if any"}`, "interaction_id", "outcome")},
 		{"cairn_why_ranked", "Show the exact stored ranking arithmetic for one result of a prior interaction." + untrustedNote,
 			schema(`"interaction_id":{"type":"string"},"message_id":{"type":"string"}`, "interaction_id", "message_id")},
+		// R55 session (local) tier: declare/inspect THIS view's standing interest.
+		// Local only — updates your own view.json, creates NO shared events,
+		// exercises no admin capability. Not the operator-only durable tier.
+		{"cairn_subscribe", "Declare a LOCAL standing interest for THIS view so future digests rank toward what you care about. Session tier only: it updates ONLY your own view's config, creates NO shared events, exercises no admin capability, and is reversible — re-run to overwrite. This is NOT the operator-only durable/replicated subscription tier.",
+			schema(`"interest_query":{"type":"string","description":"raw natural language: what this view should surface in future digests"}`, "interest_query")},
+		{"cairn_subscriptions", "Show THIS view's current local standing interest (its session-tier interest query and any hard topic filters). Read-only; concerns only your own view.",
+			schema(``)},
 	}
 }
 
@@ -191,6 +199,10 @@ func (s *Server) CallTool(name string, args json.RawMessage) (any, error) {
 		return s.outcome(args)
 	case "cairn_why_ranked":
 		return s.whyRanked(args)
+	case "cairn_subscribe":
+		return s.subscribe(args)
+	case "cairn_subscriptions":
+		return s.subscriptions(args)
 	default:
 		return nil, toolErrf("unknown tool %q", name)
 	}
@@ -454,4 +466,60 @@ func (s *Server) whyRanked(raw json.RawMessage) (any, error) {
 		Provenance: &Provenance{MessageID: a.MessageID},
 		Content:    &Content{Mime: "text/plain", Text: resp.Text},
 	}, nil
+}
+
+// subscribe declares a LOCAL standing interest for THIS view (R55). It reaches
+// the daemon's subscribe-local path — the R25 session tier — which writes only
+// s.view's view.json: no subscription.* event, no admin capability, no other
+// view. It deliberately does NOT expose the durable knobs (top_n/percentile/
+// mode/push_cap) — those belong to the operator-only durable tier, which this
+// surface can never reach (strict decode rejects any such field). topics are
+// intentionally omitted from the MCP surface: the daemon preserves whatever
+// hard topics the view already had, so tuning an interest never clobbers
+// operator-set topic filters.
+func (s *Server) subscribe(raw json.RawMessage) (any, error) {
+	var a struct {
+		InterestQuery string `json:"interest_query"`
+	}
+	if err := decodeStrict(raw, &a); err != nil {
+		return nil, err
+	}
+	if a.InterestQuery == "" {
+		return nil, toolErrf("interest_query is required")
+	}
+	resp, err := s.call(daemon.Request{Op: "subscribe-local", LocalSub: &daemon.LocalSubRequest{
+		View:          s.view,
+		InterestQuery: a.InterestQuery,
+	}})
+	if err != nil {
+		return nil, err
+	}
+	return localSubResult(resp.LocalSub), nil
+}
+
+// subscriptions shows THIS view's current session-tier interest (read-only).
+func (s *Server) subscriptions(raw json.RawMessage) (any, error) {
+	if err := decodeStrict(raw, &struct{}{}); err != nil {
+		return nil, err
+	}
+	resp, err := s.call(daemon.Request{Op: "subscription-local-get", AgentView: s.view})
+	if err != nil {
+		return nil, err
+	}
+	return localSubResult(resp.LocalSub), nil
+}
+
+// localSubResult renders a session-tier subscription. tier/creates_events are
+// daemon-authored facts (never message content), so no untrusted envelope is
+// needed — the echoed interest_query is the caller's own input, not mesh data.
+func localSubResult(ls *daemon.LocalSubscription) map[string]any {
+	out := map[string]any{"kind": "local_subscription", "tier": "local", "creates_events": false}
+	if ls != nil {
+		out["view"] = ls.View
+		out["interest_query"] = ls.InterestQuery
+		if len(ls.Topics) > 0 {
+			out["topics"] = ls.Topics
+		}
+	}
+	return out
 }

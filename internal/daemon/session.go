@@ -66,10 +66,16 @@ var opCapability = map[string]string{
 	"session-create": capAdmin, "session-revoke": capAdmin, "session-list": capAdmin,
 
 	// durable subscriptions are structural (N3): agent-standard cannot
-	// create or mutate them; the session tier (view.json) needs no daemon op
+	// create or mutate them
 	"subscribe-durable": capAdmin, "subscription-update": capAdmin,
 	"subscription-disable": capAdmin, "subscription-delete": capAdmin,
 	"subscription-list": capAdmin,
+
+	// R25/R55 SESSION tier: the local interest lives in view.json, appends NO
+	// event, and never escalates capability — any agent that can read its own
+	// digest may tune its own view's interest. capRead, deliberately NOT
+	// capAdmin (that is the durable tier above, which MCP never reaches).
+	"subscribe-local": capRead, "subscription-local-get": capRead,
 
 	// derivatives (N4): reads are read-tier; invalidation is structural
 	"derivative-list": capRead, "summary-show": capRead,

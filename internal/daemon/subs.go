@@ -16,8 +16,11 @@ package daemon
 // event is appended.
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -26,6 +29,104 @@ import (
 	"github.com/ggoosen/cairn/internal/embed"
 	"github.com/ggoosen/cairn/internal/rank"
 )
+
+// --- R25 session (local) tier -----------------------------------------------
+//
+// The local tier is views/<view>/view.json: an optional natural-language
+// interest query plus hard topic filters. Unlike SubscribeDurable it appends
+// NO event (the verified log is untouched), exercises NO admin capability, and
+// only ever concerns the named — caller's — view. This is what MCP/agent
+// self-subscription reaches (R55); the durable, replicated tier below stays
+// operator-CLI-only and is never exposed to MCP.
+
+// LocalSubscription is one view's session-tier interest (its view.json).
+type LocalSubscription struct {
+	View          string   `json:"view"`
+	InterestQuery string   `json:"interest_query,omitempty"`
+	Topics        []string `json:"topics,omitempty"`
+}
+
+// LocalSubRequest is the subscribe-local IPC payload. It deliberately has NONE
+// of the durable-only knobs (threshold_mode/top_n/percentile/push_cap): the
+// session tier is view.json, which holds only an interest query + topics.
+type LocalSubRequest struct {
+	View          string   `json:"view"`
+	InterestQuery string   `json:"interest_query"`
+	Topics        []string `json:"topics,omitempty"`
+}
+
+// SubscribeLocal sets the caller's session-tier interest (R25). No event is
+// appended and no admin capability is exercised. topics == nil PRESERVES the
+// view's existing hard topics (so an agent tuning only its interest query never
+// clobbers operator-set topic filters); a non-nil slice replaces them.
+func (d *Daemon) SubscribeLocal(view, interestQuery string, topics []string) (*LocalSubscription, error) {
+	if !validViewName(view) {
+		return nil, fmt.Errorf("invalid view %q", view)
+	}
+	if strings.TrimSpace(interestQuery) == "" {
+		return nil, errors.New("interest_query is required (raw natural language)")
+	}
+	cur := d.readViewConfig(view)
+	cfg := ViewConfig{InterestQuery: interestQuery, Topics: cur.Topics}
+	if topics != nil {
+		cfg.Topics = topics
+	}
+	if err := d.writeLocalViewConfig(view, cfg); err != nil {
+		return nil, err
+	}
+	return &LocalSubscription{View: view, InterestQuery: cfg.InterestQuery, Topics: cfg.Topics}, nil
+}
+
+// LocalSubscriptionFor returns the caller's session-tier interest (its
+// view.json). It reads only the named view.
+func (d *Daemon) LocalSubscriptionFor(view string) (*LocalSubscription, error) {
+	if !validViewName(view) {
+		return nil, fmt.Errorf("invalid view %q", view)
+	}
+	cfg := d.readViewConfig(view)
+	return &LocalSubscription{View: view, InterestQuery: cfg.InterestQuery, Topics: cfg.Topics}, nil
+}
+
+// writeLocalViewConfig durably OVERWRITES views/<view>/view.json. fsx.Write-
+// FileAtomic refuses to overwrite (it guards the immutable log/objects); the
+// session-tier config is deliberately mutable — re-subscribing replaces it — so
+// this does temp → fsync → rename(overwrite) → dir-fsync itself, torn-free.
+func (d *Daemon) writeLocalViewConfig(view string, cfg ViewConfig) error {
+	base := filepath.Join(d.dir, config.ViewsDirName, view)
+	if err := d.fs.MkdirAll(base, 0o700); err != nil {
+		return err
+	}
+	blob, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(base, "view.json")
+	tmp := path + ".tmp"
+	d.fs.Remove(tmp)
+	f, err := d.fs.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(blob); err != nil {
+		f.Close()
+		d.fs.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		d.fs.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		d.fs.Remove(tmp)
+		return err
+	}
+	if err := d.fs.Rename(tmp, path); err != nil {
+		d.fs.Remove(tmp)
+		return err
+	}
+	return d.fs.SyncDir(base)
+}
 
 // SubscribeRequest creates one durable subscription.
 type SubscribeRequest struct {
