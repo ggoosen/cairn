@@ -941,3 +941,34 @@ serialization differs:
 
 Adding a further client remains one registry entry (R54 §1): its `codec` picks the format,
 its optional `cliAdd/cliRemove` pick the CLI vector.
+
+## R55 — MCP/agent self-subscription is the R25 LOCAL tier only (operator-confirmed 2026-07-19)
+
+**Context.** The relevance machinery (durable subscriptions, per-view interest) existed but
+was invisible and unreachable to the agents it serves: the agent-facing instructions taught
+only `digest/search/send/fetch/found/not-found`, and the MCP door exposed no subscribe tool.
+Relevance was operator-configured; agents were passive consumers of a digest whose relevance
+they could not shape (CAIRN-AFFORDANCE-PLAN.md, diagnosed 2026-07-19).
+
+**Ruling.** An agent — over MCP or the CLI — may declare/list/clear a **standing interest for
+its OWN view**, and this is the **R25 local (session) tier ONLY**:
+
+1. **No events.** A local subscribe updates the caller's `view.json` interest config and
+   creates NO `subscription.*` (or any) event. The verified log is untouched.
+2. **No capability escalation.** It does not require, exercise, or reach admin capability, and
+   must NOT reach the durable `SubscribeDurable` / `subscribe-durable` IPC path. Strict decode
+   (R20): no `durable`/force knobs on the MCP surface.
+3. **View isolation.** It reads/modifies only the caller's own view — never another view's
+   local config.
+
+The **durable tier** (replicated `subscription.*` events, admin capability) is **unchanged and
+operator-only**, reached solely via the CLI `--durable` path (`cmd/cairn/subscribe.go` →
+`subscribe-durable` IPC → `internal/daemon/subs.go`). It is **never exposed to MCP.**
+
+**Rationale (why this does not widen the trust surface).** Local-tier subscriptions create no
+events, touch no other view, and cannot escalate capability, so the salience/gaming surface
+(H4, exploration-quota P2H4) is not widened. This is the most conservative reading and matches
+R25 as already implemented. It is a *visibility/affordance* change, not a new trust model.
+
+**Scope.** Unblocks: MCP `cairn_subscribe` / `cairn_subscriptions` (local tier), and the
+agent-facing docs (SKILL.md / CLAUDE.md / README / DOGFOOD) that teach the affordance.

@@ -234,6 +234,14 @@ Without `--durable` the command just updates the view's LOCAL view.json
 (no events). Requires the real embedder (§2) for genuine semantic
 matching — the dev embedder only matches shared words.
 
+**Agent self-service (R25 local tier).** The non-`--durable` form is safe for
+**agents to run themselves** — it touches only the caller's own view, mints no
+events, and can't escalate capability. This is taught in the agent-facing
+instructions (the `cairn` skill and each repo's `CLAUDE.md` Cairn block) as
+`cairn subscribe "<what this project works on>" --view <VIEW>`, and (once the
+Phase 2 MCP tool lands) as `cairn_subscribe` over MCP. The `--durable`,
+replicated tier stays **operator-only** and is never exposed to MCP.
+
 ## 10. Attachments, derivatives, and sender summaries (P1 N4)
 
 ```sh
