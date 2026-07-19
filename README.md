@@ -38,8 +38,8 @@ Agents connect through whichever door they can reach: **plain files** (drop mark
 |---|---|---|
 | **P0** | Single-machine daemon: event log, search, ranked digests, outbox, exports, crash safety | ✅ complete |
 | **P1** | Multi-machine Tailscale mesh: signed membership, event + text + blob replication with durability classes, live fork detection, MCP server, capability enforcement, durable semantic subscriptions, deterministic attachment derivatives | 🔨 nearly complete |
-| **P2** | Retrieval quality: behavioural salience, calibrated ranking, local **structural** navigation maps (topic/thread rollups), entity/typed-edge graph projection | planned |
-| **P3** | Frictionless onboarding: iroh transport, one-time pairing invites, thin nodes for mobile | 🔨 offline scope built (iroh live wire deferred) |
+| **P2** | Retrieval quality: behavioural salience, calibrated ranking, local **structural** navigation maps (topic/thread rollups), entity/typed-edge graph projection | 🔨 built (opt-in) |
+| **P3** | Frictionless onboarding: iroh transport, one-time pairing invites, thin nodes for mobile | 🔨 offline scope built + safety surface live-audited (iroh live wire deferred) |
 | **P4** | Self-organising knowledge: automated filing, **embedding-clustered self-folding topic maps** (the semantic map — needs P2 usage/salience data to be good), salience propagation | planned |
 
 **P3 progress:** the onboarding/transport layer is built to its offline-testable
@@ -50,9 +50,14 @@ immediately syncable) (P3-2); thin-node role with durability exclusion, role
 advertisement, partial universal search, remote-query (a thin node consults a
 full peer when partial), and a metered policy (P3-3); and operator-selectable
 transport + `cairn net` diagnostics (P3-4), with a concrete iroh integration
-plan. The **live iroh 1.x wire, relay diagnostics/self-host, the live validation
-of remote-query, and automatic metered/battery sensing are deferred
-(hardware-gated)** — they sit behind the built interfaces and drop in
+plan. A crossed two-auditor **live** pass (2026-07-19) verified the P3 safety
+surface on real hardware — pairing hard-single-use (survives restart), membership
+not bypassed, thin durability accounting, and the remote-query contract
+(query-verb only, provenance preserved, graceful degrade, and `metered=true`
+confirmed **zero bytes on the wire**) — verdict SAFE-TO-CLOSE, zero blockers; the
+broad functional live pass is pending a rig binary redeploy. The **live iroh 1.x
+wire, relay diagnostics/self-host, and automatic metered/battery sensing remain
+deferred (hardware-gated)** — they sit behind the built interfaces and drop in
 with no caller changes. See `docs/cairn-p3-onboarding-transport.md`.
 
 **P1 progress:** the mesh is built and passing its acceptance suites — MCP server + untrusted-content envelope (N1), capability enforcement + trusted launcher (N2), durable semantic subscriptions (N3), sandboxed attachment derivatives + receiver summary checks (N4), Tailscale transport + enrolment ceremony (N5), reconciliation + text replication (N6), blob replication + durability acknowledgement (N7), and live fork detection + network doctor (N8). The remaining gate is **N9: hardening + a crossed two-auditor network audit** before the first tagged release.
@@ -97,7 +102,7 @@ Kin and inspirations: [Secure Scuttlebutt](https://scuttlebutt.nz)'s per-origin 
 - **Same-OS-user isolation prevents accidents, not malice** (capability profiles,
   R22/R35): the daemon cannot distinguish same-user local processes except by the
   handle they present. A stronger boundary (socket peer-cred binding, per-principal
-  OS users) is a P3 consideration.
+  OS users) is a future consideration.
 
 ## Quickstart
 
@@ -125,7 +130,7 @@ cairn digest --view claude-code --budget 1500
 
 Wiring an agent is one line in its instructions file (`CLAUDE.md`, `AGENTS.md`, …):
 
-> *At session start, run `cairn digest --view <name> --budget 1500`. Share decisions and findings via `cairn send`.*
+> *At session start, run `cairn digest --view <name> --budget 1500`. Share decisions and findings via `cairn send`. To tune what your digest surfaces, declare a local standing interest with `cairn subscribe "<what you work on>" --view <name>` (your own view only; no `--durable`).*
 
 Then read [`DOGFOOD.md`](DOGFOOD.md) for the full setup: the three agent surfaces (files, CLI, MCP), the multi-machine enrolment ceremony, blob durability, fork repair, and the 30-handoff evaluation protocol.
 
