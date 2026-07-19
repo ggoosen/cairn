@@ -242,6 +242,37 @@ instructions (the `cairn` skill and each repo's `CLAUDE.md` Cairn block) as
 `cairn_subscribe` (with `cairn_subscriptions` to inspect it). The `--durable`,
 replicated tier stays **operator-only** and is never exposed to MCP.
 
+### 9a. Self-bootstrapping onboarding record (R56)
+
+Stop hand-editing every project's `CLAUDE.md`. Publish ONE operator record per
+view; fresh sessions self-configure from it (and self-heal when you update it):
+
+```sh
+# operator: publish/update the record for a view
+cairn onboarding publish --view cairn \
+  --interest "council planning approvals and roastery ops" \
+  --topic cairn/affordance --topic roastery/ops \
+  --budget 1500 --note "Human prose — not machine-applied."
+
+cairn onboarding show  --view cairn        # fetch + verify; prints the config or the refusal
+cairn onboarding apply --view cairn        # what a session runs (idempotent)
+```
+
+`publish` writes a canonical message on `cairn/onboarding/<view>` carrying a
+fenced ```` ```cairn-onboarding ```` block (`view`, `interest_query`, `topics`,
+`digest_budget`). `apply` (run by the agent, taught in the skill) fetches the
+**latest** record on that topic, and — **only if it was authored by the operator
+principal** — sets the caller's local (R25) interest/topics and rewrites the
+delimited `<!-- cairn:onboarding start/end -->` block in `CLAUDE.md`
+(`--instructions <path>` to target another file). It is the **one** trusted-config
+exception (R56), bounded on three axes: operator authorship, the four-field
+schema whitelist (unknown fields + all prose ignored — never a directive, no
+command execution), and effect limited to local config + the delimited block.
+A non-operator record is refused (`NOT applied`) and stays readable only as
+untrusted data. Update the record any time; sessions re-apply on the revision
+bump. (Note: the "authoritative" record is the latest operator message on the
+topic — Cairn pins are object-durability, not message pins; see RULINGS R56.)
+
 ## 10. Attachments, derivatives, and sender summaries (P1 N4)
 
 ```sh

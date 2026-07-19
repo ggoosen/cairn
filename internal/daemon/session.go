@@ -77,6 +77,10 @@ var opCapability = map[string]string{
 	// capAdmin (that is the durable tier above, which MCP never reaches).
 	"subscribe-local": capRead, "subscription-local-get": capRead,
 
+	// R56: reading the onboarding record is read-tier (authorship verification
+	// happens server-side; application is client-side).
+	"onboarding-get": capRead,
+
 	// derivatives (N4): reads are read-tier; invalidation is structural
 	"derivative-list": capRead, "summary-show": capRead,
 	"derivative-invalidate": capAdmin,

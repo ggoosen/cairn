@@ -116,6 +116,7 @@ type Response struct {
 	Subs       []projection.SubscriptionRow `json:"subscriptions,omitempty"`
 	Sub        *SubscribeResult             `json:"subscription,omitempty"`
 	LocalSub   *LocalSubscription           `json:"local_subscription,omitempty"` // R25 session tier
+	Onboarding *OnboardingResult            `json:"onboarding,omitempty"`         // R56 onboarding record
 	Derivs     []projection.DerivativeRow   `json:"derivatives,omitempty"`
 	Summary    *projection.SummaryRow       `json:"summary,omitempty"`
 	Staged     *StagedAttachment            `json:"staged,omitempty"` // G6: stage-attachment result
@@ -415,6 +416,15 @@ func (d *Daemon) dispatch(req Request) Response {
 			return fail(err)
 		}
 		return Response{OK: true, LocalSub: res}
+
+	// R56: locate + verify the onboarding record for a view. Read-only; the
+	// daemon never applies (that stays client-side, bounded and observable).
+	case "onboarding-get":
+		res, err := d.OnboardingRecord(req.AgentView)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Onboarding: res}
 
 	case "publish":
 		if req.Publish == nil {

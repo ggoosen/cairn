@@ -972,3 +972,52 @@ R25 as already implemented. It is a *visibility/affordance* change, not a new tr
 
 **Scope.** Unblocks: MCP `cairn_subscribe` / `cairn_subscriptions` (local tier), and the
 agent-facing docs (SKILL.md / CLAUDE.md / README / DOGFOOD) that teach the affordance.
+
+## R56 — The onboarding record is the ONE trusted-config exception, bounded on three axes (operator-signed-off 2026-07-19)
+
+**Context.** So the operator stops hand-editing every project's `CLAUDE.md`, a fresh agent
+session may **self-configure its relevance** from an operator-authored *onboarding record* in
+the mesh (CAIRN-AFFORDANCE-PLAN.md Phase 4). This is a genuine widening of the trust model —
+mesh content becoming self-config — so it is deliberately the SINGLE exception to "mesh content
+is untrusted data (R18/R53)", contained on three axes enforced in `internal/onboarding`:
+
+1. **Authorship.** A record is appliable as configuration ONLY if its message was authored by
+   the **operator principal** (`config.SignalOperatorPrincipal = "operator"`) — the tier-1/full
+   local operator, which the capability model reserves: an agent view can never publish under it
+   (R21/R22), and every event is Ed25519-signature-verified + membership-verified at ingest (R5).
+   A record from ANY non-operator writer is **ignored as config** (still readable as untrusted
+   data). Enforced by `onboarding.Verify` (gate) + `Daemon.OnboardingRecord` (supplies the
+   projection's `sender_principal_id`, never anything from the body).
+2. **Schema whitelist.** Only the fenced ```` ```cairn-onboarding ```` block is read, and within
+   it only `view` / `interest_query` / `topics` / `digest_budget`. Unknown fields are **ignored**
+   (never applied, never fatal — yaml.v3 default). Free-form prose is **never** a directive;
+   there is no command field and no command execution.
+3. **Bounded effect.** Applying a record can ONLY (a) set the caller's own **local (R25) interest
+   /topics** (via the `subscribe-local` path — no events, own view) and (b) idempotently rewrite a
+   **delimited** region (`<!-- cairn:onboarding start/end -->`) in the project instructions file.
+   Nothing outside the markers is touched; the rendered block contains only machine-generated
+   text, never record prose. `digest_budget` is surfaced inside that block (the recommended
+   `cairn digest --budget`), not applied as hidden daemon state.
+
+**Deviation from the plan's "pin" assumption (recorded).** The plan assumed a first-class
+*message-pin* primitive ("a pinned message on the onboarding topic"). Cairn pins are
+**object-durability** pins (`Daemon.Pin(objectHash,…)`), not "pin a message as canonical." So the
+**authoritative record is the latest non-retracted message on the onboarding topic**
+(`cairn/onboarding/<view>`, falling back to `cairn/onboarding`), and **its head revision id is the
+revision** a session records and watches for a bump (`Projection.LatestTopicMessage`). The
+operator publishes it canonical-class (durable) and updates it by publishing/revising; there is
+no dependence on a message-pin primitive that does not exist.
+
+**Conservative bound (future relaxation needs its own ruling).** Authorship is anchored on the
+*operator principal string*, which within the mesh trust model means "published by an operator
+tier on some enrolled, membership-verified device." A tighter anchor — restricting to the
+**genesis/founding device's** `origin_device_id` specifically — is available (the field is in the
+projection) and would exclude a compromised *secondary* enrolled device; it is intentionally NOT
+imposed yet (it would bar the operator's other devices). Widening or tightening the authorship
+anchor is a future R-number.
+
+**Scope.** `internal/onboarding` (pure security core), `Daemon.OnboardingRecord` +
+`onboarding-get` IPC (capRead), `Projection.LatestTopicMessage`, `cairn onboarding
+publish|show|apply`, and the skill/`CLAUDE.md` self-config standing instruction. The event log is
+untouched (the record is an ordinary canonical message; no new event type). Crossed adversarial
+review focused on the three bounds precedes merge.
