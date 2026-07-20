@@ -3,7 +3,7 @@
 # these targets or pass -tags sqlite_fts5 manually.
 GOTAGS := -tags sqlite_fts5
 
-.PHONY: build test test-short vet verify all install
+.PHONY: build test test-short vet verify all install deploy
 
 all: vet test build
 
@@ -28,6 +28,20 @@ install: build
 	else \
 	  echo "next: cairn daemon --install   # launchd (macOS) / systemd --user (Linux) — restarts + supervises"; \
 	fi
+
+# One-shot deploy for a new/updated machine: build + install to the USER prefix
+# (~/.local, no sudo) + run the setup wizard (mesh, daemon service, MCP clients).
+# Because `cairn setup` registers the launchd/systemd service at THIS binary path,
+# deploying to ~/.local keeps everything user-owned — no /usr/local, no root.
+# Override the location with `make deploy DEPLOY_PREFIX=/somewhere`.
+DEPLOY_PREFIX ?= $(HOME)/.local
+deploy: build
+	@$(MAKE) --no-print-directory install PREFIX="$(DEPLOY_PREFIX)"
+	@echo "== cairn setup (mesh + daemon service + MCP clients) =="
+	@"$(DEPLOY_PREFIX)/bin/cairn" setup
+	@echo
+	@echo "If '$(DEPLOY_PREFIX)/bin' is not on your PATH, add it:"
+	@echo "  echo 'export PATH=\"$(DEPLOY_PREFIX)/bin:$$PATH\"' >> ~/.zshrc && exec zsh"
 
 # FIX-F4: the plain (untagged) build must FAIL AT COMPILE TIME with an
 # instructive error; the tagged suite must be green.

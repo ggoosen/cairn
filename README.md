@@ -112,6 +112,27 @@ for security), not by Cairn's own code (which compiles at 1.23). `go.mod` pins t
 toolchain to `go1.26.3` for reproducibility; a Go 1.21+ toolchain with `GOTOOLCHAIN=auto`
 (the default) fetches it automatically. macOS arm64 is primary; Linux is best-effort.
 
+**One command (recommended):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ggoosen/cairn/master/install.sh | sh
+```
+
+This builds Cairn, installs it to `~/.local/bin` (no sudo), and runs `cairn setup` —
+which creates your mesh, installs the resident daemon as a user service
+(launchd/systemd), and wires `cairn mcp` into every detected MCP client (Claude
+Desktop / Claude Code / Codex). Idempotent: re-run any time to upgrade. From a
+checkout, `make deploy` does the same. *(Requires Git + Go 1.23+ today — a prebuilt
+signed binary + Homebrew tap is the planned zero-dependency path.)*
+
+Then restart Claude Desktop / Claude Code so they load the tools, and:
+
+```bash
+cairn digest --view operator --budget 1500
+```
+
+**Manual steps** (what `cairn setup` automates, if you'd rather do it by hand):
+
 ```bash
 git clone https://github.com/ggoosen/cairn && cd cairn
 make build                       # bin/cairn — always build via make (or the
@@ -119,11 +140,12 @@ make build                       # bin/cairn — always build via make (or the
                                  # fails at compile time by design
 export PATH="$PWD/bin:$PATH"
 
+cairn setup                      # ← the wizard: mesh + daemon service + MCP clients
+#   …or the individual steps it runs:
 cairn init                       # create your mesh + device identity + genesis
-cairn daemon --install           # resident single writer under launchd/systemd —
-                                 # supervised + auto-restart (never hand-babysat).
-                                 # `cairn daemon &` also works for a quick look.
-cairn setup-agent claude-code    # mint a view for a consumer
+cairn daemon --install           # resident single writer under launchd/systemd
+cairn mcp-install --all          # wire cairn into detected MCP clients
+cairn setup-agent claude-code    # mint a named view for a consumer (distinct from `setup`)
 cairn send --topic project/x "Decided: we're using approach B because …"
 cairn digest --view claude-code --budget 1500
 ```
