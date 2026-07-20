@@ -41,3 +41,51 @@ func TestSetupInitsMeshIdempotently(t *testing.T) {
 		t.Fatalf("re-run setup re-created the mesh:\n%s", out2)
 	}
 }
+
+// Fable-review MAJOR #1: an unencrypted volume must not dead-end. setup gives an
+// actionable --allow-unencrypted hint, and CAIRN_ALLOW_UNENCRYPTED proceeds (so
+// the one-command install.sh / make deploy path can carry it).
+func TestSetupUnencryptedVolumeGuidance(t *testing.T) {
+	dir := setupEnv(t)
+	t.Setenv("CAIRN_FAKE_VOLUME_STATUS", "unencrypted")
+
+	_, err := runCLI(t, "setup", "--skip-daemon", "--skip-mcp", "--dir", dir)
+	if err == nil {
+		t.Fatal("expected setup to refuse an unencrypted volume")
+	}
+	if !strings.Contains(err.Error(), "--allow-unencrypted") {
+		t.Fatalf("no actionable hint for the unencrypted case: %v", err)
+	}
+
+	t.Setenv("CAIRN_ALLOW_UNENCRYPTED", "1")
+	if out, err := runCLI(t, "setup", "--skip-daemon", "--skip-mcp", "--dir", dir); err != nil {
+		t.Fatalf("CAIRN_ALLOW_UNENCRYPTED=1 did not proceed: %v\n%s", err, out)
+	}
+	if _, err := identity.Load(dir); err != nil {
+		t.Fatalf("mesh not created under the env escape hatch: %v", err)
+	}
+}
+
+// Fable-review MAJOR #2: on a restored/second-machine copy (portable data
+// present, no device identity here) setup must point at `init --adopt`, NOT at
+// --allow-unencrypted.
+func TestSetupRestoredCopyGuidance(t *testing.T) {
+	dir := setupEnv(t)
+	if out, err := runCLI(t, "setup", "--skip-daemon", "--skip-mcp", "--dir", dir); err != nil {
+		t.Fatalf("initial setup: %v\n%s", err, out)
+	}
+	// point device-state at a fresh empty dir → the portable dir now looks like a
+	// restored copy with no local identity (identity.ErrRestoredCopy).
+	t.Setenv("CAIRN_DEVICE_STATE_DIR", t.TempDir())
+
+	_, err := runCLI(t, "setup", "--skip-daemon", "--skip-mcp", "--dir", dir)
+	if err == nil {
+		t.Fatal("expected restored-copy guidance, got success")
+	}
+	if !strings.Contains(err.Error(), "init --adopt") {
+		t.Fatalf("restored-copy path did not point to `init --adopt`: %v", err)
+	}
+	if strings.Contains(err.Error(), "allow-unencrypted") {
+		t.Fatalf("restored-copy path wrongly suggested --allow-unencrypted: %v", err)
+	}
+}

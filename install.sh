@@ -12,7 +12,8 @@
 # Requirements today: Git + Go 1.23+ (Cairn uses cgo/FTS5, so a prebuilt
 # signed/notarized binary + Homebrew tap is the planned zero-dependency path;
 # until then this builds from source). Override paths with CAIRN_PREFIX /
-# CAIRN_REPO / CAIRN_REF.
+# CAIRN_REPO / CAIRN_REF. On a machine with disk encryption OFF (e.g. FileVault
+# disabled — the macOS default), set CAIRN_ALLOW_UNENCRYPTED=1 to proceed anyway.
 set -eu
 
 REPO_URL="${CAIRN_REPO:-https://github.com/ggoosen/cairn}"
@@ -40,20 +41,26 @@ if [ -f "Makefile" ] && [ -f "go.mod" ] && grep -q "ggoosen/cairn" go.mod 2>/dev
 else
   SRC="$(mktemp -d)/cairn"
   say "Cloning $REPO_URL ($REF) ..."
-  git clone --depth 1 --branch "$REF" "$REPO_URL" "$SRC" >/dev/null 2>&1 \
-    || git clone "$REPO_URL" "$SRC" >/dev/null 2>&1 \
-    || die "clone failed."
+  if ! git clone --depth 1 --branch "$REF" "$REPO_URL" "$SRC" >/dev/null 2>&1; then
+    git clone "$REPO_URL" "$SRC" >/dev/null 2>&1 || die "clone failed."
+    # honor CAIRN_REF even when the shallow --branch clone couldn't (e.g. a SHA)
+    git -C "$SRC" checkout "$REF" >/dev/null 2>&1 || warn "could not check out '$REF'; building the default branch."
+  fi
 fi
+
+# --- PATH hint (printed BEFORE the build so it's visible even on failure) ----
+case ":$PATH:" in
+  *":$PREFIX/bin:"*) : ;;
+  *) warn "Note: $PREFIX/bin is not on your PATH. After install, add it:"
+     warn "  echo 'export PATH=\"$PREFIX/bin:\$PATH\"' >> ~/.zshrc && exec zsh" ;;
+esac
 
 # --- build + install + setup -------------------------------------------------
 cd "$SRC"
 say "Building + installing to $PREFIX/bin (no sudo) and running setup ..."
-make deploy DEPLOY_PREFIX="$PREFIX"
-
-# --- PATH hint ---------------------------------------------------------------
-case ":$PATH:" in
-  *":$PREFIX/bin:"*) : ;;
-  *) warn "Add $PREFIX/bin to your PATH:  echo 'export PATH=\"$PREFIX/bin:\$PATH\"' >> ~/.zshrc && exec zsh" ;;
-esac
+if ! make deploy DEPLOY_PREFIX="$PREFIX"; then
+  die "setup did not finish — read the message above. If this machine has disk
+       encryption OFF (FileVault disabled), re-run with:  CAIRN_ALLOW_UNENCRYPTED=1 ./install.sh"
+fi
 
 say "Done. Restart Claude Desktop / Claude Code to load the MCP tools, then: cairn digest --view operator --budget 1500"

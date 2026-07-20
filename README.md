@@ -131,7 +131,7 @@ Then restart Claude Desktop / Claude Code so they load the tools, and:
 cairn digest --view operator --budget 1500
 ```
 
-**Manual steps** (what `cairn setup` automates, if you'd rather do it by hand):
+**From a checkout** — build, then run the wizard (one command):
 
 ```bash
 git clone https://github.com/ggoosen/cairn && cd cairn
@@ -140,12 +140,21 @@ make build                       # bin/cairn — always build via make (or the
                                  # fails at compile time by design
 export PATH="$PWD/bin:$PATH"
 
-cairn setup                      # ← the wizard: mesh + daemon service + MCP clients
-#   …or the individual steps it runs:
+cairn setup                      # mesh + daemon service + MCP clients, idempotent
+```
+
+**Or the individual steps `cairn setup` runs** (only if you want to do it by hand — you do **not** need these *and* `setup`):
+
+```bash
 cairn init                       # create your mesh + device identity + genesis
 cairn daemon --install           # resident single writer under launchd/systemd
 cairn mcp-install --all          # wire cairn into detected MCP clients
-cairn setup-agent claude-code    # mint a named view for a consumer (distinct from `setup`)
+```
+
+Then, whichever way you set up, use it (`setup-agent` mints a named consumer view — that's a different command from `setup`):
+
+```bash
+cairn setup-agent claude-code    # mint a named view for a consumer
 cairn send --topic project/x "Decided: we're using approach B because …"
 cairn digest --view claude-code --budget 1500
 ```

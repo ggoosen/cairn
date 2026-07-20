@@ -17,7 +17,11 @@ package main
 // simplest correct deployment.
 
 import (
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -42,12 +46,36 @@ func newSetupCmd(dirFlag *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Escape hatch for the one-command flow: install.sh / make deploy can
+			// set CAIRN_ALLOW_UNENCRYPTED=1 so a fresh Mac with FileVault off (the
+			// default) doesn't dead-end at the volume gate.
+			if envTruthy(os.Getenv("CAIRN_ALLOW_UNENCRYPTED")) {
+				allowUnencrypted = true
+			}
+			// Hints must work BEFORE cairn is on PATH — use the real binary path
+			// and preserve any --dir the caller passed.
+			self, _ := os.Executable()
+			if self == "" {
+				self = "cairn"
+			}
+			dirArg := ""
+			if *dirFlag != "" {
+				dirArg = " --dir " + *dirFlag
+			}
 
 			// Step 1 — mesh identity (idempotent: never re-init an existing mesh).
 			fmt.Fprintln(out, "[1/3] Mesh identity")
-			if _, lerr := identity.Load(dir); lerr == nil {
+			_, lerr := identity.Load(dir)
+			switch {
+			case lerr == nil:
 				fmt.Fprintf(out, "  • already initialized at %s — keeping it\n", dir)
-			} else {
+			case errors.Is(lerr, identity.ErrRestoredCopy):
+				// Multi-machine / restored copy: portable data present, no device
+				// identity here. The fix is adopt — NOT --allow-unencrypted.
+				return fmt.Errorf("this machine has restored/second-machine Cairn data (portable dir at %s, but no device identity here).\n"+
+					"  To take it over as a NEW origin on this device, run:\n    %s init --adopt%s\n"+
+					"  (archives the old history, mints a fresh device identity, then re-run `cairn setup`)", dir, self, dirArg)
+			default:
 				opts := identity.InitOptions{
 					Dir:              dir,
 					AllowUnencrypted: allowUnencrypted,
@@ -55,8 +83,15 @@ func newSetupCmd(dirFlag *string) *cobra.Command {
 					Role:             config.RoleFull,
 					Out:              out,
 				}
-				if _, err := identity.Initialize(opts); err != nil {
-					return fmt.Errorf("creating the mesh: %w\n(if this is an unencrypted/unknown volume, re-run: cairn setup --allow-unencrypted)", err)
+				if _, ierr := identity.Initialize(opts); ierr != nil {
+					if !allowUnencrypted && strings.Contains(ierr.Error(), "--allow-unencrypted") {
+						return fmt.Errorf("this volume isn't detected as encrypted (FileVault may be off).\n"+
+							"  Recommended: turn on FileVault, then re-run. To proceed anyway right now:\n    %s setup --allow-unencrypted%s\n  (details: %v)", self, dirArg, ierr)
+					}
+					if strings.Contains(ierr.Error(), "restored copy") || strings.Contains(ierr.Error(), "init --adopt") {
+						return fmt.Errorf("this looks like restored Cairn data.\n  Run:  %s init --adopt%s   then re-run `cairn setup`.\n  (details: %v)", self, dirArg, ierr)
+					}
+					return fmt.Errorf("creating the mesh: %w", ierr)
 				}
 				fmt.Fprintf(out, "  ✓ created at %s\n", dir)
 			}
@@ -79,14 +114,22 @@ func newSetupCmd(dirFlag *string) *cobra.Command {
 				setupWireMCP(cmd)
 			}
 
-			// Summary + the few human next-steps we can't do for them.
+			// Summary + the few human next-steps we can't do for them. Use the
+			// real binary in the "try it" line when its dir isn't on PATH yet, so
+			// a copy-paste never hits "command not found".
+			cairnCmd := "cairn"
+			if !dirOnPath(self) {
+				cairnCmd = self
+				fmt.Fprintf(out, "\n(note: %s is not on your PATH — add it:\n  echo 'export PATH=\"%s:$PATH\"' >> ~/.zshrc && exec zsh)\n",
+					binDir(self), binDir(self))
+			}
 			fmt.Fprintln(out, "\n✓ Cairn is set up. Next:")
 			if !skipMCP {
 				fmt.Fprintln(out, "  • Restart Claude Desktop / Claude Code so they load the cairn MCP tools.")
 			}
-			fmt.Fprintln(out, "  • Try it:  cairn digest --view operator --budget 1500")
+			fmt.Fprintf(out, "  • Try it:  %s digest --view operator --budget 1500\n", cairnCmd)
 			fmt.Fprintln(out, "  • Optional — let fresh agent sessions self-configure their relevance (R56):")
-			fmt.Fprintln(out, "      cairn onboarding publish --view <view> --interest \"what this view works on\" --budget 1500")
+			fmt.Fprintf(out, "      %s onboarding publish --view <view> --interest \"what this view works on\" --budget 1500\n", cairnCmd)
 			return nil
 		},
 	}
@@ -94,6 +137,30 @@ func newSetupCmd(dirFlag *string) *cobra.Command {
 	cmd.Flags().BoolVar(&skipDaemon, "skip-daemon", false, "do not install the daemon service (you'll run `cairn daemon` yourself)")
 	cmd.Flags().BoolVar(&skipMCP, "skip-mcp", false, "do not wire up MCP client apps")
 	return cmd
+}
+
+// binDir is the directory holding the running binary.
+func binDir(self string) string { return filepath.Dir(self) }
+
+// dirOnPath reports whether the running binary's directory is on $PATH (so a
+// bare `cairn` in printed next-steps will resolve).
+func dirOnPath(self string) bool {
+	d := filepath.Clean(binDir(self))
+	for _, p := range filepath.SplitList(os.Getenv("PATH")) {
+		if filepath.Clean(p) == d {
+			return true
+		}
+	}
+	return false
+}
+
+// envTruthy reads a permissive boolean env var (1/true/yes/on).
+func envTruthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 // setupWireMCP registers `cairn mcp` with every detected client, printing a line

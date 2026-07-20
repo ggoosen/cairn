@@ -20,7 +20,8 @@ install: build
 	@# FIX-H7: end the stale-binary saga — a daemon running the OLD binary keeps
 	@# running stale code until restarted. Detect and instruct (safer than auto-
 	@# killing a daemon that may be mid-sync; launchd KeepAlive would also race).
-	@if pgrep -f "cairn daemon" >/dev/null 2>&1; then \
+	@# CAIRN_INSTALL_QUIET suppresses this when `make deploy` will restart it next.
+	@if [ -z "$$CAIRN_INSTALL_QUIET" ] && pgrep -f "cairn daemon" >/dev/null 2>&1; then \
 	  echo "NOTE: a cairn daemon is RUNNING the OLD binary — it will keep running stale code until you restart it:"; \
 	  echo "      cairn daemon --install     # launchd/systemd: reloads + restarts with the new binary"; \
 	  echo "      (hand-run daemon: pkill -f 'cairn daemon', then start the new one)"; \
@@ -36,7 +37,7 @@ install: build
 # Override the location with `make deploy DEPLOY_PREFIX=/somewhere`.
 DEPLOY_PREFIX ?= $(HOME)/.local
 deploy: build
-	@$(MAKE) --no-print-directory install PREFIX="$(DEPLOY_PREFIX)"
+	@CAIRN_INSTALL_QUIET=1 $(MAKE) --no-print-directory install PREFIX="$(DEPLOY_PREFIX)"
 	@echo "== cairn setup (mesh + daemon service + MCP clients) =="
 	@"$(DEPLOY_PREFIX)/bin/cairn" setup
 	@echo
