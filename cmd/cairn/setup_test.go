@@ -66,6 +66,25 @@ func TestSetupUnencryptedVolumeGuidance(t *testing.T) {
 	}
 }
 
+// Fable re-review NIT: CAIRN_ALLOW_UNENCRYPTED must NOT persist an override on
+// an ENCRYPTED volume — it may only take effect when the gate actually fails. A
+// layman exporting the env in ~/.zshrc must not silently weaken the gate.
+func TestSetupEnvHatchDoesNotOverrideEncryptedVolume(t *testing.T) {
+	dir := setupEnv(t) // CAIRN_FAKE_VOLUME_STATUS=encrypted
+	t.Setenv("CAIRN_ALLOW_UNENCRYPTED", "1")
+
+	if out, err := runCLI(t, "setup", "--skip-daemon", "--skip-mcp", "--dir", dir); err != nil {
+		t.Fatalf("setup on an encrypted volume with the env set should just work: %v\n%s", err, out)
+	}
+	loaded, err := identity.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Device.AllowUnencrypted {
+		t.Fatal("env hatch persisted an unencrypted override on an ENCRYPTED volume (gate silently weakened)")
+	}
+}
+
 // Fable-review MAJOR #2: on a restored/second-machine copy (portable data
 // present, no device identity here) setup must point at `init --adopt`, NOT at
 // --allow-unencrypted.

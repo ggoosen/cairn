@@ -46,12 +46,13 @@ func newSetupCmd(dirFlag *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Escape hatch for the one-command flow: install.sh / make deploy can
-			// set CAIRN_ALLOW_UNENCRYPTED=1 so a fresh Mac with FileVault off (the
-			// default) doesn't dead-end at the volume gate.
-			if envTruthy(os.Getenv("CAIRN_ALLOW_UNENCRYPTED")) {
-				allowUnencrypted = true
-			}
+			// Escape hatch for the one-command flow: install.sh / make deploy set
+			// CAIRN_ALLOW_UNENCRYPTED=1 so a fresh Mac with FileVault off (the
+			// default) doesn't dead-end at the volume gate. It is consulted ONLY
+			// when the gate actually fails (below) — never pre-forced — so leaving
+			// it exported (as install.sh suggests) does NOT persist an override on
+			// an encrypted volume (Fable re-review NIT).
+			envAllowUnencrypted := envTruthy(os.Getenv("CAIRN_ALLOW_UNENCRYPTED"))
 			// Hints must work BEFORE cairn is on PATH — use the real binary path
 			// and preserve any --dir the caller passed.
 			self, _ := os.Executable()
@@ -83,10 +84,19 @@ func newSetupCmd(dirFlag *string) *cobra.Command {
 					Role:             config.RoleFull,
 					Out:              out,
 				}
-				if _, ierr := identity.Initialize(opts); ierr != nil {
-					if !allowUnencrypted && strings.Contains(ierr.Error(), "--allow-unencrypted") {
+				_, ierr := identity.Initialize(opts)
+				// Only NOW, having actually hit the encryption gate, may the env
+				// hatch retry — so an encrypted volume never persists an override
+				// just because CAIRN_ALLOW_UNENCRYPTED is exported.
+				if ierr != nil && !allowUnencrypted && envAllowUnencrypted && isUnencryptedGate(ierr) {
+					fmt.Fprintln(out, "  • volume not encrypted; CAIRN_ALLOW_UNENCRYPTED is set — proceeding with the override")
+					opts.AllowUnencrypted = true
+					_, ierr = identity.Initialize(opts)
+				}
+				if ierr != nil {
+					if !allowUnencrypted && isUnencryptedGate(ierr) {
 						return fmt.Errorf("this volume isn't detected as encrypted (FileVault may be off).\n"+
-							"  Recommended: turn on FileVault, then re-run. To proceed anyway right now:\n    %s setup --allow-unencrypted%s\n  (details: %v)", self, dirArg, ierr)
+							"  Recommended: turn on FileVault, then re-run. To proceed anyway right now:\n    %s setup --allow-unencrypted%s\n  (or set CAIRN_ALLOW_UNENCRYPTED=1)\n  (details: %v)", self, dirArg, ierr)
 					}
 					if strings.Contains(ierr.Error(), "restored copy") || strings.Contains(ierr.Error(), "init --adopt") {
 						return fmt.Errorf("this looks like restored Cairn data.\n  Run:  %s init --adopt%s   then re-run `cairn setup`.\n  (details: %v)", self, dirArg, ierr)
@@ -152,6 +162,12 @@ func dirOnPath(self string) bool {
 		}
 	}
 	return false
+}
+
+// isUnencryptedGate reports whether an init error is the encrypted-volume gate
+// (the only failure the CAIRN_ALLOW_UNENCRYPTED hatch may retry).
+func isUnencryptedGate(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "--allow-unencrypted")
 }
 
 // envTruthy reads a permissive boolean env var (1/true/yes/on).
