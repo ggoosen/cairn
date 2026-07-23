@@ -39,10 +39,10 @@ DEPLOY_PREFIX ?= $(HOME)/.local
 deploy: build
 	@CAIRN_INSTALL_QUIET=1 $(MAKE) --no-print-directory install PREFIX="$(DEPLOY_PREFIX)"
 	@echo "== cairn setup (mesh + daemon service + MCP clients) =="
+	@# `cairn setup` prints its OWN PATH note — correct, conditional, and only
+	@# when $(DEPLOY_PREFIX)/bin is actually missing from PATH. (An earlier echo
+	@# here was unconditional AND expanded $$PATH into the suggestion — removed.)
 	@"$(DEPLOY_PREFIX)/bin/cairn" setup
-	@echo
-	@echo "If '$(DEPLOY_PREFIX)/bin' is not on your PATH, add it:"
-	@echo "  echo 'export PATH=\"$(DEPLOY_PREFIX)/bin:$$PATH\"' >> ~/.zshrc && exec zsh"
 
 # FIX-F4: the plain (untagged) build must FAIL AT COMPILE TIME with an
 # instructive error; the tagged suite must be green.
