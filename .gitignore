@@ -8,9 +8,16 @@ bin/
 /.gocache/
 /.gomodcache/
 
-# audit artifacts
+# macOS cruft
+.DS_Store
+
+# audit artifacts + internal working docs (not for the public tree)
 *REPORT*.md
 *BRIEF*.md
+*SHAKEDOWN*.md
 RIG-STATUS.md
+/P2-PLAN.md
+/P3-PLAN.md
+/CAIRN-AFFORDANCE-PLAN.md
 docs/cairn-*workorder*.md
 docs/cairn-rig-*.md
