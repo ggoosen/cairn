@@ -68,31 +68,11 @@ Agents connect through whichever door they can reach: **plain files** (drop mark
 | **P3** | Frictionless onboarding: **one-command `cairn setup`** (mesh + resident daemon service + MCP client wiring), iroh transport, one-time pairing invites, thin nodes for mobile | 🔨 single-machine deploy shipped · mesh offline scope built + safety live-audited (iroh live wire deferred) |
 | **P4** | Self-organising knowledge: automated filing, **embedding-clustered self-folding topic maps** (the semantic map — needs P2 usage/salience data to be good), salience propagation | planned |
 
-**P3 progress:** on the single-machine side, frictionless onboarding is already
-real — a one-command `cairn setup` (and `install.sh` / `make deploy`) creates the
-mesh, installs the resident daemon as a user service (launchd/systemd), and wires
-`cairn mcp` into every detected MCP client, idempotently. The multi-machine
-onboarding/transport layer is built to its offline-testable
-scope — a transport abstraction seam (P3-1); one-time pairing invitations end to
-end (`cairn pair invite`/`join`: offline mint → paste-able token → new-node
-install → live pairing handshake → durable hard-single-use admission →
-immediately syncable) (P3-2); thin-node role with durability exclusion, role
-advertisement, partial universal search, remote-query (a thin node consults a
-full peer when partial), and a metered policy (P3-3); and operator-selectable
-transport + `cairn net` diagnostics (P3-4), with a concrete iroh integration
-plan. A crossed two-auditor **live** pass (2026-07-19) verified the P3 safety
-surface on real hardware — pairing hard-single-use (survives restart), membership
-not bypassed, thin durability accounting, and the remote-query contract
-(query-verb only, provenance preserved, graceful degrade, and `metered=true`
-confirmed **zero bytes on the wire**) — verdict SAFE-TO-CLOSE, zero blockers; the
-broad functional live pass is pending a rig binary redeploy. The **live iroh 1.x
-wire, relay diagnostics/self-host, and automatic metered/battery sensing remain
-deferred (hardware-gated)** — they sit behind the built interfaces and drop in
-with no caller changes. See `docs/cairn-p3-onboarding-transport.md`.
+**On P1:** the full multi-machine mesh — replication of events, canonical text, and lazy blobs with explicit durability classes; capability enforcement; the MCP server and its untrusted-content envelope; live fork detection; and durable subscriptions — is built, passing its acceptance suites, and past a crossed two-auditor network security audit with zero blockers. It's ready for the first tagged release.
 
-**P1 progress:** the mesh is built and passing its acceptance suites — MCP server + untrusted-content envelope (N1), capability enforcement + trusted launcher (N2), durable semantic subscriptions (N3), sandboxed attachment derivatives + receiver summary checks (N4), Tailscale transport + enrolment ceremony (N5), reconciliation + text replication (N6), blob replication + durability acknowledgement (N7), and live fork detection + network doctor (N8). The final gate — **N9: hardening + a crossed two-auditor network audit** — is **complete** (hardening H1–H8 code-complete, audit passed with zero blockers), so P1 is ready for the first tagged release.
+**On P3:** single-machine onboarding is real today — `cairn setup` (via `install.sh` or `make deploy`) creates the mesh, installs the daemon as a user service, and wires your MCP clients, all in one idempotent command. The multi-machine layer is built and safety-audited on real hardware to its offline-testable scope: one-time pairing invitations (`cairn pair invite`/`join`), thin-node roles for mobile/metered devices, and `cairn net` diagnostics. The live **iroh** peer-to-peer transport — the wire itself, relay self-hosting, and automatic metered/battery sensing — is deliberately deferred behind those interfaces (it needs a mature iroh Go binding and real relays) and drops in with no caller changes.
 
-Each phase gates the next on measured results — P0's engineering gates (zero acknowledged-event loss, 100% provenance, 100% budget compliance, P95 lexical-visibility < 200 ms) are green, and it must demonstrably beat copy-paste (Success@5 ≥ 70% across 30 real cross-session handoffs) before P2 ships. The event-sourced core means every later phase is a new projection over the same log: no migrations, ever.
+Each phase gates the next on measured results — P0's engineering gates (zero acknowledged-event loss, 100% provenance, 100% budget compliance, P95 lexical-visibility < 200 ms) are green, and Cairn must demonstrably beat copy-paste (Success@5 ≥ 70% across 30 real cross-session handoffs) before P2 is declared shipped. The event-sourced core means every later phase is a new projection over the same log: no migrations, ever.
 
 ## Prior art & inspirations
 
@@ -104,7 +84,7 @@ The design and its full decision trail — specification (v0.3), the binding bui
 
 **Pre-alpha.** P0 and P1 are both complete and audited — the single-machine daemon and the multi-machine Tailscale mesh (replication, blob durability, capability enforcement, MCP, live fork detection) are built, passing their acceptance suites, and past the N9 hardening + crossed two-auditor network audit (zero blockers). What remains before cutting the first tag is the operator's own **30-handoff product evaluation** (the real-world "does it beat copy-paste?" gate in [`DOGFOOD.md`](DOGFOOD.md)). Star/watch for the release. Built in Go; macOS (Apple Silicon) first, Linux best-effort.
 
-**Known limitation — degradation ladder (spec §8.2):** the load-shedding ladder enforces rungs 1–5 (delay auto-links → summaries → embeddings → force lexical-only search → delay proactive blob replication). The two disk/quota **reject** rungs (6 reject low-priority blobs, 7 reject small text) are computed and reported (the level shows in `cairn status` and every transition is logged) but not yet *enforced* — safely rejecting a send needs pre-ack reserved-capacity semantics that are deferred to a dedicated change. Until then they fail open (the send proceeds), never silently.
+**Known limitation — degradation ladder.** Under disk/memory pressure Cairn sheds load in stages (defer auto-linking → summaries → embeddings → force lexical-only search → defer proactive blob replication). The two most aggressive stages — *rejecting* new low-priority blobs or small text outright — are currently computed and reported (visible in `cairn status`, every transition logged) but not yet *enforced*: safely rejecting a send needs reserved-capacity accounting that's deferred to its own change. Until then they fail open — the send proceeds — never silently.
 
 ## Security posture
 
@@ -117,22 +97,17 @@ The design and its full decision trail — specification (v0.3), the binding bui
   refuses to start on an unencrypted volume unless you pass `--allow-unencrypted`,
   which persists the override device-local and **warns on every start**. This is
   the right escape hatch for a throwaway test node, but it means the device key
-  sits on unencrypted storage.
-  - **Standing finding (FIX-J4.2):** the N9 two-node test rig ran NODE-B on a WSL2
-    box on an **unencrypted** volume with a persisted `--allow-unencrypted`
-    override — acceptable for a disposable test node, **not** acceptable for any
-    real second node. For a production node, put the cairn dir (and therefore the
-    device-local key path) on encrypted storage (FileVault / LUKS / dm-crypt); a
-    device key on unencrypted storage is a device-compromise-at-rest risk, and a
-    stolen device key is a valid mesh writer until you `cairn device revoke` it.
-  - WSL2 note: a Windows-mounted (`drvfs`) path is both unencryptable-by-cairn and
-    pathologically slow for `synchronous=FULL` I/O (it is what wedged the run-2
-    reindex — see DOGFOOD §15 / PROGRESS J3). Keep the cairn dir on a **native
-    Linux** filesystem inside the WSL2 distro, on encrypted storage.
-- **Same-OS-user isolation prevents accidents, not malice** (capability profiles,
-  R22/R35): the daemon cannot distinguish same-user local processes except by the
-  handle they present. A stronger boundary (socket peer-cred binding, per-principal
-  OS users) is a future consideration.
+  sits on unencrypted storage. For any real node, keep the cairn directory — and
+  therefore the device key — on encrypted storage (FileVault / LUKS / dm-crypt):
+  a device key on an unencrypted volume is a compromise-at-rest risk, and a stolen
+  device key stays a valid mesh writer until you `cairn device revoke` it. (On
+  WSL2, use a native Linux filesystem inside the distro, not a Windows-mounted
+  `drvfs` path — it can't be encrypted by cairn and is pathologically slow for the
+  `synchronous=FULL` write path.)
+- **Same-OS-user isolation prevents accidents, not malice:** the daemon cannot
+  distinguish same-user local processes except by the handle they present. A
+  stronger boundary (socket peer-cred binding, per-principal OS users) is a future
+  consideration.
 
 ## Quickstart
 
