@@ -25,7 +25,7 @@ Like the trail-marker stones it's named for: every message is immutable once pla
 - [What Cairn does](#what-cairn-does)
 - [How it's built](#how-its-built)
 - [Roadmap](#roadmap)
-- [Design pedigree](#design-pedigree)
+- [Prior art & inspirations](#prior-art--inspirations)
 - [Status](#status)
 - [Security posture](#security-posture)
 - [Quickstart](#quickstart)
@@ -94,11 +94,11 @@ with no caller changes. See `docs/cairn-p3-onboarding-transport.md`.
 
 Each phase gates the next on measured results — P0's engineering gates (zero acknowledged-event loss, 100% provenance, 100% budget compliance, P95 lexical-visibility < 200 ms) are green, and it must demonstrably beat copy-paste (Success@5 ≥ 70% across 30 real cross-session handoffs) before P2 ships. The event-sourced core means every later phase is a new projection over the same log: no migrations, ever.
 
-## Design pedigree
-
-The architecture was developed through five rounds of structured adversarial review across multiple frontier LLMs, with every accepted and rejected recommendation recorded in a decisions changelog. The full paper trail lives in [`docs/`](docs/) and [`RULINGS.md`](RULINGS.md): the specification (v0.3), the binding build rulings (`RULINGS.md` supersedes rulings-v0.3.1), and the historical design briefs.
+## Prior art & inspirations
 
 Kin and inspirations: [Secure Scuttlebutt](https://scuttlebutt.nz)'s per-origin signed append-only logs, [Karpathy's llm-wiki](https://gist.github.com/karpathy) pattern of flat-markdown knowledge bases navigated by index, and [iroh](https://iroh.computer)'s dial-by-public-key networking.
+
+The design and its full decision trail — specification (v0.3), the binding build rulings, and the historical design briefs — live in [`docs/`](docs/) and [`RULINGS.md`](RULINGS.md).
 
 ## Status
 
