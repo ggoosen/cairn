@@ -1,10 +1,36 @@
+<div align="center">
+
 # Cairn 🪨
 
 **A private, crash-safe message and knowledge mesh for AI agents — so your sessions stop needing you as the copy-paste courier.**
 
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-blue.svg)](https://polyformproject.org/licenses/noncommercial/1.0.0/)
+[![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux-lightgrey.svg)](#quickstart)
+[![Status](https://img.shields.io/badge/status-pre--alpha-orange.svg)](#status)
+[![Local-first](https://img.shields.io/badge/data-100%25%20local%20%C2%B7%20offline-success.svg)](#how-its-built)
+[![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
+
+*Append-only signed event log · hybrid offline search · crash-safe by construction · no cloud, ever.*
+
+</div>
+
 Cairn gives every AI agent session on your machines a shared, searchable memory. An agent asks for what it needs and receives a **ranked, provenance-preserving answer within a hard context budget** — and can deliberately fetch the original material when it matters. Agents are never handed a raw inbox.
 
 Like the trail-marker stones it's named for: every message is immutable once placed, readable by whoever passes next, needs no coordinator, and the meaning compounds as more are added.
+
+## Contents
+
+- [The problem](#the-problem)
+- [What Cairn does](#what-cairn-does)
+- [How it's built](#how-its-built)
+- [Roadmap](#roadmap)
+- [Design pedigree](#design-pedigree)
+- [Status](#status)
+- [Security posture](#security-posture)
+- [Quickstart](#quickstart)
+- [License](#license)
+- [Contributing](#contributing)
 
 ---
 
@@ -37,12 +63,16 @@ Agents connect through whichever door they can reach: **plain files** (drop mark
 | Phase | Scope | Status |
 |---|---|---|
 | **P0** | Single-machine daemon: event log, search, ranked digests, outbox, exports, crash safety | ✅ complete |
-| **P1** | Multi-machine Tailscale mesh: signed membership, event + text + blob replication with durability classes, live fork detection, MCP server, capability enforcement, durable semantic subscriptions, deterministic attachment derivatives | 🔨 nearly complete |
-| **P2** | Retrieval quality: behavioural salience, calibrated ranking, local **structural** navigation maps (topic/thread rollups), entity/typed-edge graph projection | 🔨 built (opt-in) |
-| **P3** | Frictionless onboarding: iroh transport, one-time pairing invites, thin nodes for mobile | 🔨 offline scope built + safety surface live-audited (iroh live wire deferred) |
+| **P1** | Multi-machine Tailscale mesh: signed membership, event + text + blob replication with durability classes, live fork detection, MCP server, capability enforcement, durable semantic subscriptions, deterministic attachment derivatives | ✅ complete (hardened + crossed audit passed) |
+| **P2** | Retrieval quality: behavioural salience, calibrated ranking, **agent-shaped relevance** (self-subscribe + a self-configuring onboarding record), local **structural** navigation maps (topic/thread rollups), entity/typed-edge graph projection | 🔨 built (opt-in) |
+| **P3** | Frictionless onboarding: **one-command `cairn setup`** (mesh + resident daemon service + MCP client wiring), iroh transport, one-time pairing invites, thin nodes for mobile | 🔨 single-machine deploy shipped · mesh offline scope built + safety live-audited (iroh live wire deferred) |
 | **P4** | Self-organising knowledge: automated filing, **embedding-clustered self-folding topic maps** (the semantic map — needs P2 usage/salience data to be good), salience propagation | planned |
 
-**P3 progress:** the onboarding/transport layer is built to its offline-testable
+**P3 progress:** on the single-machine side, frictionless onboarding is already
+real — a one-command `cairn setup` (and `install.sh` / `make deploy`) creates the
+mesh, installs the resident daemon as a user service (launchd/systemd), and wires
+`cairn mcp` into every detected MCP client, idempotently. The multi-machine
+onboarding/transport layer is built to its offline-testable
 scope — a transport abstraction seam (P3-1); one-time pairing invitations end to
 end (`cairn pair invite`/`join`: offline mint → paste-able token → new-node
 install → live pairing handshake → durable hard-single-use admission →
@@ -60,7 +90,7 @@ wire, relay diagnostics/self-host, and automatic metered/battery sensing remain
 deferred (hardware-gated)** — they sit behind the built interfaces and drop in
 with no caller changes. See `docs/cairn-p3-onboarding-transport.md`.
 
-**P1 progress:** the mesh is built and passing its acceptance suites — MCP server + untrusted-content envelope (N1), capability enforcement + trusted launcher (N2), durable semantic subscriptions (N3), sandboxed attachment derivatives + receiver summary checks (N4), Tailscale transport + enrolment ceremony (N5), reconciliation + text replication (N6), blob replication + durability acknowledgement (N7), and live fork detection + network doctor (N8). The remaining gate is **N9: hardening + a crossed two-auditor network audit** before the first tagged release.
+**P1 progress:** the mesh is built and passing its acceptance suites — MCP server + untrusted-content envelope (N1), capability enforcement + trusted launcher (N2), durable semantic subscriptions (N3), sandboxed attachment derivatives + receiver summary checks (N4), Tailscale transport + enrolment ceremony (N5), reconciliation + text replication (N6), blob replication + durability acknowledgement (N7), and live fork detection + network doctor (N8). The final gate — **N9: hardening + a crossed two-auditor network audit** — is **complete** (hardening H1–H8 code-complete, audit passed with zero blockers), so P1 is ready for the first tagged release.
 
 Each phase gates the next on measured results — P0's engineering gates (zero acknowledged-event loss, 100% provenance, 100% budget compliance, P95 lexical-visibility < 200 ms) are green, and it must demonstrably beat copy-paste (Success@5 ≥ 70% across 30 real cross-session handoffs) before P2 ships. The event-sourced core means every later phase is a new projection over the same log: no migrations, ever.
 
@@ -72,7 +102,7 @@ Kin and inspirations: [Secure Scuttlebutt](https://scuttlebutt.nz)'s per-origin 
 
 ## Status
 
-**Pre-alpha.** P0 is complete and P1 is nearly complete — the single-machine daemon and the multi-machine Tailscale mesh (replication, blob durability, capability enforcement, MCP, live fork detection) are built and passing their acceptance suites. What remains before the first tagged release is **N9: hardening under a full network fault matrix and a crossed two-auditor security audit**. Star/watch for the release. Built in Go; macOS (Apple Silicon) first, Linux best-effort.
+**Pre-alpha.** P0 and P1 are both complete and audited — the single-machine daemon and the multi-machine Tailscale mesh (replication, blob durability, capability enforcement, MCP, live fork detection) are built, passing their acceptance suites, and past the N9 hardening + crossed two-auditor network audit (zero blockers). What remains before cutting the first tag is the operator's own **30-handoff product evaluation** (the real-world "does it beat copy-paste?" gate in [`DOGFOOD.md`](DOGFOOD.md)). Star/watch for the release. Built in Go; macOS (Apple Silicon) first, Linux best-effort.
 
 **Known limitation — degradation ladder (spec §8.2):** the load-shedding ladder enforces rungs 1–5 (delay auto-links → summaries → embeddings → force lexical-only search → delay proactive blob replication). The two disk/quota **reject** rungs (6 reject low-priority blobs, 7 reject small text) are computed and reported (the level shows in `cairn status` and every transition is logged) but not yet *enforced* — safely rejecting a send needs pre-ack reserved-capacity semantics that are deferred to a dedicated change. Until then they fail open (the send proceeds), never silently.
 
@@ -180,7 +210,7 @@ This isn't OSI-certified open source (noncommercial restrictions disqualify it, 
 
 ## Contributing
 
-Issues and PRs welcome once P1 lands. Contributions are accepted under the project license; substantial contributors will be asked to sign a lightweight CLA (needed to keep dual/commercial licensing possible). The bar for merging into the event log and durability code is high — read [`build/TESTING.md`](build/TESTING.md) first; if your change touches the write path, it ships with crash-matrix coverage or it doesn't ship.
+Issues and PRs welcome. Contributions are accepted under the project license; substantial contributors will be asked to sign a lightweight CLA (needed to keep dual/commercial licensing possible). The bar for merging into the event log and durability code is high — read [`build/TESTING.md`](build/TESTING.md) first; if your change touches the write path, it ships with crash-matrix coverage or it doesn't ship.
 
 ---
 
