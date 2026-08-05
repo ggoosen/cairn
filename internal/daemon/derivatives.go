@@ -164,7 +164,8 @@ func extractiveLead(body string, maxChars int) string {
 // No embedder → checks stay pending (degradation ladder §8.2 delays
 // receiver summaries, never drops them).
 func (d *Daemon) SummaryCheckOnce(limit int) (int, error) {
-	if d.readOnly || d.embedder == nil {
+	e := d.emb()
+	if d.readOnly || e == nil {
 		return 0, nil
 	}
 	ids, err := d.proj.SummariesNeedingCheck(limit)
@@ -191,7 +192,7 @@ func (d *Daemon) SummaryCheckOnce(limit int) (int, error) {
 			done++
 			continue
 		}
-		vecs, err := d.embedder.Embed([]string{row.SenderSummary, string(body)})
+		vecs, err := e.Embed([]string{row.SenderSummary, string(body)})
 		if err != nil {
 			return done, nil // embedder outage: stay pending, retry next tick
 		}
@@ -200,7 +201,7 @@ func (d *Daemon) SummaryCheckOnce(limit int) (int, error) {
 		local, method := "", ""
 		if disagree {
 			local = extractiveLead(string(body), config.SummaryExtractLen)
-			method = "extractive-lead-v1/" + d.embedder.ModelID()
+			method = "extractive-lead-v1/" + e.ModelID()
 		}
 		if err := d.proj.RecordSummaryCheck(id, int(cos*10000), disagree, local, method, now); err != nil {
 			return done, err

@@ -56,7 +56,12 @@ type Daemon struct {
 	devPriv ed25519.PrivateKey
 	keyID   string
 
-	mu       sync.Mutex // serializes ALL mutations (single writer)
+	mu sync.Mutex // serializes ALL mutations (single writer)
+	// embMu guards the embedder POINTER only (swapped by SetEmbedderForTest
+	// while the enricher goroutine reads it); a dedicated lock so snapshot
+	// reads never interact with d.mu. The embedder itself serializes its own
+	// worker I/O internally.
+	embMu    sync.RWMutex
 	embedder embed.Embedder
 	trust    *identity.Trust
 	lg       *cairnlog.Log

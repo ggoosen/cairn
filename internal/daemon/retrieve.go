@@ -115,9 +115,9 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 	// H6/rung 4 (spec §8.2): under a severe embedding backlog the ladder forces
 	// lexical-only, shedding the vector query's cost even when an embedder is
 	// present. Inert at a healthy level.
-	if d.embedder != nil && !d.DegradationLevel().LexicalOnlyForced() {
-		if qvecs, err := d.embedder.Embed([]string{opts.Query}); err == nil {
-			heads, herr := d.proj.HeadVectors(d.embedder.ModelID(), opts.IncludeRetracted)
+	if e := d.emb(); e != nil && !d.DegradationLevel().LexicalOnlyForced() {
+		if qvecs, err := e.Embed([]string{opts.Query}); err == nil {
+			heads, herr := d.proj.HeadVectors(e.ModelID(), opts.IncludeRetracted)
 			if herr == nil && len(heads) > 0 {
 				vecIDs = topKCosine(heads, qvecs[0], config.FusionCandidatesVector)
 				mode = "full"
@@ -486,9 +486,9 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 		for i, id := range lexIDs {
 			lexRank[id] = i + 1
 		}
-		if d.embedder != nil {
-			if qvecs, err := d.embedder.Embed([]string{cfg.InterestQuery}); err == nil {
-				heads, herr := d.proj.HeadVectors(d.embedder.ModelID(), false)
+		if e := d.emb(); e != nil {
+			if qvecs, err := e.Embed([]string{cfg.InterestQuery}); err == nil {
+				heads, herr := d.proj.HeadVectors(e.ModelID(), false)
 				if herr == nil && len(heads) > 0 {
 					for i, id := range topKCosine(heads, qvecs[0], config.FusionCandidatesVector) {
 						vecRank[id] = i + 1
@@ -717,15 +717,16 @@ func (d *Daemon) WhyRanked(interactionID, messageID string) (string, error) {
 // EnrichOnce embeds up to batch pending revisions (background enricher body;
 // rulings §6: agents never wait on this). Returns how many were embedded.
 func (d *Daemon) EnrichOnce(batch int) (int, error) {
-	if d.embedder == nil {
+	e := d.emb()
+	if e == nil {
 		return 0, nil // lexical_only until an embedder is provisioned
 	}
 	stored, err := d.proj.EmbeddingModelID()
 	if err != nil {
 		return 0, err
 	}
-	if stored != "" && stored != d.embedder.ModelID() {
-		return 0, fmt.Errorf("stored vectors belong to model %q, embedder is %q: run `cairn reindex --semantic` to migrate", stored, d.embedder.ModelID())
+	if stored != "" && stored != e.ModelID() {
+		return 0, fmt.Errorf("stored vectors belong to model %q, embedder is %q: run `cairn reindex --semantic` to migrate", stored, e.ModelID())
 	}
 	pending, err := d.proj.PendingEmbeddings(batch)
 	if err != nil || len(pending) == 0 {
@@ -737,11 +738,11 @@ func (d *Daemon) EnrichOnce(batch int) (int, error) {
 		if err != nil {
 			continue // expired/missing: stays unembedded; lexical_only for it
 		}
-		vecs, err := d.embedder.Embed([]string{string(body)})
+		vecs, err := e.Embed([]string{string(body)})
 		if err != nil {
 			return done, err
 		}
-		if err := d.proj.InsertVector(pe.RevisionID, d.embedder.ModelID(), vecs[0]); err != nil {
+		if err := d.proj.InsertVector(pe.RevisionID, e.ModelID(), vecs[0]); err != nil {
 			return done, err
 		}
 		done++
@@ -751,14 +752,15 @@ func (d *Daemon) EnrichOnce(batch int) (int, error) {
 
 // ReindexSemantic: model migration = invalidate + full re-embed (rulings §7).
 func (d *Daemon) ReindexSemantic() (int, error) {
-	if d.embedder == nil {
+	e := d.emb()
+	if e == nil {
 		return 0, fmt.Errorf("no embedder available: provision the embed venv (.cairn/embed-venv) or set CAIRN_EMBED_PYTHON")
 	}
 	stored, err := d.proj.EmbeddingModelID()
 	if err != nil {
 		return 0, err
 	}
-	if stored != "" && stored != d.embedder.ModelID() {
+	if stored != "" && stored != e.ModelID() {
 		if err := d.proj.InvalidateVectors(); err != nil {
 			return 0, err
 		}
@@ -787,5 +789,17 @@ func (d *Daemon) Outcome(interactionID, outcome, messageID string) error {
 // Telemetry exposes the store (gates report).
 func (d *Daemon) Telemetry() *telemetry.Store { return d.tel }
 
+// emb snapshots the embedder pointer (see embMu: the pointer can be swapped
+// by SetEmbedderForTest while the enricher goroutine and retrieval read it).
+func (d *Daemon) emb() embed.Embedder {
+	d.embMu.RLock()
+	defer d.embMu.RUnlock()
+	return d.embedder
+}
+
 // SetEmbedderForTest swaps the embedder (enricher-death simulation).
-func (d *Daemon) SetEmbedderForTest(e embed.Embedder) { d.embedder = e }
+func (d *Daemon) SetEmbedderForTest(e embed.Embedder) {
+	d.embMu.Lock()
+	d.embedder = e
+	d.embMu.Unlock()
+}

@@ -233,6 +233,19 @@ const (
 	BruteForceMaxCandidates = 5000
 )
 
+// Embed-worker watchdogs. The subprocess protocol has no deadline of its
+// own, so a wedged worker would block its caller (and, holding the worker
+// mutex, every later embed) forever. On timeout the worker is killed and
+// the caller degrades to lexical_only.
+const (
+	// EmbedHandshakeTimeout covers the first request only: it absorbs the
+	// model download/deserialization that sentence-transformers does lazily.
+	EmbedHandshakeTimeout = 120 * time.Second
+	// EmbedRequestTimeout bounds every post-handshake batch (the model is
+	// resident by then; seconds, not minutes).
+	EmbedRequestTimeout = 30 * time.Second
+)
+
 // ---------------------------------------------------------------------------
 // Projection / FTS (rulings §6)
 // ---------------------------------------------------------------------------

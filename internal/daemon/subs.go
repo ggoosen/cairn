@@ -356,10 +356,11 @@ func (d *Daemon) subscriptionMatches(view string, exclude map[string]string) (ma
 	if err != nil || len(subs) == 0 {
 		return nil, err
 	}
-	if d.embedder == nil {
+	e := d.emb()
+	if e == nil {
 		return nil, nil // semantic matching requires an embedder; degrade silently
 	}
-	heads, err := d.proj.HeadVectors(d.embedder.ModelID(), false)
+	heads, err := d.proj.HeadVectors(e.ModelID(), false)
 	if err != nil || len(heads) == 0 {
 		return nil, err
 	}
@@ -396,7 +397,7 @@ func (d *Daemon) subscriptionMatches(view string, exclude map[string]string) (ma
 		if err != nil {
 			return nil, err
 		}
-		qvecs, err := d.embedder.Embed([]string{sub.InterestQuery})
+		qvecs, err := e.Embed([]string{sub.InterestQuery})
 		if err != nil {
 			continue // embedder outage degrades this sub, never the digest
 		}

@@ -3,10 +3,14 @@ package embed
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"github.com/ggoosen/cairn/internal/config"
 )
@@ -16,10 +20,19 @@ import (
 // provisioned venv at <portable>/.cairn/embed-venv (or $CAIRN_EMBED_PYTHON).
 // Protocol: one JSON array of strings per request line on stdin, one JSON
 // array of float arrays per response line on stdout.
+//
+// The worker multiplexes ONE stdin encoder and ONE stdout scanner, so the
+// whole request/response round-trip is serialized under mu: concurrent
+// callers (search, digest, the background enricher, subscription
+// calibration) would otherwise interleave request lines and read each
+// other's vectors.
 type Python struct {
-	cmd    *exec.Cmd
-	stdin  *json.Encoder
-	stdout *bufio.Scanner
+	mu       sync.Mutex
+	cmd      *exec.Cmd
+	stdinRaw io.WriteCloser
+	stdin    *json.Encoder
+	stdout   *bufio.Scanner
+	dead     bool
 }
 
 const pythonWorker = `
@@ -48,7 +61,13 @@ func PythonInterpreter(portableDir string) string {
 // NewPython starts the worker. Fails fast if the interpreter or the model
 // is unavailable (caller degrades to lexical_only).
 func NewPython(interpreter string) (*Python, error) {
-	cmd := exec.Command(interpreter, "-c", pythonWorker)
+	return newPythonWorker(interpreter, pythonWorker)
+}
+
+// newPythonWorker is NewPython with the worker source injectable (tests run
+// a fake line-protocol worker; production always uses pythonWorker).
+func newPythonWorker(interpreter, worker string) (*Python, error) {
+	cmd := exec.Command(interpreter, "-c", worker)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -63,9 +82,10 @@ func NewPython(interpreter string) (*Python, error) {
 	}
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 1<<20), 64<<20)
-	p := &Python{cmd: cmd, stdin: json.NewEncoder(stdin), stdout: sc}
-	// handshake: embed one empty batch to force model load errors now
-	if _, err := p.Embed([]string{"handshake"}); err != nil {
+	p := &Python{cmd: cmd, stdinRaw: stdin, stdin: json.NewEncoder(stdin), stdout: sc}
+	// handshake: embed one batch to force model-load errors now. First load
+	// downloads/deserializes the model, so it gets the long timeout.
+	if _, err := p.embed([]string{"handshake"}, config.EmbedHandshakeTimeout); err != nil {
 		p.Close()
 		return nil, err
 	}
@@ -76,11 +96,37 @@ func (p *Python) ModelID() string { return config.EmbeddingModelID }
 func (p *Python) Dim() int        { return config.EmbeddingDim }
 
 func (p *Python) Embed(texts []string) ([][]float32, error) {
+	return p.embed(texts, config.EmbedRequestTimeout)
+}
+
+func (p *Python) embed(texts []string, timeout time.Duration) ([][]float32, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.dead {
+		return nil, errors.New("embed worker closed")
+	}
 	if err := p.stdin.Encode(texts); err != nil {
 		return nil, err
 	}
-	if !p.stdout.Scan() {
-		return nil, fmt.Errorf("embed worker died: %v", p.stdout.Err())
+	// Scanner has no deadline: watchdog it. On timeout the worker is killed,
+	// which unblocks the Scan, and the handle is poisoned — callers already
+	// degrade to lexical_only on embed errors.
+	done := make(chan bool, 1)
+	go func() { done <- p.stdout.Scan() }()
+	var scanned bool
+	select {
+	case scanned = <-done:
+	case <-time.After(timeout):
+		p.killLocked()
+		<-done // Scan returns once the pipe closes; then the reap is safe
+		p.cmd.Wait()
+		return nil, fmt.Errorf("embed worker timed out after %s (killed; retrieval degrades to lexical_only)", timeout)
+	}
+	if !scanned {
+		err := p.stdout.Err()
+		p.killLocked()
+		p.cmd.Wait()
+		return nil, fmt.Errorf("embed worker died: %v", err)
 	}
 	var vecs [][]float32
 	if err := json.Unmarshal(p.stdout.Bytes(), &vecs); err != nil {
@@ -92,10 +138,29 @@ func (p *Python) Embed(texts []string) ([][]float32, error) {
 	return vecs, nil
 }
 
-func (p *Python) Close() error {
+// killLocked poisons the handle and signals the worker. Callers hold mu and
+// are responsible for cmd.Wait() once any in-flight pipe read has returned.
+func (p *Python) killLocked() {
+	if p.dead {
+		return
+	}
+	p.dead = true
+	if p.stdinRaw != nil {
+		p.stdinRaw.Close() // a well-behaved worker exits on stdin EOF
+	}
 	if p.cmd.Process != nil {
 		p.cmd.Process.Kill()
 	}
+}
+
+func (p *Python) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.dead {
+		return nil
+	}
+	p.killLocked()
+	p.cmd.Wait() // reap: without this every closed worker is a zombie child
 	return nil
 }
 
