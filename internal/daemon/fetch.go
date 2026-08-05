@@ -203,7 +203,10 @@ func (d *Daemon) Run(ctx context.Context, processOutbox func() error) error {
 	// N6: anti-entropy sweep (R29) — dial every configured peer on a timer
 	// and on every push-on-append kick, running one bidirectional reconcile
 	// per peer. A peer that is offline is logged and retried next tick.
-	if len(d.loaded.Device.SyncPeers) > 0 && !d.readOnly && d.transport != nil {
+	// SYNC-C1: the loop runs whenever a transport exists (zero peers = cheap
+	// idle ticks) so a peer added live via peer-add replicates WITHOUT a
+	// daemon restart — the sweep re-reads the peer list every pass.
+	if !d.readOnly && d.transport != nil {
 		go d.antiEntropyLoop(ctx)
 	}
 

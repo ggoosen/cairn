@@ -63,6 +63,9 @@ var opCapability = map[string]string{
 	"reserve-status": capAdmin, "emergency-publish": capAdmin,
 	"housekeep": capAdmin, "reindex-semantic": capAdmin,
 	"sync-now": capAdmin, "sync-status": capRead,
+	// SYNC-C1: peer topology is device policy — mutation is operator-tier;
+	// listing is read-tier (sync-status already exposes the peer list there)
+	"peer-add": capAdmin, "peer-remove": capAdmin, "peer-list": capRead,
 	"session-create": capAdmin, "session-revoke": capAdmin, "session-list": capAdmin,
 
 	// durable subscriptions are structural (N3): agent-standard cannot

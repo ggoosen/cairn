@@ -38,10 +38,10 @@ func newNetCmd(dirFlag *string) *cobra.Command {
 			fmt.Fprintf(out, "transport:  %s\n", transport)
 			fmt.Fprintf(out, "role:       %s\n", str(st["role"], config.RoleFull))
 			fmt.Fprintf(out, "listener:   %s\n", str(st["listener"], "unknown"))
-			if peers, ok := st["peers"].([]any); ok {
+			if peers, ok := st["peers"].([]any); ok && len(peers) > 0 {
 				fmt.Fprintf(out, "peers:      %d configured\n", len(peers))
 			} else {
-				fmt.Fprintf(out, "peers:      0 configured\n")
+				fmt.Fprintf(out, "peers:      0 configured — nothing will replicate; add one with `cairn peer add <host:port>`\n")
 			}
 			if bootstrap, _ := st["bootstrap"].(bool); bootstrap {
 				fmt.Fprintf(out, "trust:      grant-chain bootstrap (log not yet fully replicated; R37)\n")

@@ -100,8 +100,18 @@ func newPairCmd(dirFlag *string) *cobra.Command {
 				return fmt.Errorf("identity installed, but the pairing handshake failed: %w\n"+
 					"(the invitation may have expired or already been used; if it succeeded once, just start the daemon to sync — re-running join is safe)", err)
 			}
+			// SYNC-C3: persist the counterparty as a sync peer — we just proved
+			// it answers at args[1]. Without this, pairing succeeded but NOTHING
+			// replicated until the operator hand-edited sync_peers. Reconciles
+			// are bidirectional per connection, so this one entry converges
+			// both nodes.
+			if err := identity.AddSyncPeer(dir, args[1]); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"WARNING: could not persist %s as a sync peer (%v) — add it with `cairn peer add %s` after starting the daemon\n",
+					args[1], err, args[1])
+			}
 			fmt.Fprintf(cmd.OutOrStdout(),
-				"paired! admitted by device.add %s.\nstart the daemon to sync the mesh log:  cairn daemon\n", evID)
+				"paired! admitted by device.add %s.\npeer %s registered for sync.\nstart the daemon to sync the mesh log:  cairn daemon\n", evID, args[1])
 			return nil
 		},
 	}

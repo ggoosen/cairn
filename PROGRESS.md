@@ -3463,3 +3463,26 @@ exact range at validation (internal/event/canonical.go); the corpus seed is
 pinned in testdata. FuzzDecodeFrame covers the recovery-path frame decoder
 (never panics; decode∘encode stable). New BenchmarkAppend/BenchmarkRecovery;
 TestConcurrentSearchEnrichRace exercises retrieval vs enricher under -race.
+
+## WP-C — Sync/multi-device usability (audit 2026-08-05) — DONE
+
+Commits SYNC-C1…C4. The biggest day-one gap: `sync_peers` was read-only
+from the device TOML — NO verb wrote it, `pair join` didn't either, so two
+freshly-paired machines never replicated until the operator hand-edited
+config-device.toml and restarted the daemon (docs/cairn-p3-onboarding-
+transport.md's "start syncing" claim was false).
+
+- `peer-add`/`peer-remove`/`peer-list` IPC ops (add/remove capAdmin, list
+  capRead) + `cairn peer add|rm|list` CLI. Mutations apply LIVE (the
+  anti-entropy sweep re-reads the peer list; PeerAdd kicks it) AND persist
+  via SaveDevice.
+- The anti-entropy loop now starts whenever a transport exists (zero peers
+  = cheap idle ticks), so a live-added peer replicates with no restart.
+- `pair join` persists its counterparty address as a sync peer
+  (identity.AddSyncPeer) — reconciles are bidirectional per connection, so
+  that one entry converges both nodes; the doc claim is now true.
+- `cairn status` warns when members>1 with 0 peers; `cairn net` says
+  "nothing will replicate" at 0 peers, both pointing at `cairn peer add`.
+- Tests: add/rm/list + persistence across restart, invalid addresses,
+  capability gating over the socket, AddSyncPeer unit, and a live two-node
+  drill proving a peer added at runtime converges without restart.

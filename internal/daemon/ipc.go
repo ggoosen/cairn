@@ -123,6 +123,7 @@ type Response struct {
 	Summary    *projection.SummaryRow       `json:"summary,omitempty"`
 	Staged     *StagedAttachment            `json:"staged,omitempty"` // G6: stage-attachment result
 	Saved      []SavedSearch                `json:"saved,omitempty"`  // P2-4 saved-search list
+	Peers      []string                     `json:"peers,omitempty"`  // SYNC-C1 peer management
 }
 
 // StagedAttachment is the stage-attachment reply: the stored object's hash and
@@ -710,6 +711,23 @@ func (d *Daemon) dispatch(req Request) Response {
 		return Response{OK: true, Status: map[string]any{
 			"status": fmt.Sprintf("sync started in background across %d peer(s) — watch `cairn sync status` or the daemon log for convergence", len(peers)),
 			"peers":  len(peers)}}
+
+	case "peer-add":
+		peers, err := d.PeerAdd(req.Peer)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Peers: peers}
+
+	case "peer-remove":
+		peers, err := d.PeerRemove(req.Peer)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Peers: peers}
+
+	case "peer-list":
+		return Response{OK: true, Peers: d.PeerList()}
 
 	case "sync-status":
 		fr, err := d.Frontiers()
