@@ -3447,3 +3447,19 @@ tagged suite + vet green at every commit.
   an incomplete request. Alternative: success-with-warning naming the
   unlinked topics. Marker: `// RULING-NEEDED:` at the publish sequence in
   internal/daemon/daemon.go.
+
+## WP-B — CI + test infrastructure (audit 2026-08-05) — DONE
+
+Commits CI-B1…CI-B4. GitHub Actions now runs `make verify` (both halves of
+the FIX-F4 guard) on ubuntu+macos, the race detector, a 30s fuzz smoke, and
+golangci-lint on every push. New Makefile targets `test-race` and `fuzz`.
+Lint triage landed at ZERO issues with errcheck strict on production code.
+
+**Fuzzing found a real protocol bug on its first run:** ValidateNoFloats
+accepted integers beyond 2^53-1, which JCS (RFC 8785 = ES6 doubles)
+serializes precision-corrupted in exponent form ("1e+21") — canonical bytes
+the validator itself then rejects. Integers are now bounded to the i-JSON
+exact range at validation (internal/event/canonical.go); the corpus seed is
+pinned in testdata. FuzzDecodeFrame covers the recovery-path frame decoder
+(never panics; decode∘encode stable). New BenchmarkAppend/BenchmarkRecovery;
+TestConcurrentSearchEnrichRace exercises retrieval vs enricher under -race.
