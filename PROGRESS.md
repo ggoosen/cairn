@@ -3391,3 +3391,59 @@ exists (pins are object-durability), so the authoritative record is the latest
 operator message on the topic; its head revision is the re-apply trigger.
 
 **This completes the CAIRN-AFFORDANCE-PLAN work-order (Phases 0–4).**
+
+---
+
+## WP-A — Safety/correctness remediation (audit 2026-08-05) — DONE
+
+Branch `claude/cairn-agent-topic-scoping-kxr3ow`, commits FIX-A1…FIX-A8. All
+from the three-way audit (status vs plan / code quality / product). Full
+tagged suite + vet green at every commit.
+
+- **FIX-A1** object-hash validation (`object.ValidHash`, `ObjectHashHexLen`)
+  + `recover()` in the IPC handler. Pre-fix: a 1-char hash via `pin` or a
+  pre-staged attachment panicked `store.Path` (`hash[:2]`) and killed the
+  daemon — no recover existed anywhere in the connection path.
+- **FIX-A2** `viewDir` choke point: view-name validation on EVERY
+  path-forming entry (Fetch/map/compaction/readViewConfig were unguarded;
+  Digest already was — audit overstated that one). Fetch paths now use the
+  projection's canonical message ID. `cairn mcp` refuses traversal-shaped
+  `--view`.
+- **FIX-A3** CLI `cairn subscribe` routes through `subscribe-local`; the
+  direct view.json rewrite erased operator topic filters and raced the
+  daemon. Session-view binding deliberately NOT added — the crossed-review
+  verdict above (AFFORDANCE P2 section) rules the view-trust model
+  consistent with R22 and defers binding until per-view auth exists.
+- **FIX-A4** embed.Python: mutex-serialized round-trip (concurrent callers
+  could receive each other's vectors), watchdog timeouts
+  (`EmbedHandshakeTimeout`/`EmbedRequestTimeout`), stdin-close + kill +
+  Wait on Close (zombie reap). Daemon embedder pointer reads snapshot
+  under a dedicated RWMutex. First tests for python.go (fake worker).
+- **FIX-A5** log append rollback: truncate to last durable frame end on
+  write/sync/dir-sync failure, or poison the handle (typed refusal) if the
+  rollback fails. Pre-fix a transient EIO left torn bytes mid-segment on a
+  live handle → next append landed after them → interior corruption →
+  unopenable log. fsx.MemFS O_APPEND corrected to POSIX every-write-at-EOF
+  semantics (offset emulation modeled an impossible state).
+- **FIX-A6** publish sequencing: topic.create* → message.publish →
+  topic.link.add*. **Author ruling needed (recorded below).**
+- **FIX-A7** socket in per-user 0700 dir (XDG_RUNTIME_DIR/cairn or
+  TempDir/cairn-<uid>), symlink/ownership/mode verification, chmod 0600.
+  Cross-user Linux exposure closed; R22 same-user honest-tiering
+  unchanged. SO_PEERCRED enforcement considered and NOT added (would
+  exceed R22's model); revisit only with per-view auth.
+- **FIX-A8** MCP schema truth (text_class enum had nonexistent "working",
+  missing eager-searchable; priority max 10 vs daemon's 3), score via
+  rank.Dec, ignored-error fixes, ForTest-hook lock audit.
+
+### Author rulings needed
+
+- **FIX-A6 / FIX-F1 residual:** when a topic.link.add append fails AFTER
+  message.publish is durable, the daemon returns an error for a request
+  whose message is already searchable; a CLI/MCP retry (no correlation_id)
+  re-publishes the body under a new message ID. FIX-F1 ruling 1 ("ALL
+  durable before the single ack") does not say what to report here.
+  Implemented (conservative): return the error — never claim success for
+  an incomplete request. Alternative: success-with-warning naming the
+  unlinked topics. Marker: `// RULING-NEEDED:` at the publish sequence in
+  internal/daemon/daemon.go.
