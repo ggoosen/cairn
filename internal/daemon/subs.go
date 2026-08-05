@@ -92,7 +92,10 @@ func (d *Daemon) LocalSubscriptionFor(view string) (*LocalSubscription, error) {
 // session-tier config is deliberately mutable — re-subscribing replaces it — so
 // this does temp → fsync → rename(overwrite) → dir-fsync itself, torn-free.
 func (d *Daemon) writeLocalViewConfig(view string, cfg ViewConfig) error {
-	base := filepath.Join(d.dir, config.ViewsDirName, view)
+	base, err := d.viewDir(view) // choke point: callers validate, this re-checks
+	if err != nil {
+		return err
+	}
 	if err := d.fs.MkdirAll(base, 0o700); err != nil {
 		return err
 	}
@@ -149,6 +152,17 @@ type SubscribeResult struct {
 
 func validViewName(v string) bool {
 	return v != "" && !strings.ContainsAny(v, "/\\") && !strings.Contains(v, "..")
+}
+
+// viewDir validates an agent view name and returns views/<view> under the
+// portable dir. EVERY path formed from a caller-supplied view name must go
+// through this choke point: view names become filesystem paths, and "/",
+// "\\", ".." would escape the views tree.
+func (d *Daemon) viewDir(view string) (string, error) {
+	if !validViewName(view) {
+		return "", fmt.Errorf("invalid view %q (plain names only: no separators, no ..)", view)
+	}
+	return filepath.Join(d.dir, config.ViewsDirName, view), nil
 }
 
 // resolveSubTopics maps each entry (topic id or name) to a topic_id,

@@ -419,8 +419,8 @@ type DigestOutput struct {
 // mandatory items (explicit recipients, then pins) come first and consume
 // budget; overflow drops oldest-first and is reported (rulings §7).
 func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
-	if opts.AgentView == "" || strings.ContainsAny(opts.AgentView, "/\\") || strings.Contains(opts.AgentView, "..") {
-		return nil, fmt.Errorf("invalid agent view %q", opts.AgentView)
+	if !validViewName(opts.AgentView) {
+		return nil, fmt.Errorf("invalid agent view %q (plain names only: no separators, no ..)", opts.AgentView)
 	}
 	if opts.BudgetChars <= 0 {
 		return nil, fmt.Errorf("digest requires budget_chars > 0 (budget_tokens is unsupported_in_P0)")
@@ -579,7 +579,11 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 		}
 	}
 
-	path := filepath.Join(d.dir, config.ViewsDirName, opts.AgentView, "digest.md")
+	base, err := d.viewDir(opts.AgentView)
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(base, "digest.md")
 	if err := d.fs.MkdirAll(filepath.Dir(path), config.DirPerm); err != nil {
 		return nil, err
 	}
@@ -663,7 +667,11 @@ func (d *Daemon) renderDigestEntry(pos int, s rank.Scored, row projection.RankRo
 
 func (d *Daemon) readViewConfig(agent string) ViewConfig {
 	var cfg ViewConfig
-	blob, err := d.fs.ReadFile(filepath.Join(d.dir, config.ViewsDirName, agent, "view.json"))
+	base, err := d.viewDir(agent) // traversal guard: never read outside views/
+	if err != nil {
+		return cfg
+	}
+	blob, err := d.fs.ReadFile(filepath.Join(base, "view.json"))
 	if err == nil {
 		json.Unmarshal(blob, &cfg)
 	}

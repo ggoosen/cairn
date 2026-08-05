@@ -97,3 +97,38 @@ func TestHandleConnRecoversPanic(t *testing.T) {
 		t.Fatalf("daemon not serving after recovered panic: %+v %v", after, err)
 	}
 }
+
+// A view name that escapes views/ must be refused by every op that turns a
+// view name into a filesystem path — and nothing may be created outside the
+// cairn dir.
+func TestViewNameTraversalRejected(t *testing.T) {
+	d, deviceDir := serveDaemon(t)
+	_ = d
+
+	// A marker outside the views tree: if traversal works, files land here.
+	for _, tc := range []struct {
+		op  string
+		req daemon.Request
+	}{
+		{"digest", daemon.Request{Op: "digest", AgentView: "../../evil"}},
+		{"digest-sep", daemon.Request{Op: "digest", AgentView: "a/b"}},
+		{"fetch", daemon.Request{Op: "fetch", MessageID: "m", AgentView: "../../evil"}},
+		{"map", daemon.Request{Op: "map", AgentView: "../../evil"}},
+		{"compact", daemon.Request{Op: "compact", AgentView: "../../evil"}},
+		{"subscribe-local", daemon.Request{Op: "subscribe-local", LocalSub: &daemon.LocalSubRequest{View: "../../evil", InterestQuery: "q"}}},
+	} {
+		_, err := daemon.Call(deviceDir, tc.req)
+		if err == nil || !strings.Contains(err.Error(), "invalid") {
+			t.Fatalf("%s with traversal view: want invalid-view refusal, got %v", tc.op, err)
+		}
+	}
+
+	// Nothing named "evil" may exist anywhere under the test root.
+	root := filepath.Dir(filepath.Dir(deviceDir)) // above device dir and cairn dir
+	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err == nil && strings.Contains(path, "evil") {
+			t.Fatalf("traversal escaped the views tree: %s", path)
+		}
+		return nil
+	})
+}

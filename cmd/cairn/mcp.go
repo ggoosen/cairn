@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -31,6 +32,11 @@ func newMCPCmd(dirFlag *string) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if profile == "full" {
 				return errors.New("MCP is never tier-1 (RULINGS.md R21): --profile full is refused")
+			}
+			// view becomes a filesystem path under views/ on every digest/fetch;
+			// refuse traversal-shaped names here, before the daemon has to.
+			if view == "" || strings.ContainsAny(view, "/\\") || strings.Contains(view, "..") {
+				return fmt.Errorf("invalid agent view name %q (plain names only)", view)
 			}
 			dir, err := config.PortableDir(*dirFlag)
 			if err != nil {

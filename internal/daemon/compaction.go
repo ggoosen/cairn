@@ -44,7 +44,10 @@ func (d *Daemon) GenerateCompaction(agentView string) (*CompactionResult, error)
 	}
 	body := renderCompaction(c, live, ratio, d.now().UTC().Format(config.WallTimeFormat))
 
-	dir := filepath.Join(d.dir, config.ViewsDirName, agentView)
+	dir, err := d.viewDir(agentView)
+	if err != nil {
+		return nil, err
+	}
 	if err := d.fs.MkdirAll(dir, config.DirPerm); err != nil {
 		return nil, err
 	}

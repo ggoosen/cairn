@@ -40,15 +40,20 @@ func (d *Daemon) Fetch(messageID, agentView string) (*FetchResult, error) {
 	if agentView == "" {
 		agentView = "operator"
 	}
+	base, err := d.viewDir(agentView)
+	if err != nil {
+		return nil, err
+	}
 	info, err := d.proj.MessageInfo(messageID)
 	if err != nil {
 		return nil, err
 	}
 
-	fetchedDir := filepath.Join(d.dir, config.ViewsDirName, agentView, "fetched")
+	fetchedDir := filepath.Join(base, "fetched")
 	if err := d.fs.MkdirAll(fetchedDir, config.DirPerm); err != nil {
 		return nil, err
 	}
+	// Paths use the projection's canonical ID, never the raw request string.
 	res := &FetchResult{
 		MessageID:    info.MessageID,
 		RevisionID:   info.HeadRevisionID,
@@ -56,8 +61,8 @@ func (d *Daemon) Fetch(messageID, agentView string) (*FetchResult, error) {
 		SourceEvent:  info.CreatedEventID,
 		Trust:        "untrusted",
 		Retracted:    info.Retracted,
-		ManifestPath: filepath.Join(fetchedDir, messageID+".manifest.json"),
-		BodyPath:     filepath.Join(fetchedDir, messageID+".body.md"),
+		ManifestPath: filepath.Join(fetchedDir, info.MessageID+".manifest.json"),
+		BodyPath:     filepath.Join(fetchedDir, info.MessageID+".body.md"),
 	}
 
 	refs := []object.Ref{{Hash: info.BodyHash, TextClass: info.TextClass, CreatedAt: parseWall(info.CreatedAt)}}
