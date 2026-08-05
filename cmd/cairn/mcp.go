@@ -64,7 +64,9 @@ func newMCPCmd(dirFlag *string) *cobra.Command {
 					return err
 				}
 				token = resp.Status["session"].(string)
-				defer daemon.Call(clientDir, daemon.Request{Op: "session-revoke", TargetSession: token})
+				defer func() {
+					_, _ = daemon.Call(clientDir, daemon.Request{Op: "session-revoke", TargetSession: token})
+				}()
 			}
 
 			caller := func(req daemon.Request) (*daemon.Response, error) {

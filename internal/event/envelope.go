@@ -44,8 +44,8 @@ type Envelope struct {
 // EventID computes BLAKE3(EventDomainSeparator || signing_bytes), lowercase hex.
 func EventID(signingBytes []byte) string {
 	h := blake3.New(32, nil)
-	h.Write([]byte(config.EventDomainSeparator))
-	h.Write(signingBytes)
+	_, _ = h.Write([]byte(config.EventDomainSeparator)) // blake3 Write never errors
+	_, _ = h.Write(signingBytes)
 	return hex.EncodeToString(h.Sum(nil))
 }
 

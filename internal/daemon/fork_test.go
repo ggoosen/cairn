@@ -56,7 +56,7 @@ func TestN8ForkDetectionAndRepair(t *testing.T) {
 	dA, cancelA, _ := startSyncNode(t, p.baseA, p.dirA, warnA)
 
 	// --- B writes a common prefix (seq 1,2), then we clone it -----------------
-	dB, cancelB, addrB := startSyncNode(t, p.baseB, p.dirB, warnB)
+	dB, cancelB, _ := startSyncNode(t, p.baseB, p.dirB, warnB)
 	if _, err := dB.Publish(daemon.PublishRequest{Actor: "operator", Body: "common event one about anchors"}); err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestN8ForkDetectionAndRepair(t *testing.T) {
 	copyTree(t, p.baseB, baseB2)
 
 	// --- B extends with branch A (seq 3 = A3); A pulls it ---------------------
-	dB, cancelB, addrB = startSyncNode(t, p.baseB, p.dirB, warnB)
+	dB, cancelB, addrB := startSyncNode(t, p.baseB, p.dirB, warnB)
 	if _, err := dB.Publish(daemon.PublishRequest{Actor: "operator", Body: "branch A three unique-aaa"}); err != nil {
 		t.Fatal(err)
 	}

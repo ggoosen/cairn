@@ -80,7 +80,7 @@ func (s *Server) HandleMessage(line []byte) *rpcResponse {
 		var p struct {
 			ProtocolVersion string `json:"protocolVersion"`
 		}
-		json.Unmarshal(req.Params, &p)
+		_ = json.Unmarshal(req.Params, &p)
 		v := p.ProtocolVersion
 		if v == "" {
 			v = protocolVersion

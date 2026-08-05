@@ -261,7 +261,7 @@ func segmentRootHash(eventIDs []string) string {
 			// for verified records, and unverified records never reach seal.
 			raw = []byte(id)
 		}
-		h.Write(raw)
+		_, _ = h.Write(raw) // blake3 Write never errors
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

@@ -15,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -524,14 +523,6 @@ func (d *Daemon) recover() error {
 	return nil
 }
 
-func isKeyOrderError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "before genesis") || strings.Contains(msg, "unknown signing key")
-}
-
 func (d *Daemon) releaseLock() {
 	if d.lockFile != nil {
 		syscall.Flock(int(d.lockFile.Fd()), syscall.LOCK_UN)
@@ -564,7 +555,7 @@ func (d *Daemon) Close() error {
 		d.proj = nil
 	}
 	if d.tel != nil {
-		d.tel.Close()
+		_ = d.tel.Close()
 		d.tel = nil
 	}
 	d.releaseLock()
@@ -947,7 +938,7 @@ func (d *Daemon) Publish(req PublishRequest) (*PublishResult, error) {
 
 	// === ACK POINT: the COMPLETE request is durable ===
 	if d.tel != nil {
-		d.tel.RecordLatency("ack_to_lexical_visible", time.Since(ackAt), d.now())
+		_ = d.tel.RecordLatency("ack_to_lexical_visible", time.Since(ackAt), d.now())
 	}
 
 	// N7: blob replication acknowledgement (spec §6.3). accepted_locally is

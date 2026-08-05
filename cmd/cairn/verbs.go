@@ -86,7 +86,7 @@ func groupGuard(cmd *cobra.Command) {
 		if len(args) > 0 {
 			return fmt.Errorf("unknown %s subcommand %q — see `cairn %s --help`", c.Name(), args[0], c.Name())
 		}
-		c.Help()
+		_ = c.Help()
 		return fmt.Errorf("%s requires a subcommand", c.Name())
 	}
 }

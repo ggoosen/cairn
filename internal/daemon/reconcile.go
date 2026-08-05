@@ -278,8 +278,8 @@ func (d *Daemon) readRange(o cairnlog.Origin, from, to int64, livePush bool) ([]
 				// Outside it, the event ships without its content — the peer
 				// was not a live recipient at publish time.
 				if !replicatesToFullNode(b.class) &&
-					!(livePush && b.class == object.ClassEphemeral &&
-						d.withinEphemeralWindow(env.WallTime, d.ephemeralSendWindow())) {
+					(!livePush || b.class != object.ClassEphemeral ||
+						!d.withinEphemeralWindow(env.WallTime, d.ephemeralSendWindow())) {
 					continue
 				}
 				if _, have := bodies[b.hash]; have {
@@ -419,7 +419,7 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 		case "frontier":
 			fr, err := d.Frontiers()
 			if err != nil {
-				writeSync(conn, syncMsg{Type: "error", Err: err.Error()})
+				_ = writeSync(conn, syncMsg{Type: "error", Err: err.Error()})
 				return
 			}
 			// G7.3: symmetric fork detection. The initiator now sends its
@@ -438,7 +438,7 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 			}
 		case "get_range":
 			if req.Origin == nil {
-				writeSync(conn, syncMsg{Type: "error", Err: "get_range without origin"})
+				_ = writeSync(conn, syncMsg{Type: "error", Err: "get_range without origin"})
 				return
 			}
 			d.mu.Lock()
@@ -447,7 +447,7 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 			if err != nil {
 				fmt.Fprintf(d.warn, "sync: serving range %s/%d [%d,%d) to %s failed: %v\n",
 					req.Origin.DeviceID, req.Origin.Generation, req.FromSeq, req.ToSeq, peerDevice, err)
-				writeSync(conn, syncMsg{Type: "error", Err: err.Error()})
+				_ = writeSync(conn, syncMsg{Type: "error", Err: err.Error()})
 				return
 			}
 			if err := writeSync(conn, syncMsg{Type: "records", Origin: req.Origin, Records: recs, Bodies: bodies}); err != nil {
@@ -473,7 +473,7 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 			}
 			if err != nil {
 				fmt.Fprintf(d.warn, "sync: ingest from %s failed: %v\n", peerDevice, err)
-				writeSync(conn, syncMsg{Type: "error", Err: err.Error()})
+				_ = writeSync(conn, syncMsg{Type: "error", Err: err.Error()})
 				return
 			}
 			if n > 0 {
@@ -500,10 +500,10 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 			}
 			d.mu.Unlock()
 			if err != nil {
-				writeSync(conn, syncMsg{Type: "error", Err: err.Error()})
+				_ = writeSync(conn, syncMsg{Type: "error", Err: err.Error()})
 				return
 			}
-			d.durab.save(d.fs, d.dir)
+			_ = d.durab.save(d.fs, d.dir)
 			sort.Strings(held)
 			if err := writeSync(conn, syncMsg{Type: "blob_inv", Hashes: held}); err != nil {
 				return
@@ -517,7 +517,7 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 			// exactly as if we did not hold it.
 			ephOnly, cerr := d.proj.EphemeralOnlyObject(req.Hash)
 			if cerr != nil {
-				writeSync(conn, syncMsg{Type: "error", Err: cerr.Error()})
+				_ = writeSync(conn, syncMsg{Type: "error", Err: cerr.Error()})
 				return
 			}
 			if ephOnly {
@@ -539,7 +539,7 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 				}
 				continue
 			}
-			d.durab.save(d.fs, d.dir)
+			_ = d.durab.save(d.fs, d.dir)
 			if err := writeSync(conn, syncMsg{Type: "object", Hash: req.Hash, Data: data}); err != nil {
 				return
 			}
@@ -547,7 +547,7 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 			// verify (content-address) before storing (R31); the initiator
 			// holds it (it pushed it).
 			if len(req.Data) > config.SyncMaxObjectBytes {
-				writeSync(conn, syncMsg{Type: "error", Err: "blob exceeds transfer cap"})
+				_ = writeSync(conn, syncMsg{Type: "error", Err: "blob exceeds transfer cap"})
 				return
 			}
 			// R50 accept gate: bytes our projection knows ONLY as ephemeral
@@ -555,11 +555,11 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 			// only with its event inside the live window. A conforming peer
 			// never sends these (targetBlobs excludes ephemeral).
 			if ephOnly, cerr := d.proj.EphemeralOnlyObject(req.Hash); cerr != nil {
-				writeSync(conn, syncMsg{Type: "error", Err: cerr.Error()})
+				_ = writeSync(conn, syncMsg{Type: "error", Err: cerr.Error()})
 				return
 			} else if ephOnly {
 				fmt.Fprintf(d.warn, "sync: REFUSED pushed ephemeral object %s from %s (R50: ephemeral is never backfilled)\n", req.Hash, peerDevice)
-				writeSync(conn, syncMsg{Type: "error", Err: "ephemeral object refused (R50: ephemeral content is never backfilled)"})
+				_ = writeSync(conn, syncMsg{Type: "error", Err: "ephemeral object refused (R50: ephemeral content is never backfilled)"})
 				return
 			}
 			d.mu.Lock()
@@ -569,15 +569,15 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 			}
 			d.mu.Unlock()
 			if perr != nil {
-				writeSync(conn, syncMsg{Type: "error", Err: perr.Error()})
+				_ = writeSync(conn, syncMsg{Type: "error", Err: perr.Error()})
 				return
 			}
 			if got != req.Hash {
 				fmt.Fprintf(d.warn, "sync: rejected pushed blob from %s: hashes to %s, claimed %s\n", peerDevice, got, req.Hash)
-				writeSync(conn, syncMsg{Type: "error", Err: "pushed blob hash mismatch"})
+				_ = writeSync(conn, syncMsg{Type: "error", Err: "pushed blob hash mismatch"})
 				return
 			}
-			d.durab.save(d.fs, d.dir)
+			_ = d.durab.save(d.fs, d.dir)
 			if err := writeSync(conn, syncMsg{Type: "put_ack", Hash: req.Hash}); err != nil {
 				return
 			}
@@ -586,11 +586,11 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 			// FULL node can offer completeness — a thin node refuses (it would
 			// return the same partial view the asker already has).
 			if d.selfIsThin() {
-				writeSync(conn, syncMsg{Type: "remote_results", Err: "peer is a thin node — no universal search to offer"})
+				_ = writeSync(conn, syncMsg{Type: "remote_results", Err: "peer is a thin node — no universal search to offer"})
 				continue
 			}
 			if req.Query == "" {
-				writeSync(conn, syncMsg{Type: "remote_results", Err: "remote_search requires a query"})
+				_ = writeSync(conn, syncMsg{Type: "remote_results", Err: "remote_search requires a query"})
 				continue
 			}
 			budget := req.Budget
@@ -599,7 +599,7 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 			}
 			out, serr := d.Search(SearchOptions{Query: req.Query, BudgetChars: budget, AgentSurface: "remote", Principal: peerDevice})
 			if serr != nil {
-				writeSync(conn, syncMsg{Type: "remote_results", Err: serr.Error()})
+				_ = writeSync(conn, syncMsg{Type: "remote_results", Err: serr.Error()})
 				continue
 			}
 			if err := writeSync(conn, syncMsg{Type: "remote_results", Search: out}); err != nil {
@@ -608,7 +608,7 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 		case "done":
 			return
 		default:
-			writeSync(conn, syncMsg{Type: "error", Err: "unknown sync message " + req.Type})
+			_ = writeSync(conn, syncMsg{Type: "error", Err: "unknown sync message " + req.Type})
 			return
 		}
 	}
@@ -644,7 +644,7 @@ func (d *Daemon) RemoteSearch(addr, query string, budget int) (*SearchOutput, er
 	if err != nil {
 		return nil, fmt.Errorf("peer closed before remote_results: %w", err)
 	}
-	writeSync(pc, syncMsg{Type: "done"})
+	_ = writeSync(pc, syncMsg{Type: "done"})
 	if resp.Type != "remote_results" {
 		return nil, fmt.Errorf("expected remote_results, got %q", resp.Type)
 	}
@@ -800,7 +800,7 @@ func (d *Daemon) SyncWith(addr string) (int, error) {
 	if err := d.blobPhase(pc); err != nil {
 		fmt.Fprintf(d.warn, "sync: blob phase with %s incomplete: %v\n", pc.PeerDevice, err)
 	}
-	writeSync(pc, syncMsg{Type: "done"})
+	_ = writeSync(pc, syncMsg{Type: "done"})
 	return ingested, nil
 }
 
@@ -1217,7 +1217,7 @@ func (d *Daemon) ProbeGetObjectForTest(addr, hash string) (served bool, err erro
 		return false, fmt.Errorf("expected object, got %q (%s)", resp.Type, resp.Err)
 	}
 	served = !resp.Missing && len(resp.Data) > 0
-	writeSync(pc, syncMsg{Type: "done"})
+	_ = writeSync(pc, syncMsg{Type: "done"})
 	return served, nil
 }
 
@@ -1248,7 +1248,7 @@ func (d *Daemon) ProbePutObjectForTest(addr, hash string, data []byte) (accepted
 	if resp.Type != "put_ack" {
 		return false, fmt.Errorf("expected put_ack, got %q", resp.Type)
 	}
-	writeSync(pc, syncMsg{Type: "done"})
+	_ = writeSync(pc, syncMsg{Type: "done"})
 	return true, nil
 }
 

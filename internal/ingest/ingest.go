@@ -195,7 +195,7 @@ func sanitizeTopic(s string) string {
 	s = strings.ToLower(strings.ReplaceAll(s, " ", "-"))
 	s = topicClean.ReplaceAllString(s, "-")
 	s = strings.Trim(s, "/-_")
-	if s == "" || !(s[0] >= 'a' && s[0] <= 'z' || s[0] >= '0' && s[0] <= '9') {
+	if s == "" || ((s[0] < 'a' || s[0] > 'z') && (s[0] < '0' || s[0] > '9')) {
 		s = "x" + s
 	}
 	return s

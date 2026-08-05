@@ -226,7 +226,7 @@ func uninstallSystemd(out io.Writer) error {
 	}
 	if systemdAvailable() {
 		_ = exec.Command("systemctl", "--user", "disable", "--now", "cairn.service").Run()
-		defer exec.Command("systemctl", "--user", "daemon-reload").Run()
+		defer func() { _ = exec.Command("systemctl", "--user", "daemon-reload").Run() }()
 	}
 	if err := os.Remove(unitPath); err != nil && !os.IsNotExist(err) {
 		return err

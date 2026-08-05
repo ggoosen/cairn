@@ -274,12 +274,12 @@ func (s *sessions) resolve(token string, now time.Time) (*Session, *Profile, err
 	exp, err := time.Parse(config.WallTimeFormat, sess.ExpiresAt)
 	if err != nil || !now.Before(exp) {
 		delete(s.byToken, token)
-		s.persist()
+		_ = s.persist()
 		return nil, nil, fmt.Errorf("session expired")
 	}
 	if now.Sub(sess.lastUsed) > config.SessionIdleTimeout {
 		delete(s.byToken, token)
-		s.persist()
+		_ = s.persist()
 		return nil, nil, fmt.Errorf("session idle-revoked (idle > %v)", config.SessionIdleTimeout)
 	}
 	prof, ok := s.profiles[sess.Profile]

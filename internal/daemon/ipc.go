@@ -234,19 +234,19 @@ func (d *Daemon) handleConn(conn net.Conn) {
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Fprintf(d.warn, "PANIC recovered in IPC handler: %v\n%s", r, debug.Stack())
-			writeResponse(conn, Response{Error: "internal error (panic recovered; see daemon log)"})
+			_ = writeResponse(conn, Response{Error: "internal error (panic recovered; see daemon log)"})
 		}
 	}()
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
 	r := bufio.NewReaderSize(conn, 64<<10)
 	line, err := readLine(r, config.IPCMaxRequestBytes)
 	if err != nil {
-		writeResponse(conn, Response{Error: "bad request: " + err.Error()})
+		_ = writeResponse(conn, Response{Error: "bad request: " + err.Error()})
 		return
 	}
 	var req Request
 	if err := json.Unmarshal(line, &req); err != nil {
-		writeResponse(conn, Response{Error: "bad request json: " + err.Error()})
+		_ = writeResponse(conn, Response{Error: "bad request json: " + err.Error()})
 		return
 	}
 	// G6: stage-attachment streams the raw attachment bytes on THIS connection,

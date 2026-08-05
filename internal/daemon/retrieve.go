@@ -673,7 +673,7 @@ func (d *Daemon) readViewConfig(agent string) ViewConfig {
 	}
 	blob, err := d.fs.ReadFile(filepath.Join(base, "view.json"))
 	if err == nil {
-		json.Unmarshal(blob, &cfg)
+		_ = json.Unmarshal(blob, &cfg)
 	}
 	return cfg
 }

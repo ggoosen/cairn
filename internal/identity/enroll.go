@@ -509,7 +509,7 @@ func Join(opts JoinOptions) error {
 	if err := fsx.WriteFileAtomic(fsx.OS{}, filepath.Join(deviceDir, bootstrapChainName), blob, config.KeyFilePerm); err != nil {
 		return err
 	}
-	os.RemoveAll(staging)
+	_ = os.RemoveAll(staging)
 	fmt.Fprintf(out, "joined cairn %s as device %s (%s)\n", grant.CairnID, grant.DeviceID, grant.DisplayName)
 	fmt.Fprintf(out, "identity verified from genesis (%d chain records). Peer sync delivers the log in N6;\nuntil then `cairn sync ping <addr>` proves membership.\n", len(grant.Chain))
 	return nil

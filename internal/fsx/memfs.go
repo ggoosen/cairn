@@ -541,7 +541,7 @@ func (e memDirEntry) Type() fs.FileMode {
 	return 0
 }
 func (e memDirEntry) Info() (fs.FileInfo, error) {
-	return memFileInfo{name: e.name, size: e.size, dir: e.dir}, nil
+	return memFileInfo(e), nil
 }
 
 var _ FS = (*MemFS)(nil)

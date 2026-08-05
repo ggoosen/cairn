@@ -285,7 +285,7 @@ func (w *Watcher) reject(bundleDir, requestID, reason string) error {
 	// preserve the bundle's request.json for debugging, then drop the bundle
 	if raw, err := w.fs.ReadFile(filepath.Join(bundleDir, config.OutboxRequestFile)); err == nil {
 		w.fs.Remove(filepath.Join(rejectedDir, config.OutboxRequestFile))
-		fsx.WriteFileAtomic(w.fs, filepath.Join(rejectedDir, config.OutboxRequestFile), raw, config.FilePerm)
+		_ = fsx.WriteFileAtomic(w.fs, filepath.Join(rejectedDir, config.OutboxRequestFile), raw, config.FilePerm)
 	}
 	return w.fs.RemoveAll(bundleDir)
 }

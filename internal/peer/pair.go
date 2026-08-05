@@ -86,18 +86,18 @@ func (s *Server) handlePair(conn net.Conn, r *bufio.Reader, their *hello) {
 		return
 	}
 	if s.OnPair == nil {
-		writePair(conn, pairMsg{OK: false, Err: "pairing not enabled on this node"})
+		_ = writePair(conn, pairMsg{OK: false, Err: "pairing not enabled on this node"})
 		return
 	}
 	if their.CairnID != s.ident.CairnID {
 		fmt.Fprintf(s.warn, "PAIR REFUSED: %s claims cairn %q (ours is %q)\n", conn.RemoteAddr(), their.CairnID, s.ident.CairnID)
-		writePair(conn, pairMsg{OK: false, Err: "wrong cairn"})
+		_ = writePair(conn, pairMsg{OK: false, Err: "wrong cairn"})
 		return
 	}
 	devicePub, admit, err := s.OnPair(req.Payload)
 	if err != nil {
 		fmt.Fprintf(s.warn, "PAIR REFUSED: %s: %v\n", conn.RemoteAddr(), err)
-		writePair(conn, pairMsg{OK: false, Err: err.Error()})
+		_ = writePair(conn, pairMsg{OK: false, Err: err.Error()})
 		return
 	}
 	// 2. challenge for private-key possession
@@ -117,18 +117,18 @@ func (s *Server) handlePair(conn net.Conn, r *bufio.Reader, their *hello) {
 	sig, err := base64.StdEncoding.DecodeString(ans.Sig)
 	if err != nil || !ed25519.Verify(devicePub, pairTranscript(s.ident.CairnID, nonce), sig) {
 		fmt.Fprintf(s.warn, "PAIR REFUSED: %s failed the key-possession challenge\n", conn.RemoteAddr())
-		writePair(conn, pairMsg{OK: false, Err: "key-possession challenge failed"})
+		_ = writePair(conn, pairMsg{OK: false, Err: "key-possession challenge failed"})
 		return
 	}
 	// 4. admit — append the device.add (append-on-arrival, hard single-use)
 	eventID, err := admit()
 	if err != nil {
 		fmt.Fprintf(s.warn, "PAIR REFUSED: %s: admission failed: %v\n", conn.RemoteAddr(), err)
-		writePair(conn, pairMsg{OK: false, Err: err.Error()})
+		_ = writePair(conn, pairMsg{OK: false, Err: err.Error()})
 		return
 	}
 	fmt.Fprintf(s.warn, "pair: admitted a new device via invitation (device.add %s)\n", eventID)
-	writePair(conn, pairMsg{OK: true, EventID: eventID})
+	_ = writePair(conn, pairMsg{OK: true, EventID: eventID})
 }
 
 // PairDial runs the dialer side of the pairing handshake over DefaultTransport:

@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/ggoosen/cairn/internal/bench"
 	"github.com/ggoosen/cairn/internal/daemon"
@@ -359,4 +361,42 @@ func TestDigestSemantics(t *testing.T) {
 	if !strings.Contains(out2.Payload, "gardening") {
 		t.Fatalf("interest-query digest lost the relevant item:\n%s", out2.Payload)
 	}
+}
+
+// CI-B4: retrieval reads are documented lock-free while the enricher
+// goroutine and test hooks mutate embedder state — meaningful only under
+// `go test -race`, where any unsynchronized access fails the run.
+func TestConcurrentSearchEnrichRace(t *testing.T) {
+	dir := initCairn(t)
+	d, err := daemon.Start(daemon.Options{Dir: dir, Embedder: embed.BagOfWords{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	for i := 0; i < 5; i++ {
+		if _, err := d.Publish(daemon.PublishRequest{Actor: "operator", Body: fmt.Sprintf("race corpus item %d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	loop := func(f func()) {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				f()
+			}
+		}
+	}
+	wg.Add(4)
+	go loop(func() { d.Search(daemon.SearchOptions{Query: "race corpus", K: 3}) })
+	go loop(func() { d.Digest(daemon.DigestOptions{AgentView: "racer", BudgetChars: 800}) })
+	go loop(func() { d.EnrichOnce(4) })
+	go loop(func() { d.SetEmbedderForTest(embed.BagOfWords{}) })
+	time.Sleep(500 * time.Millisecond)
+	close(stop)
+	wg.Wait()
 }

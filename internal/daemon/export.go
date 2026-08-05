@@ -549,7 +549,7 @@ func (d *Daemon) rejectExport(path string, cause error) error {
 	}, "", "  ")
 	rejectPath := path + ".reject.json"
 	d.fs.Remove(rejectPath)
-	fsx.WriteFileAtomic(d.fs, rejectPath, blob, config.FilePerm)
+	_ = fsx.WriteFileAtomic(d.fs, rejectPath, blob, config.FilePerm)
 	return cause
 }
 

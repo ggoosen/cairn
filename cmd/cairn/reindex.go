@@ -60,7 +60,7 @@ func newReindexCmd(dirFlag *string) *cobra.Command {
 						"atomically swaps index.sqlite and would split the running daemon's view " +
 						"from disk until restart. Stop the daemon (stop the launchd/systemd service, " +
 						"or kill `cairn daemon`), run `cairn reindex --lexical`, then start it again " +
-						"(the daemon reconciles its projection from the log on startup).")
+						"(the daemon reconciles its projection from the log on startup)")
 				}
 				fsys := fsx.OS{}
 				store := object.NewStore(fsys, dir)

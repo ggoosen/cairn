@@ -86,7 +86,7 @@ func newPythonWorker(interpreter, worker string) (*Python, error) {
 	// handshake: embed one batch to force model-load errors now. First load
 	// downloads/deserializes the model, so it gets the long timeout.
 	if _, err := p.embed([]string{"handshake"}, config.EmbedHandshakeTimeout); err != nil {
-		p.Close()
+		_ = p.Close()
 		return nil, err
 	}
 	return p, nil
@@ -119,13 +119,13 @@ func (p *Python) embed(texts []string, timeout time.Duration) ([][]float32, erro
 	case <-time.After(timeout):
 		p.killLocked()
 		<-done // Scan returns once the pipe closes; then the reap is safe
-		p.cmd.Wait()
+		_ = p.cmd.Wait()
 		return nil, fmt.Errorf("embed worker timed out after %s (killed; retrieval degrades to lexical_only)", timeout)
 	}
 	if !scanned {
 		err := p.stdout.Err()
 		p.killLocked()
-		p.cmd.Wait()
+		_ = p.cmd.Wait()
 		return nil, fmt.Errorf("embed worker died: %v", err)
 	}
 	var vecs [][]float32
@@ -149,7 +149,7 @@ func (p *Python) killLocked() {
 		p.stdinRaw.Close() // a well-behaved worker exits on stdin EOF
 	}
 	if p.cmd.Process != nil {
-		p.cmd.Process.Kill()
+		_ = p.cmd.Process.Kill()
 	}
 }
 
@@ -160,7 +160,7 @@ func (p *Python) Close() error {
 		return nil
 	}
 	p.killLocked()
-	p.cmd.Wait() // reap: without this every closed worker is a zombie child
+	_ = p.cmd.Wait() // reap: without this every closed worker is a zombie child
 	return nil
 }
 

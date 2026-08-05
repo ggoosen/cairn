@@ -195,7 +195,7 @@ func (d *Daemon) Run(ctx context.Context, processOutbox func() error) error {
 			go srv.Serve()
 			go func() {
 				<-ctx.Done()
-				srv.Close()
+				_ = srv.Close()
 			}()
 		}
 	}

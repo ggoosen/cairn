@@ -28,7 +28,7 @@ type chain struct {
 	lastID   string
 }
 
-func newChain(t *testing.T) (*chain, *event.Envelope, []byte) {
+func newChain(t testing.TB) (*chain, *event.Envelope, []byte) {
 	t.Helper()
 	rootPub, rootPriv, err := identity.GenerateKey()
 	if err != nil {
@@ -63,7 +63,7 @@ func newChain(t *testing.T) (*chain, *event.Envelope, []byte) {
 }
 
 // next returns the next signed event in the chain.
-func (c *chain) next(t *testing.T) (*event.Envelope, []byte) {
+func (c *chain) next(t testing.TB) (*event.Envelope, []byte) {
 	t.Helper()
 	env := &event.Envelope{
 		SchemaVersion:         config.EventSchemaVersion,
@@ -95,7 +95,7 @@ func origin(c *chain) cairnlog.Origin {
 }
 
 // newLogWithGenesis creates a fresh log on fsys and appends genesis + n events.
-func newLogWithGenesis(t *testing.T, fsys fsx.FS, dir string, n int) (*chain, *cairnlog.Log) {
+func newLogWithGenesis(t testing.TB, fsys fsx.FS, dir string, n int) (*chain, *cairnlog.Log) {
 	t.Helper()
 	c, genv, grec := newChain(t)
 	lg, err := cairnlog.Create(fsys, dir, origin(c))
