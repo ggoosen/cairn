@@ -307,6 +307,12 @@ const (
 	// DefaultDirName under $HOME when --dir / $CAIRN_DIR are unset.
 	DefaultDirName = "cairn"
 
+	// ObjectHashHexLen is the exact length of a BLAKE3-256 hex object
+	// address. Every externally-supplied hash is validated against this
+	// before it is turned into an objects/<first2>/<rest> path — the
+	// path construction slices hash[:2] and is unsafe on arbitrary input.
+	ObjectHashHexLen = 64
+
 	// Portable-dir entries (build/ARCHITECTURE.md on-disk layout).
 	PortableConfigName = "cairn.toml"
 	EventsDirName      = "events"

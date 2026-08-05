@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -178,6 +179,14 @@ func (d *Daemon) Serve(ctx context.Context) error {
 
 func (d *Daemon) handleConn(conn net.Conn) {
 	defer conn.Close()
+	// A panic in one request must never take down the single-writer daemon
+	// for the whole mesh: recover, log the stack, answer with a typed error.
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(d.warn, "PANIC recovered in IPC handler: %v\n%s", r, debug.Stack())
+			writeResponse(conn, Response{Error: "internal error (panic recovered; see daemon log)"})
+		}
+	}()
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
 	r := bufio.NewReaderSize(conn, 64<<10)
 	line, err := readLine(r, config.IPCMaxRequestBytes)
@@ -271,7 +280,15 @@ func writeResponse(w io.Writer, resp Response) {
 	w.Write(append(blob, '\n'))
 }
 
+// DispatchHookForTest, when non-nil, runs before every dispatch. Tests use
+// it to inject a panic and exercise handleConn's recover path. Never set in
+// production.
+var DispatchHookForTest func(req Request)
+
 func (d *Daemon) dispatch(req Request) Response {
+	if DispatchHookForTest != nil {
+		DispatchHookForTest(req)
+	}
 	fail := func(err error) Response { return Response{Error: err.Error()} }
 
 	// --- N2 capability gate (rulings §7.2, RULINGS.md R21/R23) ------------

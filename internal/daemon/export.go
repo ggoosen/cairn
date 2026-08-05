@@ -343,6 +343,9 @@ func (d *Daemon) Signal(messageID, kind string, weight int, actor string) (strin
 
 // Pin validates the object exists before ack.
 func (d *Daemon) Pin(objectHash, durability, actor string) (string, error) {
+	if !object.ValidHash(objectHash) {
+		return "", fmt.Errorf("rejected before ack: %w: %q", object.ErrBadHash, objectHash)
+	}
 	if !d.store.Exists(objectHash) {
 		return "", fmt.Errorf("rejected before ack: object %s not found in the store", objectHash)
 	}
