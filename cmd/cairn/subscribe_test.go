@@ -140,3 +140,49 @@ func TestN4SendAttachAndSummaryCLI(t *testing.T) {
 		t.Fatalf("derivative list: %v\n%s", err, out)
 	}
 }
+
+// FIX-A3 regression: `cairn subscribe` without --topic must PRESERVE the
+// view's operator-set hard topic filters. The old implementation bypassed
+// the daemon and rebuilt view.json from scratch, erasing them (and racing
+// the daemon's reader).
+func TestSubscribeLocalPreservesOperatorTopics(t *testing.T) {
+	dir := setupEnv(t)
+	if out, err := runCLI(t, "init", "--dir", dir); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	startTestDaemon(t, dir)
+
+	if out, err := runCLI(t, "subscribe", "first interest", "--view", "workshop",
+		"--topic", "alpha", "--topic", "beta", "--dir", dir); err != nil {
+		t.Fatalf("seed with topics: %v\n%s", err, out)
+	}
+
+	// Re-tune the interest WITHOUT --topic: topics must survive.
+	if out, err := runCLI(t, "subscribe", "second interest", "--view", "workshop", "--dir", dir); err != nil {
+		t.Fatalf("re-subscribe: %v\n%s", err, out)
+	}
+
+	blob, err := os.ReadFile(filepath.Join(dir, "views", "workshop", "view.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg daemon.ViewConfig
+	json.Unmarshal(blob, &cfg)
+	if cfg.InterestQuery != "second interest" {
+		t.Fatalf("interest not updated: %+v", cfg)
+	}
+	if len(cfg.Topics) != 2 || cfg.Topics[0] != "alpha" || cfg.Topics[1] != "beta" {
+		t.Fatalf("operator topics erased by topic-less subscribe: %+v", cfg)
+	}
+
+	// An explicit --topic still replaces.
+	if out, err := runCLI(t, "subscribe", "third", "--view", "workshop", "--topic", "gamma", "--dir", dir); err != nil {
+		t.Fatalf("replace topics: %v\n%s", err, out)
+	}
+	blob, _ = os.ReadFile(filepath.Join(dir, "views", "workshop", "view.json"))
+	cfg = daemon.ViewConfig{}
+	json.Unmarshal(blob, &cfg)
+	if len(cfg.Topics) != 1 || cfg.Topics[0] != "gamma" {
+		t.Fatalf("explicit --topic did not replace: %+v", cfg)
+	}
+}
