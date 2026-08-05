@@ -206,6 +206,7 @@ func (m *MemFS) OpenFile(name string, flag int, perm os.FileMode) (File, error) 
 	}
 	h := &memFile{fs: m, path: name, ino: ino, writable: flag&(os.O_WRONLY|os.O_RDWR) != 0}
 	if flag&os.O_APPEND != 0 {
+		h.appendMode = true
 		h.offset = int64(len(ino.cache))
 	}
 	return h, nil
@@ -381,7 +382,12 @@ type memFile struct {
 	ino      *inode
 	offset   int64
 	writable bool
-	closed   bool
+	// appendMode mirrors POSIX O_APPEND: EVERY write lands at the current
+	// EOF, not at a tracked offset. The distinction matters once a live
+	// handle truncates and keeps writing (log append rollback): offset-based
+	// emulation would leave a zero-filled gap real O_APPEND cannot produce.
+	appendMode bool
+	closed     bool
 }
 
 func (f *memFile) Write(p []byte) (int, error) {
@@ -407,6 +413,9 @@ func (f *memFile) Write(p []byte) (int, error) {
 }
 
 func (f *memFile) writeLocked(p []byte) {
+	if f.appendMode {
+		f.offset = int64(len(f.ino.cache))
+	}
 	end := f.offset + int64(len(p))
 	if int64(len(f.ino.cache)) < end {
 		grown := make([]byte, end)
