@@ -879,6 +879,37 @@ func (d *Daemon) Publish(req PublishRequest) (*PublishResult, error) {
 		DowngradeReason: decision.Reason,
 	}
 
+	// FIX-A6: topic.create events append BEFORE message.publish. The old
+	// order (publish first) meant a mid-sequence topic append failure
+	// returned an error to a client whose message was already durable and
+	// searchable — and a CLI/MCP retry (no correlation_id) then duplicated
+	// the message. Creates-first shrinks that window to the link appends:
+	// a failure before the publish leaves only idempotent topic creations
+	// durable (a retry resolves them instead of re-creating), and a
+	// re-published message mints a new ID so links never duplicate.
+	//
+	// RULING-NEEDED: FIX-F1 ruling 1 ("ALL events durable before the single
+	// ack") does not say what to report when a LINK append fails after the
+	// publish is durable. Conservative choice implemented: return the error
+	// (never claim success for an incomplete request), accepting that a
+	// client retry duplicates the message body under a new ID. Alternative:
+	// success-with-warning naming the unlinked topics. Author to confirm.
+	for _, tp := range topicPlans {
+		if !tp.create {
+			continue
+		}
+		cenv, crec, err := d.buildEvent("topic.create", "topic", tp.id,
+			map[string]any{"topic_id": tp.id, "name": tp.name}, req)
+		if err != nil {
+			return nil, err
+		}
+		if err := d.lg.Append(crec, cenv); err != nil {
+			return nil, fmt.Errorf("topic.create append failed before ack: %w", err)
+		}
+		res.EventIDs = append(res.EventIDs, cenv.EventID)
+		d.applyProjection(cenv, crec)
+	}
+
 	env, rec, err := d.buildEvent(eventType, "message", msgID, payload, req)
 	if err != nil {
 		return nil, err
@@ -896,21 +927,9 @@ func (d *Daemon) Publish(req PublishRequest) (*PublishResult, error) {
 	res.EventIDs = append(res.EventIDs, env.EventID)
 	d.applyProjection(env, rec)
 
-	// topic.create then topic.link.add, in order, same request — ALL durable
-	// before the single ack (FIX-F1 ruling 1)
+	// topic.link.add in order, same request — ALL durable before the single
+	// ack (FIX-F1 ruling 1)
 	for _, tp := range topicPlans {
-		if tp.create {
-			cenv, crec, err := d.buildEvent("topic.create", "topic", tp.id,
-				map[string]any{"topic_id": tp.id, "name": tp.name}, req)
-			if err != nil {
-				return nil, err
-			}
-			if err := d.lg.Append(crec, cenv); err != nil {
-				return nil, fmt.Errorf("topic.create append failed before ack: %w", err)
-			}
-			res.EventIDs = append(res.EventIDs, cenv.EventID)
-			d.applyProjection(cenv, crec)
-		}
 		linkID := d.newUUID()
 		lenv, lrec, err := d.buildEvent("topic.link.add", "link", linkID,
 			map[string]any{"link_id": linkID, "message_id": msgID, "topic_id": tp.id}, req)
