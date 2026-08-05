@@ -28,6 +28,8 @@ import (
 
 	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/daemon"
+	"github.com/ggoosen/cairn/internal/object"
+	"github.com/ggoosen/cairn/internal/rank"
 )
 
 // untrustedNote is appended to every tool description that can return mesh
@@ -123,6 +125,17 @@ func schema(props string, required ...string) json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{` + props + `},"required":` + req + `,"additionalProperties":false}`)
 }
 
+// Schema fragments built from the SAME constants the daemon validates
+// against, so the advertised contract cannot drift from real behavior
+// (pre-fix: the enum offered "working", which does not exist, omitted
+// eager-searchable, and allowed priorities the daemon refuses pre-ack).
+var (
+	textClassProp = fmt.Sprintf(`"text_class":{"type":"string","enum":[%q,%q,%q]}`,
+		object.ClassCanonical, object.ClassEager, object.ClassEphemeral)
+	priorityProp = fmt.Sprintf(`"declared_priority":{"type":"integer","minimum":0,"maximum":%d,"description":"3=critical, 2=important, 1=useful, 0=minor"}`,
+		config.DeclaredPriorityMax)
+)
+
 // Tools lists the §5.5 tools in spec order, then the two R55 local-tier tools.
 func (s *Server) Tools() []Tool {
 	return []Tool{
@@ -135,9 +148,9 @@ func (s *Server) Tools() []Tool {
 		{"cairn_fetch", "Deliberately retrieve one message's full body with provenance." + untrustedNote,
 			schema(`"message_id":{"type":"string"}`, "message_id")},
 		{"cairn_send", "Publish a new message to the mesh. Full pre-ack validation applies: referenced topics/messages must exist; text-class policy may downgrade (never forceable here).",
-			schema(`"body":{"type":"string"},"topics":{"type":"array","items":{"type":"string"},"description":"existing topic names or ids (never auto-created from MCP)"},"recipients":{"type":"array","items":{"type":"string"}},"text_class":{"type":"string","enum":["canonical","working","ephemeral"]},"declared_priority":{"type":"integer","minimum":1,"maximum":10},"thread_id":{"type":"string"}`, "body")},
+			schema(`"body":{"type":"string"},"topics":{"type":"array","items":{"type":"string"},"description":"existing topic names or ids (never auto-created from MCP)"},"recipients":{"type":"array","items":{"type":"string"}},`+textClassProp+`,`+priorityProp+`,"thread_id":{"type":"string"}`, "body")},
 		{"cairn_reply", "Reply to an existing message (same validation as cairn_send; threads automatically).",
-			schema(`"reply_to_message_id":{"type":"string"},"body":{"type":"string"},"text_class":{"type":"string","enum":["canonical","working","ephemeral"]},"declared_priority":{"type":"integer","minimum":1,"maximum":10}`, "reply_to_message_id", "body")},
+			schema(`"reply_to_message_id":{"type":"string"},"body":{"type":"string"},`+textClassProp+`,`+priorityProp, "reply_to_message_id", "body")},
 		{"cairn_signal", "Emit a lightweight signal about a message (e.g. ack, useful, priority_confirm) with an optional 1-10 weight.",
 			schema(`"message_id":{"type":"string"},"kind":{"type":"string"},"weight":{"type":"integer","minimum":1,"maximum":10}`, "message_id", "kind")},
 		{"cairn_outcome", "Record the outcome of a retrieval interaction (found | not_found | manual_workaround) so ranking can be calibrated.",
@@ -271,7 +284,7 @@ func (s *Server) search(raw json.RawMessage) (any, error) {
 			Kind: "search_result", Trust: "untrusted",
 			Provenance: &Provenance{MessageID: r.MessageID, RevisionID: r.RevisionID, ContentHash: r.BodyHash},
 			Rank:       r.Rank,
-			Score:      fmt.Sprintf("%g", r.Score),
+			Score:      rank.Dec(r.Score), // the one decimal renderer every surface uses
 			TextClass:  r.TextClass,
 			Mandatory:  r.Mandatory,
 		})

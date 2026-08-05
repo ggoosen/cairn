@@ -251,11 +251,15 @@ func (d *Daemon) handleConn(conn net.Conn) {
 	}
 	// G6: stage-attachment streams the raw attachment bytes on THIS connection,
 	// immediately after the JSON header line — never inlined in the request.
+	var werr error
 	if req.Op == "stage-attachment" {
-		writeResponse(conn, d.stageAttachment(req, r))
-		return
+		werr = writeResponse(conn, d.stageAttachment(req, r))
+	} else {
+		werr = writeResponse(conn, d.dispatch(req))
 	}
-	writeResponse(conn, d.dispatch(req))
+	if werr != nil {
+		fmt.Fprintf(d.warn, "IPC response write failed (client gone?): op=%s: %v\n", req.Op, werr)
+	}
 }
 
 // stageAttachment reads exactly AttachMeta.ByteLen raw bytes off the connection
@@ -322,12 +326,16 @@ func readLine(r *bufio.Reader, max int) ([]byte, error) {
 	}
 }
 
-func writeResponse(w io.Writer, resp Response) {
+// writeResponse is best-effort: the client may already have hung up, so the
+// write error is returned for optional logging, never acted on — the
+// request's own durability is settled before any response is written.
+func writeResponse(w io.Writer, resp Response) error {
 	blob, err := json.Marshal(resp)
 	if err != nil {
 		blob = []byte(`{"ok":false,"error":"response marshal failure"}`)
 	}
-	w.Write(append(blob, '\n'))
+	_, werr := w.Write(append(blob, '\n'))
+	return werr
 }
 
 // DispatchHookForTest, when non-nil, runs before every dispatch. Tests use

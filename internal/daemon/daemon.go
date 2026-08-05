@@ -276,7 +276,9 @@ func Start(opts Options) (*Daemon, error) {
 	lockDir := loaded.DeviceDir
 	if readOnly {
 		lockDir = filepath.Join(opts.Dir, config.DerivedDirName)
-		os.MkdirAll(lockDir, 0o700)
+		if err := os.MkdirAll(lockDir, 0o700); err != nil {
+			return nil, fmt.Errorf("creating read-only lock dir: %w", err)
+		}
 	}
 	lockPath := filepath.Join(lockDir, config.DaemonLockName)
 	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
