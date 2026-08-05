@@ -132,3 +132,43 @@ func TestViewNameTraversalRejected(t *testing.T) {
 		return nil
 	})
 }
+
+// FIX-A7: the socket lives in a per-user 0700 dir; the daemon refuses to
+// serve into a symlinked socket dir (MkdirAll follows symlinks silently).
+func TestSocketDirHardened(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	_, deviceDir := serveDaemon(t)
+
+	sockBytes, err := os.ReadFile(filepath.Join(deviceDir, "daemon.sock.path"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(string(sockBytes))
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fi.IsDir() || fi.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("socket dir %s mode %v: want a 0700 directory", dir, fi.Mode())
+	}
+}
+
+func TestSocketDirSymlinkRefused(t *testing.T) {
+	base := t.TempDir()
+	if err := os.Mkdir(filepath.Join(base, "elsewhere"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(base, "elsewhere"), filepath.Join(base, "cairn")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_RUNTIME_DIR", base) // SocketDir → base/cairn, the symlink
+
+	dir := initCairn(t)
+	d := startDaemon(t, dir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := d.Serve(ctx)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("Serve into a symlinked socket dir: want refusal, got %v", err)
+	}
+}

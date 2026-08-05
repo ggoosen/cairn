@@ -13,6 +13,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ggoosen/cairn/internal/config"
@@ -133,6 +134,22 @@ type StagedAttachment struct {
 	Filename   string `json:"filename,omitempty"`
 }
 
+// SocketDir returns the per-user 0700 directory holding cairn sockets.
+// FIX-A7: the socket used to sit directly in os.TempDir() with default
+// permissions — on multi-user Linux any local user could connect and,
+// with Session:"" granting the operator tier, act as the operator. A
+// 0700 parent directory is the enforceable guarantee (chmod on the
+// socket itself is not honored everywhere). XDG_RUNTIME_DIR is preferred
+// when set (Linux: /run/user/<uid>, already private and short); the
+// TempDir fallback keeps the path under the ~104-byte unix-socket cap on
+// macOS, where TempDir is per-user private anyway.
+func SocketDir() string {
+	if rd := os.Getenv("XDG_RUNTIME_DIR"); rd != "" {
+		return filepath.Join(rd, "cairn")
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("cairn-%d", os.Getuid()))
+}
+
 // SocketPath returns the daemon's unix socket location: short, deterministic
 // per cairn (unix socket path length limits rule out Application Support).
 // The FULL cairn id is required: a UUIDv7 prefix is a millisecond timestamp,
@@ -140,7 +157,36 @@ type StagedAttachment struct {
 // daemon's startup would silently remove the other's live socket (the root
 // cause of the TestF3 flake recorded in PROGRESS.md).
 func SocketPath(cairnID string) string {
-	return filepath.Join(os.TempDir(), "cairn-"+cairnID+".sock")
+	return filepath.Join(SocketDir(), cairnID+".sock")
+}
+
+// prepareSocketDir creates the socket dir and refuses to serve into one
+// that is a symlink, owned by another user, or group/other-accessible —
+// MkdirAll follows a pre-planted symlink silently, which would let another
+// local user relocate (and access) the socket.
+func prepareSocketDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("creating socket dir: %w", err)
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("socket dir %s is a symlink — refusing to serve into it", dir)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("socket dir %s is not a directory", dir)
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
+		return fmt.Errorf("socket dir %s is owned by uid %d, not %d — refusing to serve into it", dir, st.Uid, os.Getuid())
+	}
+	if fi.Mode().Perm()&0o077 != 0 {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return fmt.Errorf("socket dir %s is group/other-accessible and chmod failed: %w", dir, err)
+		}
+	}
+	return nil
 }
 
 // socketPathFile records the socket location in device-local state.
@@ -150,12 +196,16 @@ func socketPathFile(deviceDir string) string {
 
 // Serve listens on the unix socket until ctx is done.
 func (d *Daemon) Serve(ctx context.Context) error {
+	if err := prepareSocketDir(SocketDir()); err != nil {
+		return err
+	}
 	sock := SocketPath(d.loaded.Portable.CairnID)
 	os.Remove(sock) // stale socket from a dead daemon; the flock is the true owner
 	l, err := net.Listen("unix", sock)
 	if err != nil {
 		return err
 	}
+	os.Chmod(sock, 0o600) // belt and braces; the 0700 dir is the guarantee
 	if err := os.WriteFile(socketPathFile(d.sockDir), []byte(sock), 0o600); err != nil {
 		l.Close()
 		return err
