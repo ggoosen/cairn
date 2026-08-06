@@ -3,7 +3,7 @@
 What P3 delivers and how to use it. Scope: spec §12 P3 — *iroh 1.x transport,
 one-time pairing invitations, relay selection/self-host diagnostics + patching
 story, thin-node role*. The live iroh wire is **deferred (hardware-gated)**; the
-rest is built and tested. Design + build notes live in `P3-PLAN.md` / `PROGRESS.md`.
+rest is built and tested. Build notes live in `PROGRESS.md` (the P3-PLAN work-order file was removed from the tree after completion).
 
 ## 1. One-time pairing invitations
 
@@ -27,7 +27,7 @@ packages `{cert + key + verifiable chain from genesis}` into one token
 
 ```
 cairn pair join pair-invite.token <inviting-node-tailnet-addr:9700>
-cairn daemon          # start syncing
+cairn daemon          # start syncing (join registered the inviting node as a sync peer)
 ```
 
 `pair join` verifies the token from genesis, installs the identity, then completes

@@ -90,6 +90,8 @@ Tasks completed (one commit each):
 - **UUID note:** `github.com/google/uuid` v1.6.0 `NewV7()` used per CLAUDE.md.
 
 ### Author rulings needed
+> CLOSED (bookkeeping 2026-08-06): adjudicated by RULINGS.md **R1** —
+> entry preserved as written.
 - **Root key storage (P0):** spec §3.1 places the root key in offline
   operator recovery material, but P0 `device migrate` (M4) must root-sign
   `device.revoke` offline. Conservative interpretation implemented: root key
@@ -487,6 +489,8 @@ Tasks completed:
   field not verifiable against the log (not stored); all others are.
 
 ### Author rulings needed
+> CLOSED (bookkeeping 2026-08-06): adjudicated by RULINGS.md **R2** —
+> entry preserved as written.
 - **Resolve base semantics** (above): confirm resolution-merges-against-
   conflict-time-head; P0 behavior is conservative and never loses either
   branch.
@@ -846,6 +850,16 @@ Treated as load-induced timing; will re-diagnose if it recurs under normal
 single-suite runs.
 
 ## Resume-cold notes
+> STALE MARKER (refreshed 2026-08-06): this block described the end of P0
+> only. Current state — P0–P3 + AFFORDANCE built; P1 N1–N8 complete with
+> N9 code-complete; P2 built (opt-in via the `rank_profile` device-config
+> key since DEPLOY-E2); P3 offline scope built (two-node live checkout
+> hardware-gated); WP-A…WP-F remediation (audit 2026-08-05) landed with CI
+> in .github/workflows. Still owed by the operator: the 30-handoff
+> evaluation (gates are now COMPUTED — see DEPLOY-E3), the overnight 1M
+> scorecard, embed-venv provisioning on each node, and the open author
+> rulings indexed under "Author rulings needed" (FIX-A6 residual, R38,
+> R40/R41 confirmation, ladder rungs 6–7 if WP-G4 lands).
 - **Every milestone in BUILD-PLAN.md (M0–M9) is complete.** What remains is
   operator work and future phases: the 30-handoff evaluation (DOGFOOD.md),
   the overnight 1M scorecard, embed-venv provisioning, the two open author
@@ -3532,3 +3546,37 @@ Commit DEPLOY-E1..E5.
   "every INSTALLED app" (it used to create configs for absent apps).
 - **E5** bare `cairn reindex` runs the lexical rebuild (the README
   promise); stale "(stub until M6)" help text corrected.
+
+---
+
+## DEPLOY (retroactive record, work done 2026-07-20…23) — bookkeeping 2026-08-06
+
+The `cairn setup` wizard, `make deploy`, `install.sh`, `cairn daemon
+--install` service management, and `mcp-install` shipped in commits
+422a82b/55828e9/a79403a/2b46890 WITHOUT a PROGRESS.md section — a
+process-discipline miss (CLAUDE.md: PROGRESS is updated per milestone).
+Recorded retroactively; the WP-E section above documents the fixes layered
+on top of that work.
+
+## WP-F — Docs/rulings reconciliation (audit 2026-08-05) — DONE
+
+- RULINGS.md: **R41 backfilled** (revoke bundling — was cited as binding by
+  fork_resolve.go/fork_test.go/pre-N9 doc but never landed in the file,
+  violating its own process rule; flagged pending author confirmation), a
+  divergence note appended to R40 (its "Conservative scoping" bullet
+  predates G7.4), and the 2026-07-16 pairing trust decision numbered
+  **R57**.
+- PROGRESS.md: stale "Author rulings needed" for M0 (→R1) and M5 (→R2)
+  closed with bookkeeping notes; Resume-cold notes refreshed; the DEPLOY
+  work order recorded retroactively (above).
+- README/DOGFOOD truth pass: why-ranked takes two args; "nine tools" →
+  twelve; the never-built entity/typed-edge graph claim removed; P1/P3
+  audit claims restated to what PROGRESS actually records (three live
+  audit rounds, blockers fixed and re-verified — no final "zero blockers"
+  crossed verdict is on record); the launchd hand-recipes superseded by
+  `cairn daemon --install/--stop/--restart`; §12 peer setup now documents
+  `cairn peer add` (live, no restart); completion + new verbs documented;
+  CLAUDE.md outcome instructions now carry the interaction id and
+  --message (which the computed Success@5 gate credits).
+- docs/cairn-p3-onboarding-transport.md: the pair-join→sync claim is now
+  TRUE (SYNC-C3) and says why; dangling P3-PLAN.md reference repointed.

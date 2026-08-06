@@ -44,7 +44,8 @@ If you run multiple AI agent sessions — Claude Code here, Codex there, a chat 
 - **`cairn digest --budget 1500`** — any agent gets a *ranked* rollup of what's new and relevant, hard-capped to a token/character budget
 - **`cairn search "council approval status"`** — hybrid keyword + semantic search across everything, from any session, offline
 - **`cairn fetch <id>`** — deliberately pull the full original, with provenance back to the signed source event
-- **`cairn why-ranked <id>`** — see the exact arithmetic behind every ranking. No black boxes.
+- **`cairn thread <id>`** — read a whole conversation; **`cairn topic list`** — browse the taxonomy with live counts
+- **`cairn why-ranked <interaction-id> <message-id>`** — see the exact arithmetic behind every ranking. No black boxes.
 
 Agents connect through whichever door they can reach: **plain files** (drop markdown in an outbox, read a generated digest — works with literally anything), the **CLI**, or **MCP** (`cairn mcp`, for Claude Desktop / Claude Code / Codex — every result wrapped in an untrusted-content envelope with full provenance). One daemon per machine; every app and session is just a named consumer.
 
@@ -64,11 +65,11 @@ Agents connect through whichever door they can reach: **plain files** (drop mark
 |---|---|---|
 | **P0** | Single-machine daemon: event log, search, ranked digests, outbox, exports, crash safety | ✅ complete |
 | **P1** | Multi-machine Tailscale mesh: signed membership, event + text + blob replication with durability classes, live fork detection, MCP server, capability enforcement, durable semantic subscriptions, deterministic attachment derivatives | ✅ complete (hardened + crossed audit passed) |
-| **P2** | Retrieval quality: behavioural salience, calibrated ranking, **agent-shaped relevance** (self-subscribe + a self-configuring onboarding record), local **structural** navigation maps (topic/thread rollups), entity/typed-edge graph projection | 🔨 built (opt-in) |
-| **P3** | Frictionless onboarding: **one-command `cairn setup`** (mesh + resident daemon service + MCP client wiring), iroh transport, one-time pairing invites, thin nodes for mobile | 🔨 single-machine deploy shipped · mesh offline scope built + safety live-audited (iroh live wire deferred) |
+| **P2** | Retrieval quality: behavioural salience, calibrated ranking, **agent-shaped relevance** (self-subscribe + a self-configuring onboarding record), local **structural** navigation maps (topic/thread rollups) | 🔨 built (opt-in) |
+| **P3** | Frictionless onboarding: **one-command `cairn setup`** (mesh + resident daemon service + MCP client wiring), iroh transport, one-time pairing invites, thin nodes for mobile | 🔨 single-machine deploy shipped · mesh offline scope built (live two-node checkout of pairing/thin-role is hardware-gated; iroh live wire deferred) |
 | **P4** | Self-organising knowledge: automated filing, **embedding-clustered self-folding topic maps** (the semantic map — needs P2 usage/salience data to be good), salience propagation | planned |
 
-**On P1:** the full multi-machine mesh — replication of events, canonical text, and lazy blobs with explicit durability classes; capability enforcement; the MCP server and its untrusted-content envelope; live fork detection; and durable subscriptions — is built, passing its acceptance suites, and past a crossed two-auditor network security audit with zero blockers. It's ready for the first tagged release.
+**On P1:** the full multi-machine mesh — replication of events, canonical text, and lazy blobs with explicit durability classes; capability enforcement; the MCP server and its untrusted-content envelope; live fork detection; and durable subscriptions — is built, passing its acceptance suites, and hardened through three live two-node audit rounds (each round's blockers fixed and re-verified). It's ready for the first tagged release.
 
 **On P3:** single-machine onboarding is real today — `cairn setup` (via `install.sh` or `make deploy`) creates the mesh, installs the daemon as a user service, and wires your MCP clients, all in one idempotent command. The multi-machine layer is built and safety-audited on real hardware to its offline-testable scope: one-time pairing invitations (`cairn pair invite`/`join`), thin-node roles for mobile/metered devices, and `cairn net` diagnostics. The live **iroh** peer-to-peer transport — the wire itself, relay self-hosting, and automatic metered/battery sensing — is deliberately deferred behind those interfaces (it needs a mature iroh Go binding and real relays) and drops in with no caller changes.
 
@@ -82,7 +83,7 @@ The design and its full decision trail — specification (v0.3), the binding bui
 
 ## Status
 
-**Pre-alpha.** P0 and P1 are both complete and audited — the single-machine daemon and the multi-machine Tailscale mesh (replication, blob durability, capability enforcement, MCP, live fork detection) are built, passing their acceptance suites, and past the N9 hardening + crossed two-auditor network audit (zero blockers). What remains before cutting the first tag is the operator's own **30-handoff product evaluation** (the real-world "does it beat copy-paste?" gate in [`DOGFOOD.md`](DOGFOOD.md)). Star/watch for the release. Built in Go; macOS (Apple Silicon) first, Linux best-effort.
+**Pre-alpha.** P0 and P1 are both complete and audited — the single-machine daemon and the multi-machine Tailscale mesh (replication, blob durability, capability enforcement, MCP, live fork detection) are built, passing their acceptance suites, and hardened through the N9 punchlist plus three live two-node audit rounds (each round's blockers fixed and re-verified). What remains before cutting the first tag is the operator's own **30-handoff product evaluation** (the real-world "does it beat copy-paste?" gate in [`DOGFOOD.md`](DOGFOOD.md)). Star/watch for the release. Built in Go; macOS (Apple Silicon) first, Linux best-effort.
 
 **Known limitation — degradation ladder.** Under disk/memory pressure Cairn sheds load in stages (defer auto-linking → summaries → embeddings → force lexical-only search → defer proactive blob replication). The two most aggressive stages — *rejecting* new low-priority blobs or small text outright — are currently computed and reported (visible in `cairn status`, every transition logged) but not yet *enforced*: safely rejecting a send needs reserved-capacity accounting that's deferred to its own change. Until then they fail open — the send proceeds — never silently.
 
@@ -153,8 +154,13 @@ cairn setup                      # mesh + daemon service + MCP clients, idempote
 ```bash
 cairn init                       # create your mesh + device identity + genesis
 cairn daemon --install           # resident single writer under launchd/systemd
-cairn mcp-install --all          # wire cairn into detected MCP clients
+cairn mcp-install --all          # wire cairn into detected MCP clients (one view per app)
 ```
+
+Shell completion is built in: `cairn completion zsh|bash|fish --help` shows
+the one-liner for your shell. A second machine pairs with
+`cairn pair invite` + `cairn pair join` (the join registers the sync peer;
+`cairn peer add <host:port>` manages peers live afterwards).
 
 Then, whichever way you set up, use it (`setup-agent` mints a named consumer view — that's a different command from `setup`):
 
