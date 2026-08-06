@@ -45,6 +45,7 @@ var validCaps = map[string]bool{capRead: true, capSend: true, capSignal: true, c
 var opCapability = map[string]string{
 	"search": capRead, "digest": capRead, "peek": capRead, "fetch": capRead,
 	"why-ranked": capRead, "status": capRead, "source-ref": capRead,
+	"thread": capRead, "topic-list": capRead, // RETR-D4/D5
 	"saved-list": capRead, "saved-run": capRead, // P2-4
 	"saved-add": capAdmin, "saved-remove": capAdmin,
 	"rank-stats": capAdmin, // P2-3b calibration (analysis, operator-tier)

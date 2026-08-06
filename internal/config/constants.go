@@ -384,6 +384,12 @@ const (
 	MCPDigestBudgetDefault = 1500
 	MCPSearchBudgetDefault = 2000
 
+	// SearchSnippetChars (RETR-D1): Unicode scalars of body excerpted into
+	// each search result so agents can triage without a fetch per hit. The
+	// snippet is quoted (QuotePrefix) and counts against budget_chars like
+	// everything else in the payload.
+	SearchSnippetChars = 200
+
 	// MCPMaxLineBytes bounds one stdio JSON-RPC message (N1). Matches the
 	// IPC bound: the MCP layer never carries more than one IPC payload.
 	MCPMaxLineBytes = 32 << 20

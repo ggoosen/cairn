@@ -23,6 +23,14 @@ type SearchOptions struct {
 	BudgetChars      int    `json:"budget_chars,omitempty"`
 	IncludeRetracted bool   `json:"include_retracted,omitempty"`
 
+	// RETR-D3 scope (spec §7.1 search(query, scope, k)): hard pre-filters.
+	// Topics match by NAME (existing topics only — typos refuse, they do
+	// not silently return nothing); Sender is a principal id; ThreadID
+	// narrows to one conversation.
+	Topics   []string `json:"topics,omitempty"`
+	Sender   string   `json:"sender,omitempty"`
+	ThreadID string   `json:"thread_id,omitempty"`
+
 	// attribution (rulings §10); missing values are inferred and flagged
 	TaskID          string `json:"task_id,omitempty"`
 	AgentSurface    string `json:"agent_surface,omitempty"`
@@ -52,15 +60,23 @@ type SearchOutput struct {
 	RemoteSource string `json:"remote_source,omitempty"`
 }
 
-// RankedResult is one scored hit.
+// RankedResult is one scored hit. RETR-D1: sender/created/topics/snippet
+// ride along so a result is triageable without a fetch — pre-fix the
+// payload was UUIDs, hashes and scores only, and the budget was spent on
+// opaque identifiers. Snippet/sender/topics are MESH CONTENT: untrusted
+// data, never instructions (R18/R53).
 type RankedResult struct {
-	Rank       int     `json:"rank"`
-	MessageID  string  `json:"message_id"`
-	RevisionID string  `json:"revision_id"`
-	BodyHash   string  `json:"body_hash"`
-	TextClass  string  `json:"text_class"`
-	Score      float64 `json:"score"`
-	Mandatory  string  `json:"mandatory,omitempty"`
+	Rank       int      `json:"rank"`
+	MessageID  string   `json:"message_id"`
+	RevisionID string   `json:"revision_id"`
+	BodyHash   string   `json:"body_hash"`
+	TextClass  string   `json:"text_class"`
+	Score      float64  `json:"score"`
+	Mandatory  string   `json:"mandatory,omitempty"`
+	Sender     string   `json:"sender,omitempty"`
+	CreatedAt  string   `json:"created_at,omitempty"`
+	Topics     []string `json:"topics,omitempty"`
+	Snippet    string   `json:"snippet,omitempty"` // first SearchSnippetChars scalars of the body
 }
 
 // componentsRecord is the stored why_ranked arithmetic (decimal strings).
@@ -105,9 +121,27 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 	if opts.K <= 0 {
 		opts.K = 10
 	}
+	// RETR-D3: resolve the scope FIRST (hard filters before ranking, like
+	// digest topic filters); nil scope = unfiltered.
+	scope, err := d.proj.ScopeMessageIDs(opts.Topics, opts.Sender, opts.ThreadID)
+	if err != nil {
+		return nil, fmt.Errorf("rejected before ack: %w", err)
+	}
 	lexIDs, err := d.proj.LexicalTopK(opts.Query, config.FusionCandidatesFTS, opts.IncludeRetracted)
 	if err != nil {
 		return nil, err
+	}
+	if scope != nil {
+		// The FTS pool is cut at FusionCandidatesFTS BEFORE this filter, so
+		// a very narrow scope inside a very large corpus can under-fill; the
+		// vector path below filters BEFORE its top-K and compensates.
+		kept := lexIDs[:0]
+		for _, id := range lexIDs {
+			if scope[id] {
+				kept = append(kept, id)
+			}
+		}
+		lexIDs = kept
 	}
 
 	mode := "lexical_only"
@@ -119,6 +153,13 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 		if qvecs, err := e.Embed([]string{opts.Query}); err == nil {
 			heads, herr := d.proj.HeadVectors(e.ModelID(), opts.IncludeRetracted)
 			if herr == nil && len(heads) > 0 {
+				if scope != nil {
+					for id := range heads {
+						if !scope[id] {
+							delete(heads, id)
+						}
+					}
+				}
 				vecIDs = topKCosine(heads, qvecs[0], config.FusionCandidatesVector)
 				mode = "full"
 			}
@@ -232,11 +273,61 @@ func (d *Daemon) recordInteraction(kind, interactionID, query string, budget int
 	}
 }
 
+// snippetFor returns the first config.SearchSnippetChars Unicode scalars of
+// a body (raw; the payload renderer quotes it line-by-line).
+func snippetFor(body []byte) string {
+	txt := string(body)
+	if runes := []rune(txt); len(runes) > config.SearchSnippetChars {
+		txt = string(runes[:config.SearchSnippetChars])
+	}
+	return strings.TrimRight(txt, "\n")
+}
+
+// quoteLines prefixes every line with QuotePrefix (untrusted-content
+// quoting, same discipline as digest excerpts), newline-terminated.
+func quoteLines(txt string) string {
+	if txt == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, line := range strings.Split(txt, "\n") {
+		b.WriteString(config.QuotePrefix)
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// inlineMeta renders one mesh-supplied metadata field for a single-line
+// payload cell (R53 render leg: same charset collapse the map view uses).
+func inlineMeta(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return sanitizeMapField(s)
+}
+
 // finishRetrieval renders the budget-compliant payload, stores why_ranked
 // inputs, and assembles the output. Budget covers the ENTIRE payload —
 // header, entries, truncation marker (rulings §7).
 func (d *Daemon) finishRetrieval(scored []rank.Scored, rows map[string]projection.RankRow, profile rank.Profile, mode string, budget int) (*SearchOutput, error) {
 	interactionID := d.newUUID()
+
+	ids := make([]string, 0, len(scored))
+	for _, s := range scored {
+		ids = append(ids, s.MessageID)
+	}
+	meta, err := d.proj.ResultMeta(ids)
+	if err != nil {
+		return nil, err
+	}
+	// bodies for snippets: best-effort (expired/missing = no snippet)
+	snippets := make(map[string]string, len(scored))
+	for _, s := range scored {
+		if body, err := d.store.Get(rows[s.MessageID].BodyHash); err == nil {
+			snippets[s.MessageID] = snippetFor(body)
+		}
+	}
 
 	render := func(i int) string {
 		s := scored[i]
@@ -245,8 +336,18 @@ func (d *Daemon) finishRetrieval(scored []rank.Scored, rows map[string]projectio
 		if m == "" {
 			m = "-"
 		}
-		return fmt.Sprintf("%d\t%s\t%s\t%s\t%s\t%s\n",
-			i+1, s.MessageID, row.HeadRevisionID, row.BodyHash, rank.Dec(s.Score), m)
+		mm := meta[s.MessageID]
+		topics := "-"
+		if len(mm.Topics) > 0 {
+			names := make([]string, len(mm.Topics))
+			for j, t := range mm.Topics {
+				names[j] = inlineMeta(t)
+			}
+			topics = strings.Join(names, ",")
+		}
+		return fmt.Sprintf("%d\t%s\t%s\t%s\t%s\t%s\tfrom=%s\tat=%s\ttopics=%s\n",
+			i+1, s.MessageID, row.HeadRevisionID, row.BodyHash, rank.Dec(s.Score), m,
+			inlineMeta(mm.Sender), row.CreatedAt, topics) + quoteLines(snippets[s.MessageID])
 	}
 	header := fmt.Sprintf("interaction\t%s\tmode\t%s\n", interactionID, mode)
 	included := len(scored)
@@ -272,9 +373,13 @@ func (d *Daemon) finishRetrieval(scored []rank.Scored, rows map[string]projectio
 	for i := 0; i < included; i++ {
 		s := scored[i]
 		row := rows[s.MessageID]
+		mm := meta[s.MessageID]
+		// the struct field carries the raw truncated text (the payload keeps
+		// the QuotePrefix-quoted form); still untrusted data (R18)
 		out.Results = append(out.Results, RankedResult{
 			Rank: i + 1, MessageID: s.MessageID, RevisionID: row.HeadRevisionID,
 			BodyHash: row.BodyHash, TextClass: row.TextClass, Score: s.Score, Mandatory: s.Mandatory,
+			Sender: mm.Sender, CreatedAt: row.CreatedAt, Topics: mm.Topics, Snippet: snippets[s.MessageID],
 		})
 		var rec componentsRecord
 		rec.R, rec.F, rec.Peff, rec.RRF = rank.Dec(s.R), rank.Dec(s.F), rank.Dec(s.Peff), rank.Dec(s.RRF)
@@ -551,8 +656,17 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 	// durability target carry a [replication-pending] marker.
 	pendingRepl := d.pendingBlobMessages()
 	header := fmt.Sprintf("# digest — %s\ninteraction: %s\nmode: %s\n\n", opts.AgentView, interactionID, mode)
+	// RETR-D2: one meta batch per digest (sender/topics per entry)
+	scoredIDs := make([]string, 0, len(scored))
+	for _, s := range scored {
+		scoredIDs = append(scoredIDs, s.MessageID)
+	}
+	entryMeta, err := d.proj.ResultMeta(scoredIDs)
+	if err != nil {
+		return nil, err
+	}
 	render := func(i int) string {
-		return d.renderDigestEntry(i+1, scored[i], rows[scored[i].MessageID], disputed[scored[i].MessageID], pendingRepl[scored[i].MessageID])
+		return d.renderDigestEntry(i+1, scored[i], rows[scored[i].MessageID], entryMeta[scored[i].MessageID], disputed[scored[i].MessageID], pendingRepl[scored[i].MessageID])
 	}
 	included, payload := rank.TakeWithinBudget(len(scored), opts.BudgetChars,
 		rank.BudgetRender{Header: header, Marker: "…truncated…\n"}, render)
@@ -631,7 +745,9 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 
 // renderDigestEntry: one digest item; EVERY line quoting cairn content is
 // prefixed with config.QuotePrefix (per-line prefixing cannot be escaped).
-func (d *Daemon) renderDigestEntry(pos int, s rank.Scored, row projection.RankRow, summaryDisputed, replicationPending bool) string {
+// RETR-D2: the meta line (sender · created · topics) makes an entry
+// attributable without a peek per item; fields are R53-collapsed inline.
+func (d *Daemon) renderDigestEntry(pos int, s rank.Scored, row projection.RankRow, meta projection.ResultMetaRow, summaryDisputed, replicationPending bool) string {
 	var b strings.Builder
 	tag := ""
 	if s.Mandatory != "" {
@@ -649,6 +765,15 @@ func (d *Daemon) renderDigestEntry(pos int, s rank.Scored, row projection.RankRo
 		tag += " [replication-pending]"
 	}
 	fmt.Fprintf(&b, "%d. %s%s score=%s\n", pos, s.MessageID, tag, rank.Dec(s.Score))
+	topics := ""
+	if len(meta.Topics) > 0 {
+		names := make([]string, len(meta.Topics))
+		for i, t := range meta.Topics {
+			names[i] = inlineMeta(t)
+		}
+		topics = " · " + strings.Join(names, ", ")
+	}
+	fmt.Fprintf(&b, "   from %s · %s%s\n", inlineMeta(meta.Sender), row.CreatedAt, topics)
 	body, err := d.store.Get(row.BodyHash)
 	if err == nil {
 		lines := strings.Split(strings.TrimRight(string(body), "\n"), "\n")
@@ -776,6 +901,65 @@ func (d *Daemon) ReindexSemantic() (int, error) {
 		}
 		total += n
 	}
+}
+
+// ThreadOutput is one thread expansion (RETR-D4): every non-retracted
+// message of the thread in wall order, budget-capped like every retrieval.
+type ThreadOutput struct {
+	InteractionID string `json:"interaction_id"`
+	ThreadID      string `json:"thread_id"`
+	Included      int    `json:"included"`
+	Omitted       int    `json:"omitted,omitempty"`
+	Payload       string `json:"payload"` // ≤ budget_chars, metadata included
+}
+
+// Thread renders a whole conversation. Until this existed an agent handed
+// a reply could see that a thread existed (peek exposes thread_id) but had
+// no way to read it. Bodies are quoted per line (untrusted content).
+func (d *Daemon) Thread(threadID string, budget int, principal string) (*ThreadOutput, error) {
+	if threadID == "" {
+		return nil, fmt.Errorf("thread_id is required")
+	}
+	msgs, err := d.proj.ThreadMessages(threadID)
+	if err != nil {
+		return nil, err
+	}
+	if len(msgs) == 0 {
+		return nil, fmt.Errorf("thread %s not found (or has no live messages)", threadID)
+	}
+	interactionID := d.newUUID()
+	header := fmt.Sprintf("# thread %s — %d message(s)\ninteraction: %s\n\n", threadID, len(msgs), interactionID)
+	render := func(i int) string {
+		m := msgs[i]
+		reply := ""
+		if m.ReplyTo != "" {
+			reply = " reply-to=" + m.ReplyTo
+		}
+		entry := fmt.Sprintf("%d. %s from %s · %s%s\n", i+1, m.MessageID, inlineMeta(m.Sender), m.CreatedAt, reply)
+		if body, err := d.store.Get(m.BodyHash); err == nil {
+			entry += quoteLines(strings.TrimRight(string(body), "\n"))
+		}
+		return entry + "\n"
+	}
+	included := len(msgs)
+	payload := header
+	for i := range msgs {
+		payload += render(i)
+	}
+	if budget > 0 {
+		included, payload = rank.TakeWithinBudget(len(msgs), budget,
+			rank.BudgetRender{Header: header, Marker: "…truncated…\n"}, render)
+	}
+	out := &ThreadOutput{
+		InteractionID: interactionID, ThreadID: threadID,
+		Included: included, Omitted: len(msgs) - included, Payload: payload,
+	}
+	so := &SearchOutput{Payload: payload, RetrievalMode: "thread"}
+	for i := 0; i < included; i++ {
+		so.Results = append(so.Results, RankedResult{MessageID: msgs[i].MessageID})
+	}
+	d.recordInteraction("thread", interactionID, threadID, budget, so, "", "", "", principal)
+	return out, nil
 }
 
 // Outcome binds a retrieval outcome to its interaction_id (rulings §10).

@@ -147,6 +147,30 @@ func TestBudgetComplianceProperty(t *testing.T) {
 		}
 	}
 
+	// RETR-D4: thread payloads obey the same hard budget
+	root, err := d.Publish(daemon.PublishRequest{Actor: "operator", Body: "budget thread root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		if _, err := d.Publish(daemon.PublishRequest{
+			Actor: "operator", Body: fmt.Sprintf("budget thread reply %d with some padding text", i),
+			ReplyToMessageID: root.MessageID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, b := range budgets {
+		// the thread id IS the root message's id
+		tout, terr := d.Thread(root.MessageID, b, "")
+		if terr != nil {
+			t.Fatal(terr)
+		}
+		if got := rank.BudgetChars(tout.Payload); got > b {
+			t.Fatalf("thread payload %d chars exceeds budget %d", got, b)
+		}
+	}
+
 	// mandatory overflow: many explicit recipients, tiny budget
 	for i := 0; i < 6; i++ {
 		if _, err := d.Publish(daemon.PublishRequest{

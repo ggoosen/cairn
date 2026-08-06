@@ -132,11 +132,11 @@ func TestN1HandshakeAndToolList(t *testing.T) {
 
 	list := rpc(t, s, 2, "tools/list", nil)
 	tools := list["result"].(map[string]any)["tools"].([]any)
-	want := []string{"cairn_digest", "cairn_search", "cairn_peek", "cairn_fetch",
+	want := []string{"cairn_digest", "cairn_search", "cairn_peek", "cairn_thread", "cairn_fetch",
 		"cairn_send", "cairn_reply", "cairn_signal", "cairn_outcome", "cairn_why_ranked",
 		"cairn_subscribe", "cairn_subscriptions"}
 	if len(tools) != len(want) {
-		t.Fatalf("tool count %d, want %d (§5.5 nine + R55 two, nothing else)", len(tools), len(want))
+		t.Fatalf("tool count %d, want %d (§5.5 nine + RETR-D4 thread + R55 two, nothing else)", len(tools), len(want))
 	}
 	for i, tl := range tools {
 		tool := tl.(map[string]any)

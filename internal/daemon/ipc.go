@@ -96,6 +96,7 @@ type Request struct {
 	IncludeRetracted bool   `json:"include_retracted,omitempty"`
 	AgentView        string `json:"agent_view,omitempty"` // fetch/digest view
 	InteractionID    string `json:"interaction_id,omitempty"`
+	ThreadID         string `json:"thread_id,omitempty"` // RETR-D4 thread expansion
 }
 
 // Response is the IPC reply.
@@ -124,6 +125,8 @@ type Response struct {
 	Staged     *StagedAttachment            `json:"staged,omitempty"` // G6: stage-attachment result
 	Saved      []SavedSearch                `json:"saved,omitempty"`  // P2-4 saved-search list
 	Peers      []string                     `json:"peers,omitempty"`  // SYNC-C1 peer management
+	Thread     *ThreadOutput                `json:"thread,omitempty"` // RETR-D4 thread expansion
+	Topics     []projection.TopicInfo       `json:"topics,omitempty"` // RETR-D5 topic list
 }
 
 // StagedAttachment is the stage-attachment reply: the stored object's hash and
@@ -756,6 +759,20 @@ func (d *Daemon) dispatch(req Request) Response {
 			return fail(err)
 		}
 		return Response{OK: true, Message: info}
+
+	case "thread":
+		out, err := d.Thread(req.ThreadID, req.BudgetChars, principal)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Thread: out}
+
+	case "topic-list":
+		topics, err := d.proj.TopicList()
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Topics: topics}
 
 	case "fetch":
 		res, err := d.Fetch(req.MessageID, req.AgentView)

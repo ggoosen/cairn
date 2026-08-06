@@ -379,6 +379,190 @@ func (p *Projection) RankRows(messageIDs []string, agentView string) (map[string
 	return out, rows.Err()
 }
 
+// TopicInfo is one row of the topic browse (RETR-D5): before this the only
+// way to see the taxonomy was reading views/<agent>/map.md off disk, so
+// send --topic typos silently proliferated unfindable topics.
+type TopicInfo struct {
+	TopicID  string `json:"topic_id"`
+	Name     string `json:"name"`
+	Messages int    `json:"messages"` // live (non-removed) linked messages
+}
+
+// TopicList returns every topic with its live link count, by name.
+func (p *Projection) TopicList() ([]TopicInfo, error) {
+	rows, err := p.db.Query(`
+		SELECT t.topic_id, t.name,
+		       (SELECT count(DISTINCT l.message_id) FROM topic_links l
+		        WHERE l.topic_id = t.topic_id AND l.removed = 0)
+		FROM topics t ORDER BY t.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TopicInfo
+	for rows.Next() {
+		var ti TopicInfo
+		if err := rows.Scan(&ti.TopicID, &ti.Name, &ti.Messages); err != nil {
+			return nil, err
+		}
+		out = append(out, ti)
+	}
+	return out, rows.Err()
+}
+
+// ThreadMessage is one message of a thread expansion (RETR-D4).
+type ThreadMessage struct {
+	MessageID string
+	ReplyTo   string
+	Sender    string
+	CreatedAt string
+	BodyHash  string
+}
+
+// ThreadMessages returns a thread's non-retracted messages in wall order
+// (idx_messages_thread exists since P0). The thread id IS the root
+// message's id, and the root itself carries no thread_id (the thread
+// emerges at the first reply) — so the root is matched by message_id.
+// An unknown thread returns empty.
+func (p *Projection) ThreadMessages(threadID string) ([]ThreadMessage, error) {
+	rows, err := p.db.Query(`
+		SELECT m.message_id, COALESCE(m.reply_to_message_id,''), COALESCE(m.sender_principal_id,''),
+		       m.created_at, r.body_hash
+		FROM messages m JOIN revisions r ON r.revision_id = m.head_revision_id
+		WHERE (m.thread_id = ? OR m.message_id = ?) AND m.retracted = 0
+		ORDER BY m.created_at, m.message_id`, threadID, threadID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ThreadMessage
+	for rows.Next() {
+		var tm ThreadMessage
+		if err := rows.Scan(&tm.MessageID, &tm.ReplyTo, &tm.Sender, &tm.CreatedAt, &tm.BodyHash); err != nil {
+			return nil, err
+		}
+		out = append(out, tm)
+	}
+	return out, rows.Err()
+}
+
+// ScopeMessageIDs returns the message IDs matching a search scope
+// (RETR-D3, spec §7.1 search(query, scope, k)): any of topicNames (by
+// name, like DigestCandidates), and/or a sender principal, and/or one
+// thread. Returns nil (not empty) when no scope is set — callers treat
+// nil as "no filtering".
+func (p *Projection) ScopeMessageIDs(topicNames []string, sender, threadID string) (map[string]bool, error) {
+	if len(topicNames) == 0 && sender == "" && threadID == "" {
+		return nil, nil
+	}
+	q := `SELECT DISTINCT m.message_id FROM messages m`
+	var args []any
+	if len(topicNames) > 0 {
+		// hard filter FIRST, resolving names — a nonexistent topic is a
+		// typed refusal, not a silent empty result (TopicIDByName maps
+		// missing to ("", nil), so check the id)
+		for _, n := range topicNames {
+			id, err := p.TopicIDByName(n)
+			if err != nil {
+				return nil, fmt.Errorf("scope topic %q: %w", n, err)
+			}
+			if id == "" {
+				return nil, fmt.Errorf("scope topic %q does not exist (scopes never auto-create)", n)
+			}
+		}
+		placeholders := strings.Repeat("?,", len(topicNames))
+		q += ` JOIN topic_links l ON l.message_id = m.message_id AND l.removed = 0
+		       JOIN topics t ON t.topic_id = l.topic_id AND t.name IN (` + placeholders[:len(placeholders)-1] + `)`
+		for _, n := range topicNames {
+			args = append(args, n)
+		}
+	}
+	q += ` WHERE 1=1`
+	if sender != "" {
+		q += ` AND m.sender_principal_id = ?`
+		args = append(args, sender)
+	}
+	if threadID != "" {
+		q += ` AND m.thread_id = ?`
+		args = append(args, threadID)
+	}
+	rows, err := p.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
+// ResultMetaRow carries the human-readable context for one retrieval hit
+// (RETR-D1/D2): who said it, in which thread, under which topics. Without
+// it every result was opaque UUIDs — the agent burned a fetch per hit just
+// to learn what it was.
+type ResultMetaRow struct {
+	Sender   string
+	ThreadID string
+	Topics   []string
+}
+
+// ResultMeta batch-fetches sender/thread/topics for a set of message IDs.
+func (p *Projection) ResultMeta(messageIDs []string) (map[string]ResultMetaRow, error) {
+	out := map[string]ResultMetaRow{}
+	if len(messageIDs) == 0 {
+		return out, nil
+	}
+	placeholders := strings.Repeat("?,", len(messageIDs))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, len(messageIDs))
+	for i, id := range messageIDs {
+		args[i] = id
+	}
+	rows, err := p.db.Query(`
+		SELECT message_id, COALESCE(sender_principal_id,''), COALESCE(thread_id,'')
+		FROM messages WHERE message_id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var m ResultMetaRow
+		if err := rows.Scan(&id, &m.Sender, &m.ThreadID); err != nil {
+			return nil, err
+		}
+		out[id] = m
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	trows, err := p.db.Query(`
+		SELECT l.message_id, t.name
+		FROM topic_links l JOIN topics t ON t.topic_id = l.topic_id
+		WHERE l.removed = 0 AND l.message_id IN (`+placeholders+`)
+		ORDER BY t.name`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer trows.Close()
+	for trows.Next() {
+		var id, name string
+		if err := trows.Scan(&id, &name); err != nil {
+			return nil, err
+		}
+		m := out[id]
+		m.Topics = append(m.Topics, name)
+		out[id] = m
+	}
+	return out, trows.Err()
+}
+
 // DigestCandidates lists non-retracted message IDs passing the view's hard
 // topic filter (topic NAMES; empty filter = all), deterministically ordered.
 func (p *Projection) DigestCandidates(topicNames []string) ([]string, error) {
