@@ -337,6 +337,45 @@ func (s *Store) FoundOutcomes() ([]FoundOutcome, error) {
 	return out, rows.Err()
 }
 
+// InteractionRow is one row of `cairn interactions` (P4-G6): the query log
+// existed since P0 but had NO reader — an operator could not see what was
+// being retrieved, which queries returned nothing, or which lack outcomes.
+type InteractionRow struct {
+	InteractionID string `json:"interaction_id"`
+	Kind          string `json:"kind"`
+	Principal     string `json:"principal,omitempty"`
+	Query         string `json:"query,omitempty"`
+	ResultCount   int    `json:"result_count"`
+	RetrievalMode string `json:"retrieval_mode,omitempty"`
+	CreatedAt     string `json:"created_at"`
+	Outcome       string `json:"outcome,omitempty"`
+}
+
+// Interactions lists the most recent interactions, newest first.
+func (s *Store) Interactions(limit int) ([]InteractionRow, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`
+		SELECT interaction_id, kind, COALESCE(principal,''), COALESCE(query,''),
+		       result_count, COALESCE(retrieval_mode,''), created_at, COALESCE(outcome,'')
+		FROM interactions ORDER BY created_at DESC, interaction_id LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []InteractionRow
+	for rows.Next() {
+		var r InteractionRow
+		if err := rows.Scan(&r.InteractionID, &r.Kind, &r.Principal, &r.Query,
+			&r.ResultCount, &r.RetrievalMode, &r.CreatedAt, &r.Outcome); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // GateStats aggregates for `cairn gates`.
 type GateStats struct {
 	Interactions      int

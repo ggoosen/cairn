@@ -79,6 +79,14 @@ func NewPython(interpreter string) (*Python, error) {
 // a fake line-protocol worker; production always uses pythonWorker).
 func newPythonWorker(interpreter, worker string) (*Python, error) {
 	cmd := exec.Command(interpreter, "-c", worker)
+	// P4-G2: a venv interpreter reads the PINNED model cache inside its
+	// venv (the same one the bootstrap hashed), not whatever the ambient
+	// HF cache holds.
+	if venv := venvDirOf(interpreter); venv != "" {
+		if cache := filepath.Join(venv, modelCacheDir); dirExists(cache) {
+			cmd.Env = append(os.Environ(), "HF_HOME="+cache)
+		}
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -194,10 +202,33 @@ func DetectVerbose(portableDir, configuredInterp string) (Embedder, string) {
 		return nil, "no embed venv found (semantic search disabled; retrieval is lexical-only). " +
 			"Provision it with scripts/cairn-embed-bootstrap.sh, or point CAIRN_EMBED_PYTHON at a python with sentence-transformers, then `cairn reindex --semantic`."
 	}
+	// P4-G2: verify the recorded model pin BEFORE starting the worker; a
+	// swapped/tampered artifact refuses into loud lexical-only, never a
+	// silent different-model embedder.
+	if venv := venvDirOf(interp); venv != "" {
+		if err := VerifyModelPin(venv); err != nil {
+			return nil, fmt.Sprintf("embed venv at %s REFUSED: %v; retrieval is lexical-only.", interp, err)
+		}
+	}
 	p, err := NewPython(interp)
 	if err != nil {
 		return nil, fmt.Sprintf("embed venv at %s failed to start (%v); retrieval is lexical-only. "+
 			"Re-provision with scripts/cairn-embed-bootstrap.sh, then `cairn reindex --semantic`.", interp, err)
 	}
 	return p, ""
+}
+
+// venvDirOf maps <venv>/bin/python3 back to <venv>; "" when the
+// interpreter is not venv-shaped (env/config overrides carry no pin).
+func venvDirOf(interpreter string) string {
+	dir := filepath.Dir(filepath.Dir(interpreter))
+	if filepath.Base(filepath.Dir(interpreter)) == "bin" && filepath.Base(dir) == "embed-venv" {
+		return dir
+	}
+	return ""
+}
+
+func dirExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
 }

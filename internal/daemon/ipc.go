@@ -18,6 +18,7 @@ import (
 
 	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/projection"
+	"github.com/ggoosen/cairn/internal/telemetry"
 )
 
 // IPC: one JSON request line per connection over a unix socket, one JSON
@@ -101,32 +102,33 @@ type Request struct {
 
 // Response is the IPC reply.
 type Response struct {
-	OK         bool                         `json:"ok"`
-	Error      string                       `json:"error,omitempty"`
-	Publish    *PublishResult               `json:"publish,omitempty"`
-	EventID    string                       `json:"event_id,omitempty"`
-	Results    []projection.SearchResult    `json:"results,omitempty"`
-	Search     *SearchOutput                `json:"search,omitempty"`
-	Digest     *DigestOutput                `json:"digest,omitempty"`
-	Text       string                       `json:"text,omitempty"`
-	Message    *projection.MessageInfo      `json:"message,omitempty"`
-	Fetched    *FetchResult                 `json:"fetched,omitempty"`
-	Ingest     *IngestResult                `json:"ingest,omitempty"`
-	TopicID    string                       `json:"topic_id,omitempty"`
-	Path       string                       `json:"path,omitempty"`
-	MessageID2 string                       `json:"message_id,omitempty"`
-	Status     map[string]any               `json:"status,omitempty"`
-	Subs       []projection.SubscriptionRow `json:"subscriptions,omitempty"`
-	Sub        *SubscribeResult             `json:"subscription,omitempty"`
-	LocalSub   *LocalSubscription           `json:"local_subscription,omitempty"` // R25 session tier
-	Onboarding *OnboardingResult            `json:"onboarding,omitempty"`         // R56 onboarding record
-	Derivs     []projection.DerivativeRow   `json:"derivatives,omitempty"`
-	Summary    *projection.SummaryRow       `json:"summary,omitempty"`
-	Staged     *StagedAttachment            `json:"staged,omitempty"` // G6: stage-attachment result
-	Saved      []SavedSearch                `json:"saved,omitempty"`  // P2-4 saved-search list
-	Peers      []string                     `json:"peers,omitempty"`  // SYNC-C1 peer management
-	Thread     *ThreadOutput                `json:"thread,omitempty"` // RETR-D4 thread expansion
-	Topics     []projection.TopicInfo       `json:"topics,omitempty"` // RETR-D5 topic list
+	OK           bool                         `json:"ok"`
+	Error        string                       `json:"error,omitempty"`
+	Publish      *PublishResult               `json:"publish,omitempty"`
+	EventID      string                       `json:"event_id,omitempty"`
+	Results      []projection.SearchResult    `json:"results,omitempty"`
+	Search       *SearchOutput                `json:"search,omitempty"`
+	Digest       *DigestOutput                `json:"digest,omitempty"`
+	Text         string                       `json:"text,omitempty"`
+	Message      *projection.MessageInfo      `json:"message,omitempty"`
+	Fetched      *FetchResult                 `json:"fetched,omitempty"`
+	Ingest       *IngestResult                `json:"ingest,omitempty"`
+	TopicID      string                       `json:"topic_id,omitempty"`
+	Path         string                       `json:"path,omitempty"`
+	MessageID2   string                       `json:"message_id,omitempty"`
+	Status       map[string]any               `json:"status,omitempty"`
+	Subs         []projection.SubscriptionRow `json:"subscriptions,omitempty"`
+	Sub          *SubscribeResult             `json:"subscription,omitempty"`
+	LocalSub     *LocalSubscription           `json:"local_subscription,omitempty"` // R25 session tier
+	Onboarding   *OnboardingResult            `json:"onboarding,omitempty"`         // R56 onboarding record
+	Derivs       []projection.DerivativeRow   `json:"derivatives,omitempty"`
+	Summary      *projection.SummaryRow       `json:"summary,omitempty"`
+	Staged       *StagedAttachment            `json:"staged,omitempty"`       // G6: stage-attachment result
+	Saved        []SavedSearch                `json:"saved,omitempty"`        // P2-4 saved-search list
+	Peers        []string                     `json:"peers,omitempty"`        // SYNC-C1 peer management
+	Thread       *ThreadOutput                `json:"thread,omitempty"`       // RETR-D4 thread expansion
+	Topics       []projection.TopicInfo       `json:"topics,omitempty"`       // RETR-D5 topic list
+	Interactions []telemetry.InteractionRow   `json:"interactions,omitempty"` // P4-G6 query log
 }
 
 // StagedAttachment is the stage-attachment reply: the stored object's hash and
@@ -773,6 +775,16 @@ func (d *Daemon) dispatch(req Request) Response {
 			return fail(err)
 		}
 		return Response{OK: true, Topics: topics}
+
+	case "interaction-list":
+		if d.tel == nil {
+			return fail(errors.New("telemetry unavailable"))
+		}
+		rows, err := d.tel.Interactions(req.K)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Interactions: rows}
 
 	case "fetch":
 		res, err := d.Fetch(req.MessageID, req.AgentView)

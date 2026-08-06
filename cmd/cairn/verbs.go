@@ -759,3 +759,33 @@ func newSetupAgentCmd(dirFlag *string) *cobra.Command {
 	cmd.Flags().StringVar(&interest, "interest", "", "natural-language interest query for digest relevance")
 	return cmd
 }
+
+func newInteractionsCmd(dirFlag *string) *cobra.Command {
+	var limit int
+	cmd := &cobra.Command{
+		Use:   "interactions",
+		Short: "Show the recent retrieval log: query, results, mode, outcome (operator-tier)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resp, err := call(dirFlag, daemon.Request{Op: "interaction-list", K: limit})
+			if err != nil {
+				return err
+			}
+			if len(resp.Interactions) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "no interactions recorded yet")
+				return nil
+			}
+			for _, r := range resp.Interactions {
+				outcome := r.Outcome
+				if outcome == "" {
+					outcome = "(no outcome)"
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "%s  %-7s %3d hit(s)  %-13s %-16s %q  %s\n",
+					r.CreatedAt, r.Kind, r.ResultCount, outcome, r.Principal, r.Query, r.InteractionID)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&limit, "limit", 50, "max interactions to show (newest first)")
+	return cmd
+}

@@ -3580,3 +3580,39 @@ on top of that work.
   --message (which the computed Success@5 gate credits).
 - docs/cairn-p3-onboarding-transport.md: the pair-join→sync claim is now
   TRUE (SYNC-C3) and says why; dangling P3-PLAN.md reference repointed.
+
+## WP-G — Optional deferred items (audit 2026-08-05) — PARTIAL BY DESIGN
+
+Every WP-G item was planned as independently droppable. Landed:
+
+- **G2 model-artifact pinning:** the bootstrap script now downloads the
+  model into `<venv>/hf-cache` (deterministic location; the worker runs
+  with HF_HOME pinned there) and records `<venv>/model.hash` (sha256 over
+  a sorted relpath+content walk). DetectVerbose verifies the pin BEFORE
+  starting the worker: a swapped/tampered artifact refuses into loud
+  lexical-only. Unpinned venvs (older bootstrap) still pass. sha256 not
+  BLAKE3 deliberately: the pin is written by the venv's python at
+  provision time (hashlib has no blake3) and is a local integrity
+  fingerprint, not mesh content addressing — the BLAKE3 rule targets the
+  latter. `config.EmbeddingModelHash` stays "" (it pins the never-vendored
+  ONNX artifact). Tamper test: TestVerifyModelPin.
+- **G6 `cairn interactions`:** the query log finally has a reader —
+  `interaction-list` IPC op (capAdmin: it names principals and queries) +
+  CLI table (query, hits, mode, outcome, newest first).
+
+Deliberately DEFERRED (with reasons, not silence):
+
+- **G1 sqlite-vec:** new CGO dependency + candidate-query rework; the
+  brute-force cosine fallback is correct below
+  `BruteForceMaxCandidates` and the corpus is nowhere near the ~100k
+  cliff. Revisit when head-vector count approaches that bound.
+- **G3 duplicate/thread-saturation penalties (spec §9.1, PenaltyCap):**
+  changes ruled why-ranked arithmetic — R47 requires every additive term
+  to print and reconcile exactly against R51's EXTERNAL recompute, so the
+  penalty needs a components-record extension + renderer + external
+  reconciliation update in one lockstep change. Do as its own reviewed
+  task, not as an audit tail.
+- **G4 ladder rungs 6–7 enforcement:** pre-ack rejection conflicts with
+  send-never-blocks; needs the author ruling recorded under WP-A before
+  code (conservative shape proposed there: rung 7 rejects, rung 6 warns).
+- **G5 ONNX embedder:** excluded (fallback previously ruled acceptable).

@@ -2,6 +2,8 @@ package embed
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -114,5 +116,43 @@ func TestCloseReapsProcess(t *testing.T) {
 	}
 	if _, err := p.Embed([]string{"x"}); err == nil {
 		t.Fatal("embed succeeded after Close")
+	}
+}
+
+// P4-G2: a recorded model pin must match the cache on disk — a flipped
+// byte refuses; an unpinned venv (older bootstrap) passes.
+func TestVerifyModelPin(t *testing.T) {
+	venv := t.TempDir()
+	cache := filepath.Join(venv, "hf-cache", "models--x")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cache, "weights.bin"), []byte("model bytes v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// unpinned: passes
+	if err := VerifyModelPin(venv); err != nil {
+		t.Fatalf("unpinned venv must pass: %v", err)
+	}
+
+	// pin the current state (same walk the bootstrap performs)
+	pin, err := hashModelCache(filepath.Join(venv, "hf-cache"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(venv, "model.hash"), []byte(pin+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyModelPin(venv); err != nil {
+		t.Fatalf("matching pin must pass: %v", err)
+	}
+
+	// tamper: one byte
+	if err := os.WriteFile(filepath.Join(cache, "weights.bin"), []byte("model bytes v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyModelPin(venv); err == nil || !strings.Contains(err.Error(), "does not match its recorded pin") {
+		t.Fatalf("tampered model must refuse, got %v", err)
 	}
 }

@@ -46,6 +46,8 @@ var opCapability = map[string]string{
 	"search": capRead, "digest": capRead, "peek": capRead, "fetch": capRead,
 	"why-ranked": capRead, "status": capRead, "source-ref": capRead,
 	"thread": capRead, "topic-list": capRead, // RETR-D4/D5
+	// P4-G6: the query log names principals and queries — operator-tier
+	"interaction-list": capAdmin,
 	"saved-list": capRead, "saved-run": capRead, // P2-4
 	"saved-add": capAdmin, "saved-remove": capAdmin,
 	"rank-stats": capAdmin, // P2-3b calibration (analysis, operator-tier)

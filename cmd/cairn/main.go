@@ -82,6 +82,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newPinCmd(&dir))
 	root.AddCommand(newUnpinCmd(&dir))
 	root.AddCommand(newThreadCmd(&dir))
+	root.AddCommand(newInteractionsCmd(&dir))
 	root.AddCommand(newSignalCmd(&dir))
 	root.AddCommand(newSearchCmd(&dir))
 	root.AddCommand(newPeekCmd(&dir))
