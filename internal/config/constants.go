@@ -310,6 +310,15 @@ const (
 	// 30 aligns with the 30-handoff evaluation cadence and gives the 95th
 	// percentile at least one observation above it.
 	GateLatencyMinSamples = 30
+
+	// Product-gate thresholds (spec §11, DEPLOY-E3). Success@5: the found
+	// message ranked ≤5 in its interaction; workaround rate: fraction of
+	// outcomes resolved by going around cairn. Below GateOutcomeMinSamples
+	// recorded outcomes the verdicts are INCONCLUSIVE, never FAIL — same
+	// small-sample honesty as the latency gate (FIX-J2).
+	GateSuccessAt5MinPct     = 70
+	GateWorkaroundRateMaxPct = 25
+	GateOutcomeMinSamples    = 30
 )
 
 // ---------------------------------------------------------------------------

@@ -35,10 +35,13 @@ func resolveApps(env mcpinstall.Env, apps []string, all bool) ([]mcpinstall.App,
 		}
 		return out, nil
 	}
-	// --all or default: every installed app
+	// --all or default: every INSTALLED app (DEPLOY-E4: --all used to
+	// bypass detection and create configs for apps that are not present,
+	// e.g. a ~/.codex/config.toml with no Codex installed)
+	_ = all // selection is identical either way; --all just skips the list default
 	var out []mcpinstall.App
 	for _, a := range mcpinstall.Registry() {
-		if all || a.Inspect(env).Installed {
+		if a.Inspect(env).Installed {
 			out = append(out, a)
 		}
 	}
@@ -58,6 +61,7 @@ func mcpEnv() (mcpinstall.Env, error) {
 
 func newMCPInstallCmd(_ *string) *cobra.Command {
 	var apps []string
+	var view string
 	var all, list, status bool
 	cmd := &cobra.Command{
 		Use:   "mcp-install",
@@ -83,10 +87,13 @@ func newMCPInstallCmd(_ *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if view != "" && len(targets) > 1 {
+				return fmt.Errorf("--view names ONE view; %d apps are targeted (each app defaults to its own view — that is what keeps digests and telemetry attributable)", len(targets))
+			}
 			fmt.Fprintf(out, "cairn binary: %s\n\n", env.Self)
 			var failures int
 			for _, a := range targets {
-				r, err := a.Install(env)
+				r, err := a.Install(env, view)
 				if err != nil {
 					failures++
 					fmt.Fprintf(out, "✗ %s: %v\n", a.Name, err)
@@ -114,6 +121,7 @@ func newMCPInstallCmd(_ *string) *cobra.Command {
 	}
 	cmd.Flags().StringSliceVar(&apps, "app", nil, "target app(s): claude-desktop, claude-code, codex (repeatable)")
 	cmd.Flags().BoolVar(&all, "all", false, "configure every installed supported app")
+	cmd.Flags().StringVar(&view, "view", "", "override the agent view for a SINGLE targeted app (default: one view per app, named after it)")
 	cmd.Flags().BoolVar(&list, "list", false, "detect apps and report state; change nothing (default with no flags)")
 	cmd.Flags().BoolVar(&status, "status", false, "compact table: for every registry app — detected? configured? command current or stale?")
 	return cmd

@@ -3503,3 +3503,32 @@ Scope note recorded: the FTS candidate pool is cut at FusionCandidatesFTS
 BEFORE the scope filter, so a very narrow scope in a very large corpus can
 under-fill lexically; the vector path filters BEFORE its top-K and
 compensates. Revisit if scoped-search recall complaints appear in dogfood.
+
+## WP-E — Deployment/config correctness (audit 2026-08-05) — DONE
+
+Commit DEPLOY-E1..E5.
+
+- **E1** every auto-wired MCP client now gets ITS OWN view/actor (named
+  after the app): `mcp-install` used to emit bare `["mcp"]`, collapsing
+  claude-desktop/claude-code/codex into one shared "mcp" view and
+  defeating per-view interest, onboarding records and attributable
+  telemetry. `--view` overrides for a single targeted app.
+- **E2** `rank_profile` / `embed_python` / `heavy_derivatives` are
+  device-TOML keys (env vars remain overrides). The env-only knobs never
+  reached a launchd/systemd daemon (the unit passes no environment and is
+  overwritten on reinstall) — the entire P2 ranking phase was unreachable
+  on the recommended deployment, and supervised daemons silently ran
+  lexical-only. `cairn status` now reports the LIVE rank profile and
+  embedder. Nil-guarded for portable-only (read-only) restores.
+- **E3** Success@5 and workaround-rate are COMPUTED (found outcomes joined
+  to stored final_rank), PASS/FAIL vs the spec §11 thresholds
+  (GateSuccessAt5MinPct/GateWorkaroundRateMaxPct) at ≥GateOutcomeMinSamples
+  outcomes, INCONCLUSIVE below (FIX-J2 small-sample honesty). The
+  release-blocking gate no longer requires a hand-kept diary; found
+  outcomes without a message id count conservatively as not-at-5.
+- **E4** `cairn daemon --stop` (service manager when installed — KeepAlive
+  would resurrect a bare SIGTERM — else SIGTERM at the PID the status op
+  now reports) and `--restart`. `mcp-install --all` now really means
+  "every INSTALLED app" (it used to create configs for absent apps).
+- **E5** bare `cairn reindex` runs the lexical rebuild (the README
+  promise); stale "(stub until M6)" help text corrected.

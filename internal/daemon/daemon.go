@@ -302,9 +302,15 @@ func Start(opts Options) (*Daemon, error) {
 		}
 	}
 
+	// DEPLOY-E2 knobs live in the device config, which a portable-only
+	// (read-only) restore does not have.
+	var devCfg config.DeviceConfig
+	if loaded.Device != nil {
+		devCfg = *loaded.Device
+	}
 	if opts.Embedder == nil {
 		var reason string
-		opts.Embedder, reason = embed.DetectVerbose(opts.Dir)
+		opts.Embedder, reason = embed.DetectVerbose(opts.Dir, devCfg.EmbedPython)
 		// R45 (FIX-G5): never fall back to lexical-only SILENTLY. Say so at
 		// startup, on every platform, with the remedy. A loaded embedder is
 		// also announced so the operator can confirm cross-node parity.
@@ -336,8 +342,11 @@ func Start(opts Options) (*Daemon, error) {
 		forks:    loadForks(opts.Dir),
 
 		ladderThresholds: maintenance.DefaultThresholds(),
-		rankP2:           os.Getenv("CAIRN_RANK_PROFILE") == "p2",     // P2-3 opt-in until §9.3 calibration
-		heavyDerive:      os.Getenv("CAIRN_HEAVY_DERIVATIVES") == "1", // P2-7 opt-in (may shell out)
+		// DEPLOY-E2: config-file first (survives service reinstalls and
+		// reaches supervised daemons, which get no environment), env as
+		// override. P2-3 / P2-7 opt-ins until §9.3 calibration.
+		rankP2:      devCfg.RankProfile == "p2" || os.Getenv("CAIRN_RANK_PROFILE") == "p2",
+		heavyDerive: devCfg.HeavyDerivatives || os.Getenv("CAIRN_HEAVY_DERIVATIVES") == "1",
 	}
 	if devPriv != nil {
 		d.keyID = event.KeyID(devPriv.Public().(ed25519.PublicKey))

@@ -142,6 +142,25 @@ type DeviceConfig struct {
 	// toward durability, is never advertised as a normal node, and its universal
 	// search is partial (spec §7). Empty = full.
 	Role string `toml:"role,omitempty"`
+
+	// RankProfile (DEPLOY-E2): "p2" opts into the full P2 additive ranking
+	// profile; empty/"p0" = P0. This was CAIRN_RANK_PROFILE-only, which a
+	// launchd/systemd-supervised daemon never saw (the generated unit
+	// passes no environment and is overwritten on reinstall) — the entire
+	// P2 phase was unreachable on the recommended deployment. The env var
+	// remains as an override.
+	RankProfile string `toml:"rank_profile,omitempty"`
+
+	// EmbedPython (DEPLOY-E2): interpreter with sentence-transformers for
+	// the real-model embedder. Same story as RankProfile: the
+	// CAIRN_EMBED_PYTHON-only knob silently left supervised daemons
+	// lexical-only. Env var remains as an override.
+	EmbedPython string `toml:"embed_python,omitempty"`
+
+	// HeavyDerivatives (DEPLOY-E2): opt into the P2-7 heavy-derivative
+	// pipeline (may shell out). CAIRN_HEAVY_DERIVATIVES=1 remains as an
+	// override.
+	HeavyDerivatives bool `toml:"heavy_derivatives,omitempty"`
 }
 
 // IsThin reports whether the device is configured as a thin node (spec §7).

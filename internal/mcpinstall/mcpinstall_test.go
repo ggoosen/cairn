@@ -85,7 +85,7 @@ func TestMergePreservesEverythingElse(t *testing.T) {
 			"dataforseo": map[string]any{"command": "npx", "args": []any{"dfs"}},
 		},
 	}
-	changed, prev := MergeCairn(cfg, "/opt/cairn/bin/cairn")
+	changed, prev := MergeCairn(cfg, "/opt/cairn/bin/cairn", "claude-desktop")
 	if !changed {
 		t.Fatal("expected changed=true when adding a new cairn entry")
 	}
@@ -101,7 +101,7 @@ func TestMergePreservesEverythingElse(t *testing.T) {
 			t.Errorf("server %q missing after merge", name)
 		}
 	}
-	if got := servers["cairn"]; !reflect.DeepEqual(got, DesiredEntry("/opt/cairn/bin/cairn")) {
+	if got := servers["cairn"]; !reflect.DeepEqual(got, DesiredEntry("/opt/cairn/bin/cairn", "claude-desktop")) {
 		t.Errorf("cairn entry = %#v", got)
 	}
 }
@@ -109,13 +109,13 @@ func TestMergePreservesEverythingElse(t *testing.T) {
 // TEST: idempotent second merge = no change.
 func TestMergeIdempotent(t *testing.T) {
 	cfg := map[string]any{}
-	if c, _ := MergeCairn(cfg, "/opt/cairn/bin/cairn"); !c {
+	if c, _ := MergeCairn(cfg, "/opt/cairn/bin/cairn", "claude-desktop"); !c {
 		t.Fatal("first merge should change")
 	}
 	// round-trip through JSON to mimic a real re-read (args become []any).
 	b, _ := MarshalConfig(cfg)
 	reparsed, _ := ParseConfig(b)
-	if c, _ := MergeCairn(reparsed, "/opt/cairn/bin/cairn"); c {
+	if c, _ := MergeCairn(reparsed, "/opt/cairn/bin/cairn", "claude-desktop"); c {
 		t.Fatal("second identical merge should be a no-op after JSON round-trip")
 	}
 }
@@ -127,7 +127,7 @@ func TestMergeUpdatesStalePath(t *testing.T) {
 			"cairn": map[string]any{"command": "/old/path/cairn", "args": []any{"mcp"}},
 		},
 	}
-	changed, prev := MergeCairn(cfg, "/opt/cairn/bin/cairn")
+	changed, prev := MergeCairn(cfg, "/opt/cairn/bin/cairn", "claude-desktop")
 	if !changed {
 		t.Fatal("stale path should change")
 	}
@@ -188,7 +188,7 @@ func TestInstallIdempotentAndBackup(t *testing.T) {
 		"mcpServers": map[string]any{"linkedin": map[string]any{"command": "node"}},
 	})
 
-	r, err := app.Install(e)
+	r, err := app.Install(e, "")
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestInstallIdempotentAndBackup(t *testing.T) {
 	}
 
 	// second run: idempotent
-	r2, err := app.Install(e)
+	r2, err := app.Install(e, "")
 	if err != nil {
 		t.Fatalf("second install: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestInstallRefusesMalformed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r, err := app.Install(e)
+	r, err := app.Install(e, "")
 	if err == nil {
 		t.Fatal("expected refusal on malformed config")
 	}
@@ -275,7 +275,7 @@ func TestInstallFixesStalePath(t *testing.T) {
 			"cairn": map[string]any{"command": "/stale/cairn", "args": []any{"mcp"}},
 		},
 	})
-	r, err := app.Install(e)
+	r, err := app.Install(e, "")
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestInstallCreatesFromAbsent(t *testing.T) {
 			if _, err := os.Stat(path); !os.IsNotExist(err) {
 				t.Fatalf("precondition: config should be absent")
 			}
-			r, err := app.Install(e)
+			r, err := app.Install(e, "")
 			if err != nil {
 				t.Fatalf("install: %v", err)
 			}
@@ -364,7 +364,7 @@ func TestClaudeCodeDrivesCLI(t *testing.T) {
 	app := codeApp(t)
 
 	// fresh install → single `claude mcp add ... -- <self> mcp`
-	r, err := app.Install(e)
+	r, err := app.Install(e, "")
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestClaudeCodeDrivesCLI(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 CLI call, got %d: %v", len(calls), calls)
 	}
-	want := []string{"claude", "mcp", "add", "cairn", "--scope", "user", "--", e.Self, "mcp"}
+	want := []string{"claude", "mcp", "add", "cairn", "--scope", "user", "--", e.Self, "mcp", "--view", "claude-code", "--actor", "claude-code"}
 	if !reflect.DeepEqual(calls[0], want) {
 		t.Fatalf("CLI args = %v, want %v", calls[0], want)
 	}
@@ -401,7 +401,7 @@ func TestClaudeCodeStaleAndUninstallViaCLI(t *testing.T) {
 		},
 	})
 
-	r, err := app.Install(e)
+	r, err := app.Install(e, "")
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -508,7 +508,7 @@ args = ["srv.js"]
 trust_level = "trusted"
 `)
 
-	r, err := app.Install(e)
+	r, err := app.Install(e, "")
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -540,10 +540,10 @@ func TestCodexInstallIdempotent(t *testing.T) {
 	e := codexEnv(t, false, nil)
 	app := codexApp(t)
 
-	if r, err := app.Install(e); err != nil || !r.Changed {
+	if r, err := app.Install(e, ""); err != nil || !r.Changed {
 		t.Fatalf("first install should change: %+v %v", r, err)
 	}
-	r2, err := app.Install(e)
+	r2, err := app.Install(e, "")
 	if err != nil {
 		t.Fatalf("second install: %v", err)
 	}
@@ -566,7 +566,7 @@ func TestCodexInstallRefusesMalformedTOML(t *testing.T) {
 	original := "[mcp_servers.cairn\ncommand = " // unterminated table header
 	writeRaw(t, path, original)
 
-	r, err := app.Install(e)
+	r, err := app.Install(e, "")
 	if err == nil {
 		t.Fatal("expected refusal on malformed TOML")
 	}
@@ -590,7 +590,7 @@ func TestCodexInstallFixesStalePath(t *testing.T) {
 command = "/stale/cairn"
 args = ["mcp"]
 `)
-	r, err := app.Install(e)
+	r, err := app.Install(e, "")
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -613,7 +613,7 @@ func TestCodexInstallCreatesFromAbsent(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatal("precondition: config should be absent")
 	}
-	r, err := app.Install(e)
+	r, err := app.Install(e, "")
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -636,14 +636,14 @@ func TestCodexDrivesCLI(t *testing.T) {
 	e := codexEnv(t, true, &calls)
 	app := codexApp(t)
 
-	r, err := app.Install(e)
+	r, err := app.Install(e, "")
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	if r.Method != "cli" {
 		t.Fatalf("expected CLI method, got %q", r.Method)
 	}
-	want := []string{"codex", "mcp", "add", "cairn", "--", e.Self, "mcp"}
+	want := []string{"codex", "mcp", "add", "cairn", "--", e.Self, "mcp", "--view", "codex", "--actor", "codex"}
 	if len(calls) != 1 || !reflect.DeepEqual(calls[0], want) {
 		t.Fatalf("CLI args = %v, want single %v", calls, want)
 	}
@@ -666,7 +666,7 @@ args = ["mcp"]
 [mcp_servers.existing]
 command = "node"
 `)
-	r, err := app.Install(e)
+	r, err := app.Install(e, "")
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}

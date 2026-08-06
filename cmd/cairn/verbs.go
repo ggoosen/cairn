@@ -102,7 +102,7 @@ func newUUID() string {
 }
 
 func newDaemonCmd(dirFlag *string) *cobra.Command {
-	var install, uninstall bool
+	var install, uninstall, stop, restart bool
 	cmd := &cobra.Command{
 		Use:   "daemon",
 		Short: "Run the resident single-writer daemon (log, projection, outbox, housekeeping, IPC)",
@@ -113,14 +113,31 @@ func newDaemonCmd(dirFlag *string) *cobra.Command {
 				return err
 			}
 			// FIX-G4: manage the daemon as a user service instead of running it.
-			if install && uninstall {
-				return fmt.Errorf("--install and --uninstall are mutually exclusive")
+			exclusive := 0
+			for _, f := range []bool{install, uninstall, stop, restart} {
+				if f {
+					exclusive++
+				}
+			}
+			if exclusive > 1 {
+				return fmt.Errorf("--install, --uninstall, --stop and --restart are mutually exclusive")
 			}
 			if uninstall {
 				return uninstallService(cmd.OutOrStdout())
 			}
 			if install {
 				return installService(dir, cmd.OutOrStdout())
+			}
+			// DEPLOY-E4: the lexical-reindex flow says "stop the daemon" —
+			// now there's a verb for it instead of service-manager trivia.
+			if stop {
+				return stopDaemon(*dirFlag, cmd.OutOrStdout())
+			}
+			if restart {
+				if err := stopDaemon(*dirFlag, cmd.OutOrStdout()); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "note: %v\n", err)
+				}
+				return startService(cmd.OutOrStdout())
 			}
 			// FIX-H7: if a daemon is ALREADY running a different binary, warn
 			// loudly before we try to start (and fail on its lock) — the stale
@@ -162,6 +179,8 @@ func newDaemonCmd(dirFlag *string) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&install, "install", false, "install + start the daemon as a user service (launchd on macOS, systemd --user on Linux)")
 	cmd.Flags().BoolVar(&uninstall, "uninstall", false, "stop + remove the installed daemon user service")
+	cmd.Flags().BoolVar(&stop, "stop", false, "stop the running daemon (via the service manager if installed, else SIGTERM)")
+	cmd.Flags().BoolVar(&restart, "restart", false, "stop, then start the installed user service")
 	return cmd
 }
 

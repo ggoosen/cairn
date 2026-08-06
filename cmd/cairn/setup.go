@@ -195,7 +195,7 @@ func setupWireMCP(cmd *cobra.Command) {
 			continue
 		}
 		any = true
-		r, err := a.Install(env)
+		r, err := a.Install(env, "")
 		if err != nil {
 			fmt.Fprintf(out, "  ✗ %s: %v\n", a.Name, err)
 			continue

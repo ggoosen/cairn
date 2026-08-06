@@ -25,8 +25,11 @@ func newReindexCmd(dirFlag *string) *cobra.Command {
 		Short: "Rebuild the derived SQLite projection from the event log (side-build + atomic swap)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// DEPLOY-E5: the README promise is "delete the index; cairn
+			// reindex rebuilds it" — bare invocation means the lexical
+			// rebuild, the operation that promise describes.
 			if !lexical && !semantic {
-				return errors.New("pass --lexical (and/or --semantic)")
+				lexical = true
 			}
 			dir, err := config.PortableDir(*dirFlag)
 			if err != nil {
@@ -88,8 +91,8 @@ func newReindexCmd(dirFlag *string) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&lexical, "lexical", false, "rebuild the lexical projection (fast; product stays usable)")
-	cmd.Flags().BoolVar(&semantic, "semantic", false, "rebuild embeddings (stub until M6)")
+	cmd.Flags().BoolVar(&lexical, "lexical", false, "rebuild the lexical projection (fast; the default when no flag is given)")
+	cmd.Flags().BoolVar(&semantic, "semantic", false, "re-embed every head revision through the daemon (model migration: invalidate + full re-embed)")
 	return cmd
 }
 

@@ -48,8 +48,19 @@ for line in sys.stdin:
 
 // PythonInterpreter locates the venv python for a cairn dir; "" if absent.
 func PythonInterpreter(portableDir string) string {
+	return PythonInterpreterConfigured(portableDir, "")
+}
+
+// PythonInterpreterConfigured resolves the interpreter with precedence
+// env override > device-config embed_python (DEPLOY-E2: supervised
+// daemons get no environment, so the TOML key is the durable knob) >
+// the provisioned venv.
+func PythonInterpreterConfigured(portableDir, configured string) string {
 	if env := os.Getenv("CAIRN_EMBED_PYTHON"); env != "" {
 		return env
+	}
+	if configured != "" {
+		return configured
 	}
 	p := filepath.Join(portableDir, config.DerivedDirName, "embed-venv", "bin", "python3")
 	if _, err := os.Stat(p); err == nil {
@@ -168,7 +179,7 @@ func (p *Python) Close() error {
 // real-model worker when provisioned, else nil (lexical_only). Tests use
 // BagOfWords explicitly.
 func Detect(portableDir string) Embedder {
-	e, _ := DetectVerbose(portableDir)
+	e, _ := DetectVerbose(portableDir, "")
 	return e
 }
 
@@ -177,8 +188,8 @@ func Detect(portableDir string) Embedder {
 // with the remedy — this feeds the daemon's startup log on every platform,
 // macOS and Linux alike). A provisioned-but-broken venv surfaces its error
 // instead of being swallowed. The reason is "" when a real embedder loaded.
-func DetectVerbose(portableDir string) (Embedder, string) {
-	interp := PythonInterpreter(portableDir)
+func DetectVerbose(portableDir, configuredInterp string) (Embedder, string) {
+	interp := PythonInterpreterConfigured(portableDir, configuredInterp)
 	if interp == "" {
 		return nil, "no embed venv found (semantic search disabled; retrieval is lexical-only). " +
 			"Provision it with scripts/cairn-embed-bootstrap.sh, or point CAIRN_EMBED_PYTHON at a python with sentence-transformers, then `cairn reindex --semantic`."

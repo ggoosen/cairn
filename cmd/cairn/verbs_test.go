@@ -180,7 +180,7 @@ func TestCLIOutcomesAndGates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gates: %v\n%s", err, out)
 	}
-	for _, want := range []string{"automated", "human-measured", "1/1 found"} {
+	for _, want := range []string{"automated", "computed", "at rank ≤5"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("gates missing %q:\n%s", want, out)
 		}

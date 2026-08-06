@@ -816,6 +816,7 @@ func (d *Daemon) dispatch(req Request) Response {
 			"next_seq":    next,
 			"degradation": d.DegradationLevel().String(), // P2-1 (spec §8.2)
 			"version":     d.version,                     // FIX-H7: RUNNING daemon's build version
+			"pid":         os.Getpid(),                   // DEPLOY-E4: lets `cairn daemon --stop` signal a hand-run daemon
 		}
 		// P2H3: one-shot operator health view — membership, peers, sync listener,
 		// and projection health (parked events) so `cairn status` answers "is this
@@ -824,6 +825,23 @@ func (d *Daemon) dispatch(req Request) Response {
 		st["members"] = d.memberCount()
 		st["peers"] = len(peers)
 		st["sync_listener"] = d.SyncListenState()
+		// DEPLOY-E2: report the LIVE ranking profile and embedder so an
+		// operator reading rank-stats knows which arithmetic they see —
+		// the P2 opt-in used to be invisible (env-only, unreported).
+		d.mu.Lock()
+		rp := "p0"
+		if d.rankP2 {
+			rp = "p2"
+		}
+		hd := d.heavyDerive
+		d.mu.Unlock()
+		st["rank_profile"] = rp
+		st["heavy_derivatives"] = hd
+		if e := d.emb(); e != nil {
+			st["embedder"] = e.ModelID()
+		} else {
+			st["embedder"] = "none (lexical_only)"
+		}
 		if pending, err := d.proj.CountPendingEmbeddings(); err == nil {
 			st["pending_embeddings"] = pending
 		}

@@ -311,6 +311,32 @@ func (s *Store) RecordLatency(kind string, d time.Duration, at time.Time) error 
 	return err
 }
 
+// FoundOutcome is one found-outcome pair; the Success@5 gate joins it to
+// the stored ranking explanation (final_rank) — the metric was previously
+// uncomputable by the tool despite the rank being on disk (DEPLOY-E3).
+type FoundOutcome struct {
+	InteractionID string
+	MessageID     string
+}
+
+// FoundOutcomes lists every interaction resolved as "found".
+func (s *Store) FoundOutcomes() ([]FoundOutcome, error) {
+	rows, err := s.db.Query(`SELECT interaction_id, COALESCE(outcome_message_id,'') FROM interactions WHERE outcome='found'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FoundOutcome
+	for rows.Next() {
+		var fo FoundOutcome
+		if err := rows.Scan(&fo.InteractionID, &fo.MessageID); err != nil {
+			return nil, err
+		}
+		out = append(out, fo)
+	}
+	return out, rows.Err()
+}
+
 // GateStats aggregates for `cairn gates`.
 type GateStats struct {
 	Interactions      int

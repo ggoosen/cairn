@@ -32,6 +32,9 @@ func (d *Daemon) PeerAdd(addr string) ([]string, error) {
 	if err := validPeerAddr(addr); err != nil {
 		return nil, err
 	}
+	if d.loaded.Device == nil {
+		return nil, fmt.Errorf("read-only restore has no device config — peers are per-device state")
+	}
 	d.mu.Lock()
 	for _, p := range d.loaded.Device.SyncPeers {
 		if p == addr {
@@ -54,6 +57,9 @@ func (d *Daemon) PeerAdd(addr string) ([]string, error) {
 
 // PeerRemove drops a sync peer live and persisted.
 func (d *Daemon) PeerRemove(addr string) ([]string, error) {
+	if d.loaded.Device == nil {
+		return nil, fmt.Errorf("read-only restore has no device config — peers are per-device state")
+	}
 	d.mu.Lock()
 	kept := d.loaded.Device.SyncPeers[:0]
 	found := false
@@ -83,5 +89,8 @@ func (d *Daemon) PeerRemove(addr string) ([]string, error) {
 func (d *Daemon) PeerList() []string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.loaded.Device == nil {
+		return nil
+	}
 	return append([]string(nil), d.loaded.Device.SyncPeers...)
 }
