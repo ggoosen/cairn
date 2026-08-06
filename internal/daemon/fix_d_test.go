@@ -134,7 +134,7 @@ func TestThreadExpansion(t *testing.T) {
 	iRoot := strings.Index(pl, "thread root question")
 	iFirst := strings.Index(pl, "first answer")
 	iSecond := strings.Index(pl, "second answer")
-	if iRoot < 0 || iFirst < 0 || iSecond < 0 || !(iRoot < iFirst && iFirst < iSecond) {
+	if iRoot < 0 || iFirst < 0 || iSecond < 0 || iRoot >= iFirst || iFirst >= iSecond {
 		t.Fatalf("thread order/content wrong:\n%s", pl)
 	}
 	if !strings.Contains(pl, config.QuotePrefix) {

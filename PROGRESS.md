@@ -3486,3 +3486,20 @@ transport.md's "start syncing" claim was false).
 - Tests: add/rm/list + persistence across restart, invalid addresses,
   capability gating over the socket, AddSyncPeer unit, and a live two-node
   drill proving a peer added at runtime converges without restart.
+
+## WP-D — Retrieval usability (audit 2026-08-05) — DONE
+
+Commit RETR-D1..D5. Search results now carry sender/created_at/topics and a
+200-char body snippet (quoted, budget-counted); digest entries carry an
+attribution line; search takes hard scope pre-filters (topic names / sender
+/ thread — closes the spec §7.1 `search(query, scope, k)` gap; nonexistent
+scope topics refuse pre-ack); `cairn thread` / MCP `cairn_thread` expand a
+whole conversation (the root is matched by message_id — roots carry no
+thread_id); `cairn topic list` browses the taxonomy with live counts; and
+`cairn unlink`/`cairn unpin` surface the daemon ops that existed with no
+CLI. MCP tool count is now 12 (§5.5 nine + thread + R55 two).
+
+Scope note recorded: the FTS candidate pool is cut at FusionCandidatesFTS
+BEFORE the scope filter, so a very narrow scope in a very large corpus can
+under-fill lexically; the vector path filters BEFORE its top-K and
+compensates. Revisit if scoped-search recall complaints appear in dogfood.
