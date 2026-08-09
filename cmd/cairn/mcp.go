@@ -26,7 +26,7 @@ func newMCPCmd(dirFlag *string) *cobra.Command {
 	var view, actor, profile string
 	cmd := &cobra.Command{
 		Use:   "mcp",
-		Short: "Serve the nine §5.5 tools to an MCP client over stdio (requires a running daemon; never tier-1)",
+		Short: "Serve the eleven §5.5 tools to an MCP client over stdio (requires a running daemon; never tier-1)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if profile == "full" {

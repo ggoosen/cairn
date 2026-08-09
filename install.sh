@@ -9,7 +9,9 @@
 # the daemon service is registered at the installed binary path, everything
 # stays user-owned — no /usr/local, no root.
 #
-# Requirements today: Git + Go 1.23+ (Cairn uses cgo/FTS5, so a prebuilt
+# Requirements today: Git + Go 1.25+ — or any Go 1.21+ with GOTOOLCHAIN=auto
+# (the default), which fetches the pinned toolchain automatically. (Cairn uses
+# cgo/FTS5, so a prebuilt
 # signed/notarized binary + Homebrew tap is the planned zero-dependency path;
 # until then this builds from source). Override paths with CAIRN_PREFIX /
 # CAIRN_REPO / CAIRN_REF. On a machine with disk encryption OFF (e.g. FileVault
@@ -25,8 +27,23 @@ warn() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[31merror: %s\033[0m\n' "$*" >&2; exit 1; }
 
 # --- prerequisites ----------------------------------------------------------
-command -v go  >/dev/null 2>&1 || die "Go 1.23+ is required (https://go.dev/dl). Cairn builds from source for now."
-command -v git >/dev/null 2>&1 || die "git is required."
+command -v go  >/dev/null 2>&1 || die "Go 1.25+ is required (https://go.dev/dl). Cairn builds from source for now."
+command -v git >/dev/null 2>&1 || die "git is required (at build time AND at runtime: cairn shells out to \`git merge-file\`)."
+
+# Go must be new enough to either build directly (1.25+) or fetch the pinned
+# toolchain itself (1.21+ with GOTOOLCHAIN=auto). Below that, the build fails
+# deep in the compiler with an unhelpful message — catch it here instead.
+GO_MINOR="$(go env GOVERSION 2>/dev/null | sed -n 's/^go1\.\([0-9]*\).*/\1/p')"
+if [ -n "$GO_MINOR" ] && [ "$GO_MINOR" -lt 21 ]; then
+  die "Go $(go env GOVERSION) is too old. Install Go 1.25+ (https://go.dev/dl), or
+       any Go 1.21+ with GOTOOLCHAIN=auto so it can fetch the pinned toolchain."
+fi
+
+# cgo (SQLite/FTS5) needs a working C toolchain.
+if [ "$(go env CGO_ENABLED 2>/dev/null)" = "0" ]; then
+  die "CGO_ENABLED=0, but Cairn needs cgo for SQLite/FTS5. Unset it and make sure a
+       C toolchain is installed (macOS: xcode-select --install)."
+fi
 case "$(uname -s)" in
   Darwin|Linux) : ;;
   *) die "unsupported OS $(uname -s) — macOS (primary) and Linux (best-effort) only." ;;
