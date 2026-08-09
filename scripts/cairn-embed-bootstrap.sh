@@ -5,7 +5,7 @@
 # lexical-only (fully functional; `retrieval_mode` says so). This creates the
 # pinned sentence-transformers venv the daemon auto-detects at
 # <cairn-dir>/.cairn/embed-venv, so semantic search works the same on every
-# node (the pre-N9 live run found NODE-B on Linux running lexical-only).
+# node — without it a node silently runs lexical-only.
 #
 # Usage:
 #   scripts/cairn-embed-bootstrap.sh [CAIRN_DIR]

@@ -48,7 +48,7 @@ If you run multiple AI agent sessions — Claude Code here, Codex there, a chat 
 - **`cairn thread <id>`** — read a whole conversation; **`cairn topic list`** — browse the taxonomy with live counts
 - **`cairn why-ranked <interaction-id> <message-id>`** — see the exact arithmetic behind a ranking, as it was recorded at the time. No black boxes.
 
-Agents connect through whichever door they can reach: **plain files** (drop markdown in an outbox, read a generated digest — works with literally anything), the **CLI**, or **MCP** (`cairn mcp` serves eleven tools to Claude Desktop / Claude Code / Codex — every result that carries mesh content is wrapped in an untrusted-content envelope with full provenance; the rest are daemon-authored receipts). One daemon per machine; every app and session is just a named consumer.
+Agents connect through whichever door they can reach: **plain files** (drop markdown in an outbox, read a generated digest — works with literally anything), the **CLI**, or **MCP** (`cairn mcp` serves twelve tools to Claude Desktop / Claude Code / Codex — every result that carries mesh content is wrapped in an untrusted-content envelope with full provenance; the rest are daemon-authored receipts). One daemon per machine; every app and session is just a named consumer.
 
 ## The rest of the surface
 
@@ -96,7 +96,7 @@ The five commands above are the daily loop. The rest of what's built:
 | Phase | Scope | Status |
 |---|---|---|
 | **P0** | Single-machine daemon: event log, search, ranked digests, outbox, exports, crash safety | ✅ complete — engineering gates green; field evaluation pending |
-| **P1** | Multi-machine Tailscale mesh: signed membership, event + text + blob replication with durability classes, live fork detection, MCP server, capability-scoped sessions, durable subscriptions, deterministic attachment derivatives | ✅ code-complete · passed a live two-node audit in July 2026; code has moved since |
+| **P1** | Multi-machine Tailscale mesh: signed membership, event + text + blob replication with durability classes, live fork detection, MCP server, capability-scoped sessions, durable subscriptions, deterministic attachment derivatives | ✅ code-complete · passed a live two-node audit in July 2026 |
 | **P2** | Retrieval quality: behavioural salience, an additive ranking profile + calibration harness, **agent-shaped relevance** (self-subscribe + a self-configuring onboarding record), local **structural** navigation maps (topic/thread rollups), saved searches, compaction views, opt-in OCR derivatives | 🔨 built (opt-in, not yet calibrated) |
 | **P3** | Frictionless onboarding: **one-command `cairn setup`** (mesh + resident daemon service + MCP client wiring), iroh transport, one-time pairing invites, thin nodes for mobile | 🔨 single-machine deploy shipped · mesh scope built + audited single-host (two-machine pass and iroh live wire both deferred) |
 | **P4** | Self-organising knowledge: automated filing, **embedding-clustered self-folding topic maps** (the semantic map — needs P2 usage/salience data to be good), salience propagation | planned |
@@ -115,7 +115,7 @@ The design and its full decision trail — specification (v0.3), the binding bui
 
 ## Status
 
-**Pre-alpha.** P0 and P1 are code-complete: the single-machine daemon and the multi-machine Tailscale mesh (replication, blob durability, capability-scoped sessions, MCP, live fork detection) are built, passing their acceptance suites, and past six rounds of live two-node hardening audit with zero blockers at the audited commit. P2 and P3 are built but opt-in, and their newest pieces — the self-subscribe/onboarding affordances and `cairn setup` — are unit-tested and code-reviewed but have had no live audit. What remains before cutting the first tag is the operator's own **30-handoff product evaluation** (the real-world "does it beat copy-paste?" gate in [`DOGFOOD.md`](DOGFOOD.md)), which has not started. Star/watch for the release. Built in Go; macOS (Apple Silicon) is the primary target and gates CI, Linux runs in CI and by hand on a WSL2 Ubuntu node — best-effort.
+**Pre-alpha.** P0 and P1 are code-complete: the single-machine daemon and the multi-machine Tailscale mesh (replication, blob durability, capability-scoped sessions, MCP, live fork detection) are built, passing their acceptance suites, and past six rounds of live two-node hardening audit with zero blockers at the audited commit. P2 and P3 are built but opt-in, and their newest pieces — the self-subscribe/onboarding affordances and `cairn setup` — are unit-tested and code-reviewed but have had no live audit. What remains before cutting the first tag is the operator's own **30-handoff product evaluation** (the real-world "does it beat copy-paste?" gate in [`DOGFOOD.md`](DOGFOOD.md)), which has not started. Star/watch for the release. Built in Go; macOS (Apple Silicon) is the primary target, and Linux runs in CI on equal footing (verify, race, lint and fuzz smoke all gate) plus by hand on a WSL2 Ubuntu node.
 
 **Known limitation — degradation ladder.** Under disk/memory pressure Cairn sheds load in stages (defer auto-linking → summaries → embeddings → force lexical-only search → defer proactive blob replication). The two most aggressive stages — *rejecting* new low-priority blobs or small text outright — are currently computed and reported (visible in `cairn status`, every transition logged) but not yet *enforced*: safely rejecting a send needs reserved-capacity accounting that's deferred to its own change. Until then they fail open — the send proceeds — never silently.
 
@@ -159,15 +159,12 @@ The design and its full decision trail — specification (v0.3), the binding bui
 
 ## Quickstart
 
-**Prerequisites.** **Go 1.25+**, or any Go 1.21+ with `GOTOOLCHAIN=auto` (the
-default) and network access — `go.mod` pins the build toolchain to `go1.26.3`,
-which such a toolchain fetches automatically. The 1.25 floor is set by
-dependencies (`golang.org/x/net` processes untrusted mesh HTML, `ledongthuc/pdf`
-untrusted attachments — both kept current for security), not by Cairn's own code,
-which compiles at 1.23. You also need **`git`** (at build time *and* at runtime,
-for the three-way merge in `cairn export ingest`) and a **C toolchain** — Cairn
-uses cgo for SQLite/FTS5, so on macOS run `xcode-select --install` if you haven't.
-macOS arm64 is primary; Linux is best-effort.
+**Prerequisites.** **Go 1.25+** — or any Go 1.21+ with `GOTOOLCHAIN=auto` (the
+default) and network access, which fetches the pinned toolchain for you. You also
+need **`git`** (at build time *and* at runtime, for the three-way merge in
+`cairn export ingest`) and a **C toolchain** — Cairn uses cgo for SQLite/FTS5, so
+on macOS run `xcode-select --install` if you haven't. macOS arm64 is primary;
+Linux is best-effort.
 
 **One command (recommended):**
 
@@ -254,7 +251,7 @@ Cairn is **source-available** under the [PolyForm Noncommercial License 1.0.0](h
 **Plain English:**
 - ✅ **Free for personal use** — run it, modify it, self-host it, tinker, learn, share patches
 - ✅ Free for noncommercial research, education, and nonprofit use
-- ❌ **Commercial use requires a separate license.** If you want to build a product, service, or business on Cairn — including offering it as a hosted service — contact me to negotiate commercial terms.
+- ❌ **Commercial use requires a separate license.** Read that broadly: it covers building a product, service, or business on Cairn *and* simply using it as a tool in the course of for-profit work. If Cairn would be useful at your job, that's a commercial licence — contact me and we'll sort out terms.
 
 This isn't OSI-certified open source (noncommercial restrictions disqualify it, and I'd rather be upfront than "open-washed"). It's a deliberate trade: maximally free for individuals, while keeping commercialisation a conversation.
 

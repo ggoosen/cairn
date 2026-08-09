@@ -14,11 +14,12 @@
 # cgo/FTS5, so a prebuilt
 # signed/notarized binary + Homebrew tap is the planned zero-dependency path;
 # until then this builds from source). Override paths with CAIRN_PREFIX /
-# CAIRN_REPO / CAIRN_REF. On a machine with disk encryption OFF (e.g. FileVault
-# disabled — the macOS default), set CAIRN_ALLOW_UNENCRYPTED=1 to proceed anyway.
+# CAIRN_REPO / CAIRN_REF. On a machine with disk encryption OFF (FileVault
+# disabled), set CAIRN_ALLOW_UNENCRYPTED=1 to proceed anyway.
 set -eu
 
 REPO_URL="${CAIRN_REPO:-https://github.com/ggoosen/cairn}"
+RAW_URL="${CAIRN_RAW_URL:-https://raw.githubusercontent.com/ggoosen/cairn/master/install.sh}"
 REF="${CAIRN_REF:-master}"
 PREFIX="${CAIRN_PREFIX:-$HOME/.local}"
 
@@ -77,7 +78,10 @@ cd "$SRC"
 say "Building + installing to $PREFIX/bin (no sudo) and running setup ..."
 if ! make deploy DEPLOY_PREFIX="$PREFIX"; then
   die "setup did not finish — read the message above. If this machine has disk
-       encryption OFF (FileVault disabled), re-run with:  CAIRN_ALLOW_UNENCRYPTED=1 ./install.sh"
+       encryption OFF (FileVault disabled), re-run this installer with
+       CAIRN_ALLOW_UNENCRYPTED=1 set, e.g.:
+         curl -fsSL $RAW_URL | CAIRN_ALLOW_UNENCRYPTED=1 sh
+       (from a checkout: CAIRN_ALLOW_UNENCRYPTED=1 ./install.sh)"
 fi
 
 say "Done. Restart Claude Desktop / Claude Code to load the MCP tools, then: cairn digest --view operator --budget 1500"

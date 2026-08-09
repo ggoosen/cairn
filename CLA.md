@@ -58,7 +58,7 @@ Subject to the terms and conditions of this agreement, You hereby grant to the
 Maintainer and to recipients of software distributed by the Maintainer a
 perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable
 (except as stated in this section) patent license to make, have made, use, offer
-to sell, sell, import, and otherwise transfer the Work.
+to sell, sell, import, and otherwise transfer the Project.
 
 This license applies only to those patent claims licensable by You that are
 necessarily infringed by Your Contribution alone or by combination of Your

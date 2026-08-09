@@ -32,8 +32,9 @@ volume-status fault injector the encryption tests drive. `make test` sets it;
 use `-tags sqlite_fts5,cairn_testhooks` or roughly thirty tests will fail on
 the encryption gate.
 
-macOS arm64 is the primary target. Linux is best-effort and runs in CI without
-gating the merge.
+macOS arm64 is the primary target, but Linux is not a second-class citizen in
+CI: the verify matrix, race, lint and fuzz-smoke jobs all run on Linux and all
+gate the merge.
 
 ## The bar for merging
 
