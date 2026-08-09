@@ -1,0 +1,65 @@
+name: verify
+
+# The merge bar for this repo is `make verify`: it asserts that the plain
+# (untagged) build FAILS with the instructive sqlite_fts5 guard, then runs
+# `go vet` + the full tagged suite — including the 15-point crash matrix.
+# Nothing here is a substitute for reading build/TESTING.md before touching
+# the write path.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    # macOS arm64 is the primary target: this job is required.
+    name: verify (macOS arm64)
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # Reads the toolchain floor from go.mod (go 1.25.0 / toolchain go1.26.3)
+          # so CI can never drift from the documented prerequisite.
+          go-version-file: go.mod
+          cache: true
+
+      - name: Go + cgo environment
+        # Cairn needs cgo for SQLite/FTS5; fail loudly here rather than deep in
+        # the compiler if a runner image ever changes.
+        run: |
+          go version
+          test "$(go env CGO_ENABLED)" = "1" || { echo "CGO_ENABLED is not 1"; exit 1; }
+          cc --version | head -1
+
+      - name: make verify
+        run: make verify
+
+  linux:
+    # Linux is best-effort (README "Status"). It runs on every PR so regressions
+    # are visible, but it does not gate the merge.
+    name: verify (Linux, best-effort)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: make verify
+        run: make verify
