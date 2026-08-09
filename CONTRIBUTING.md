@@ -76,14 +76,16 @@ rights to relicense contributed code — so **substantial contributions require 
 CLA**.
 
 In practice: small fixes (typos, docs, an obvious one-line bug) are merged
-without ceremony. For anything larger, you'll be asked to sign a CLA before the
-merge, and it's worth asking *before* you write a lot of code if that's a
-problem for you. This is the one thing about contributing here that differs from
-a typical MIT project, and it's better raised early than at merge time.
+without ceremony. For anything larger, you'll be asked to sign
+[**`CLA.md`**](CLA.md) before the merge — it follows the Apache ICLA almost
+verbatim, you keep full ownership of your work, and signing is a comment on
+your PR rather than a form to fill in. It's worth reading *before* you write a
+lot of code if that's a problem for you. This is the one thing about
+contributing here that differs from a typical MIT project, and it's better
+raised early than at merge time.
 
-*(The CLA document itself is still being finalised. If you're about to start
-something substantial, open an issue and we'll sort it out first — you will not
-be asked to sign anything retroactively surprising.)*
+Contributing on behalf of a company? Open an issue titled `[cla]` first — that
+needs a corporate agreement instead.
 
 ## Good first contributions
 

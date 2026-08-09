@@ -256,7 +256,7 @@ This isn't OSI-certified open source (noncommercial restrictions disqualify it, 
 
 ## Contributing
 
-Issues and PRs welcome — start with [`CONTRIBUTING.md`](CONTRIBUTING.md). Contributions are accepted under the project license; substantial contributors will be asked to sign a lightweight CLA (needed to keep dual/commercial licensing possible). The bar for merging into the event log and durability code is high — read [`build/TESTING.md`](build/TESTING.md) first; if your change touches the write path, it ships with crash-matrix coverage or it doesn't ship.
+Issues and PRs welcome — start with [`CONTRIBUTING.md`](CONTRIBUTING.md). Contributions are accepted under the project license; substantial contributors will be asked to sign the [CLA](CLA.md) (needed to keep dual/commercial licensing possible — you keep ownership of your work). The bar for merging into the event log and durability code is high — read [`build/TESTING.md`](build/TESTING.md) first; if your change touches the write path, it ships with crash-matrix coverage or it doesn't ship.
 
 Found a security problem? Don't open a public issue — see [`SECURITY.md`](SECURITY.md), which also spells out precisely what "audited" does and doesn't mean here. Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
 
