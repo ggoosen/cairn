@@ -293,7 +293,7 @@ func (s *Server) handle(conn net.Conn) {
 		// R27: refusals LOG the presented identity
 		fmt.Fprintf(s.warn, "SYNC REFUSED: %s presented device %q (cairn %q): %v\n",
 			conn.RemoteAddr(), their.DeviceID, their.CairnID, err)
-		writeMsg(conn, hello{V: 1, OK: false})
+		_ = writeMsg(conn, hello{V: 1, OK: false})
 		return
 	}
 	if err := writeMsg(conn, hello{V: 1, OK: true}); err != nil {

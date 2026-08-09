@@ -135,7 +135,7 @@ func (d *Daemon) Calibrate(baselineProfile rank.Profile, step float64, holdoutEv
 	}
 	train, holdout := rank.HoldOutByTask(eps, holdoutEveryN)
 	pw := baselineProfile.Weights()
-	baseline := rank.WeightVector{R: pw.R, S: pw.S, F: pw.F, P: pw.P, I: pw.I, N: pw.N}
+	baseline := rank.WeightVector(pw)
 	active := activeTerms(baseline)
 	grid := rank.SimplexGrid(step, active)
 	rec := rank.Calibrate(train, holdout, grid, baseline)

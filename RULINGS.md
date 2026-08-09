@@ -533,6 +533,30 @@ nothing until resolved; the durable log is never mutated by detection.
   recovery. A losing message whose body is neither inline nor locally present
   (a clone-only blob) is skipped with a note (its frame stays quarantined).
 
+> **Divergence note (2026-08-06):** the "Conservative scoping" bullet above
+> no longer describes shipped behavior — G7.4 bundled the cloned-cert
+> revocation into `fork resolve` itself. See R41 (backfilled). The ruling
+> text is preserved unedited above; this note is the reconciliation.
+
+## R41 — Fork repair revokes the cloned certificate in the SAME root-key session (G7.4; BACKFILLED 2026-08-06)
+
+> **BACKFILLED, pending author confirmation.** This number was cited as
+> binding authority by `internal/daemon/fork_resolve.go`,
+> `internal/daemon/fork_test.go`, PROGRESS.md ("R41 revoke bundling",
+> G7.4) and `docs/cairn-pre-n9-verification.md` — but its text never
+> landed here, violating this file's own process rule ("implemented ONLY
+> after they land in this file"). Reconstructed from those citations; the
+> shipped behavior is the authority the code already follows.
+
+`cairn fork resolve` bundles the cloned certificate's revocation into the
+SAME offline root-key session as the branch decision: `device.fork.resolve`
++ reissue + root-signed `device.revoke`. Choosing the canonical branch
+stays a human decision; the revoke does not — §6.4's cert revocation is no
+longer a documented follow-up an operator can forget. A SELF-clone still
+routes through `cairn migrate` (self-revoke is refused by design) and is
+reported instead. Supersedes R40's "Conservative scoping" bullet, whose
+RULING-NEEDED marker predated G7.4.
+
 ## R42 — Ephemeral bodies are never inlined (schema wins over §5)
 
 `text_class: ephemeral` ⇒ `body_bytes` MUST be absent from the publish event.
@@ -1066,3 +1090,28 @@ only the looser `validViewName` (blocks `/ \ ..`), so a marker/newline requested
 contained it (no escape, idempotent), but for layer symmetry `Daemon.OnboardingRecord` now runs
 `onboarding.InlineViolation` on the effective (defaulted) view and refuses on violation. Both
 parse- and daemon-supplied view names now face the identical strict gate.
+
+## R57 — Pairing trust model: pre-signed credential invitation (operator-ruled 2026-07-16 as "Option 1"; NUMBERED 2026-08-06)
+
+> The operator answered the P3-2 "Author rulings needed" fork on
+> 2026-07-16 (recorded in PROGRESS.md P3-2 and in
+> `internal/identity/pairing.go`), but the decision never received an
+> R-number here. Numbered retroactively; the content is the operator's
+> recorded decision, unchanged.
+
+One-time pairing invitations use the **pre-signed credential** shape: a
+single offline root ceremony mints the invitation — generate the new
+device's keypair, root-sign its certificate, package {cert + device
+private key + identity chain + invite id} into one expiring token. No new
+trust path and no delegation: the chain verifier still admits the
+`device.add` only on a valid root signature, and the root key still never
+lives on a running node (the `device.add` is appended by the live inviting
+node on arrival — hard single-use).
+
+The accepted tradeoff, explicitly: the device private key TRAVELS inside
+the invitation, reversing the N5 enrolment property that "the private key
+never moves". Mitigations: the token is a high-entropy one-time SECRET;
+expiry (`PairingInviteTTL`) is anchored in the root-signed cert's
+issued_at (unforgeable); arrival consumption is hard single-use (replays
+refused, including within one daemon lifetime via the admitted-pairings
+set). Treat an unexpired unconsumed token like a credential.

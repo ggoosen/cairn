@@ -28,6 +28,8 @@ import (
 
 	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/daemon"
+	"github.com/ggoosen/cairn/internal/object"
+	"github.com/ggoosen/cairn/internal/rank"
 )
 
 // untrustedNote is appended to every tool description that can return mesh
@@ -103,6 +105,8 @@ type Envelope struct {
 	CreatedAt      string     `json:"created_at,omitempty"`
 	Priority       int        `json:"declared_priority,omitempty"`
 	BodyLen        int64      `json:"body_len,omitempty"`
+	Topics         []string   `json:"topics,omitempty"`  // RETR-D1: mesh content, untrusted
+	Snippet        string     `json:"snippet,omitempty"` // RETR-D1: body excerpt, untrusted
 }
 
 // --- tool registry (spec §5.5 nine + the two R55 local-tier tools) ----------
@@ -123,21 +127,34 @@ func schema(props string, required ...string) json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{` + props + `},"required":` + req + `,"additionalProperties":false}`)
 }
 
+// Schema fragments built from the SAME constants the daemon validates
+// against, so the advertised contract cannot drift from real behavior
+// (pre-fix: the enum offered "working", which does not exist, omitted
+// eager-searchable, and allowed priorities the daemon refuses pre-ack).
+var (
+	textClassProp = fmt.Sprintf(`"text_class":{"type":"string","enum":[%q,%q,%q]}`,
+		object.ClassCanonical, object.ClassEager, object.ClassEphemeral)
+	priorityProp = fmt.Sprintf(`"declared_priority":{"type":"integer","minimum":0,"maximum":%d,"description":"3=critical, 2=important, 1=useful, 0=minor"}`,
+		config.DeclaredPriorityMax)
+)
+
 // Tools lists the §5.5 tools in spec order, then the two R55 local-tier tools.
 func (s *Server) Tools() []Tool {
 	return []Tool{
 		{"cairn_digest", "Generate the ranked, budget-capped digest for this agent view: what changed in the mesh that you should know." + untrustedNote,
 			schema(`"budget_chars":{"type":"integer","description":"budget over the COMPLETE digest payload in Unicode characters (default ` + fmt.Sprint(config.MCPDigestBudgetDefault) + `)"}`)},
-		{"cairn_search", "Hybrid search over the mesh (lexical + semantic fusion). Returns ranked result metadata and a budget-capped payload; use cairn_fetch for full bodies." + untrustedNote,
-			schema(`"query":{"type":"string"},"k":{"type":"integer","description":"max results (default 10)"},"budget_chars":{"type":"integer","description":"budget over the COMPLETE payload (default `+fmt.Sprint(config.MCPSearchBudgetDefault)+`)"}`, "query")},
+		{"cairn_search", "Hybrid search over the mesh (lexical + semantic fusion). Returns ranked results with sender/topics/snippet and a budget-capped payload; use cairn_fetch for full bodies. Scope with topics/sender/thread_id to search one area instead of the whole corpus." + untrustedNote,
+			schema(`"query":{"type":"string"},"k":{"type":"integer","description":"max results (default 10)"},"budget_chars":{"type":"integer","description":"budget over the COMPLETE payload (default `+fmt.Sprint(config.MCPSearchBudgetDefault)+`)"},"topics":{"type":"array","items":{"type":"string"},"description":"scope: only messages in these topics (existing names)"},"sender":{"type":"string","description":"scope: only messages from this principal"},"thread_id":{"type":"string","description":"scope: only messages in this thread"}`, "query")},
 		{"cairn_peek", "Show one message's metadata (sender, revision, hash, class, thread) WITHOUT retrieving the body.",
 			schema(`"message_id":{"type":"string"}`, "message_id")},
+		{"cairn_thread", "Read a whole conversation: every live message of a thread in order, budget-capped. Use the thread_id from a peek or search result." + untrustedNote,
+			schema(`"thread_id":{"type":"string"},"budget_chars":{"type":"integer","description":"budget over the COMPLETE payload (default `+fmt.Sprint(config.MCPSearchBudgetDefault)+`)"}`, "thread_id")},
 		{"cairn_fetch", "Deliberately retrieve one message's full body with provenance." + untrustedNote,
 			schema(`"message_id":{"type":"string"}`, "message_id")},
 		{"cairn_send", "Publish a new message to the mesh. Full pre-ack validation applies: referenced topics/messages must exist; text-class policy may downgrade (never forceable here).",
-			schema(`"body":{"type":"string"},"topics":{"type":"array","items":{"type":"string"},"description":"existing topic names or ids (never auto-created from MCP)"},"recipients":{"type":"array","items":{"type":"string"}},"text_class":{"type":"string","enum":["canonical","working","ephemeral"]},"declared_priority":{"type":"integer","minimum":1,"maximum":10},"thread_id":{"type":"string"}`, "body")},
+			schema(`"body":{"type":"string"},"topics":{"type":"array","items":{"type":"string"},"description":"existing topic names or ids (never auto-created from MCP)"},"recipients":{"type":"array","items":{"type":"string"}},`+textClassProp+`,`+priorityProp+`,"thread_id":{"type":"string"}`, "body")},
 		{"cairn_reply", "Reply to an existing message (same validation as cairn_send; threads automatically).",
-			schema(`"reply_to_message_id":{"type":"string"},"body":{"type":"string"},"text_class":{"type":"string","enum":["canonical","working","ephemeral"]},"declared_priority":{"type":"integer","minimum":1,"maximum":10}`, "reply_to_message_id", "body")},
+			schema(`"reply_to_message_id":{"type":"string"},"body":{"type":"string"},`+textClassProp+`,`+priorityProp, "reply_to_message_id", "body")},
 		{"cairn_signal", "Emit a lightweight signal about a message (e.g. ack, useful, priority_confirm) with an optional 1-10 weight.",
 			schema(`"message_id":{"type":"string"},"kind":{"type":"string"},"weight":{"type":"integer","minimum":1,"maximum":10}`, "message_id", "kind")},
 		{"cairn_outcome", "Record the outcome of a retrieval interaction (found | not_found | manual_workaround) so ranking can be calibrated.",
@@ -187,6 +204,8 @@ func (s *Server) CallTool(name string, args json.RawMessage) (any, error) {
 		return s.search(args)
 	case "cairn_peek":
 		return s.peek(args)
+	case "cairn_thread":
+		return s.thread(args)
 	case "cairn_fetch":
 		return s.fetch(args)
 	case "cairn_send":
@@ -240,11 +259,46 @@ func (s *Server) digest(raw json.RawMessage) (any, error) {
 	}, nil
 }
 
+func (s *Server) thread(raw json.RawMessage) (any, error) {
+	var a struct {
+		ThreadID    string `json:"thread_id"`
+		BudgetChars int    `json:"budget_chars"`
+	}
+	if err := decodeStrict(raw, &a); err != nil {
+		return nil, err
+	}
+	if a.ThreadID == "" {
+		return nil, toolErrf("thread_id is required")
+	}
+	if a.BudgetChars <= 0 {
+		a.BudgetChars = config.MCPSearchBudgetDefault
+	}
+	resp, err := s.call(daemon.Request{Op: "thread", ThreadID: a.ThreadID, BudgetChars: a.BudgetChars})
+	if err != nil {
+		return nil, err
+	}
+	t := resp.Thread
+	if n := utf8.RuneCountInString(t.Payload); n > a.BudgetChars {
+		return nil, fmt.Errorf("daemon thread payload %d chars exceeds budget %d", n, a.BudgetChars)
+	}
+	return Envelope{
+		Kind: "thread", Trust: "untrusted",
+		Content:       &Content{Mime: "text/plain", Text: t.Payload},
+		InteractionID: t.InteractionID,
+		ThreadID:      t.ThreadID,
+		Included:      t.Included,
+		Omitted:       t.Omitted,
+	}, nil
+}
+
 func (s *Server) search(raw json.RawMessage) (any, error) {
 	var a struct {
-		Query       string `json:"query"`
-		K           int    `json:"k"`
-		BudgetChars int    `json:"budget_chars"`
+		Query       string   `json:"query"`
+		K           int      `json:"k"`
+		BudgetChars int      `json:"budget_chars"`
+		Topics      []string `json:"topics"`
+		Sender      string   `json:"sender"`
+		ThreadID    string   `json:"thread_id"`
 	}
 	if err := decodeStrict(raw, &a); err != nil {
 		return nil, err
@@ -257,6 +311,7 @@ func (s *Server) search(raw json.RawMessage) (any, error) {
 	}
 	resp, err := s.call(daemon.Request{Op: "search", Search2: &daemon.SearchOptions{
 		Query: a.Query, K: a.K, BudgetChars: a.BudgetChars, AgentSurface: "mcp",
+		Topics: a.Topics, Sender: a.Sender, ThreadID: a.ThreadID,
 	}})
 	if err != nil {
 		return nil, err
@@ -269,11 +324,14 @@ func (s *Server) search(raw json.RawMessage) (any, error) {
 	for _, r := range out.Results {
 		results = append(results, Envelope{
 			Kind: "search_result", Trust: "untrusted",
-			Provenance: &Provenance{MessageID: r.MessageID, RevisionID: r.RevisionID, ContentHash: r.BodyHash},
+			Provenance: &Provenance{MessageID: r.MessageID, RevisionID: r.RevisionID, Sender: r.Sender, ContentHash: r.BodyHash},
 			Rank:       r.Rank,
-			Score:      fmt.Sprintf("%g", r.Score),
+			Score:      rank.Dec(r.Score), // the one decimal renderer every surface uses
 			TextClass:  r.TextClass,
 			Mandatory:  r.Mandatory,
+			CreatedAt:  r.CreatedAt,
+			Topics:     r.Topics,
+			Snippet:    r.Snippet,
 		})
 	}
 	return Envelope{

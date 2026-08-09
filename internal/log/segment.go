@@ -56,6 +56,13 @@ type Log struct {
 	nextSeq     int64
 	lastEventID string
 	closed      bool
+	// poisoned is set when a failed append could not be rolled back: torn
+	// frame bytes (or an un-dir-synced complete frame) sit after the last
+	// durable frame, and a later successful append would land AFTER them —
+	// which recovery classifies as interior corruption, a hard error that
+	// makes the log unopenable. Refusing every further Append keeps the bad
+	// bytes at the TAIL, which recovery already handles as a benign crash.
+	poisoned error
 
 	sealBytes  int64 // seal thresholds; default from config, overridable for tests
 	sealEvents int
@@ -131,6 +138,9 @@ func (l *Log) Append(recordBytes []byte, env *event.Envelope) error {
 	if l.closed {
 		return errors.New("log is closed")
 	}
+	if l.poisoned != nil {
+		return fmt.Errorf("log handle poisoned by earlier append failure (restart to recover): %w", l.poisoned)
+	}
 	if env.OriginDeviceID != l.origin.DeviceID || env.OriginGeneration != l.origin.Generation {
 		return fmt.Errorf("event origin %s/%d does not match log origin %s/%d",
 			env.OriginDeviceID, env.OriginGeneration, l.origin.DeviceID, l.origin.Generation)
@@ -163,14 +173,18 @@ func (l *Log) Append(recordBytes []byte, env *event.Envelope) error {
 	var buf bytes.Buffer
 	EncodeFrame(&buf, recordBytes)
 	if _, err := l.file.Write(buf.Bytes()); err != nil {
-		return fmt.Errorf("appending frame: %w", err)
+		return l.rollbackTorn(fmt.Errorf("appending frame: %w", err))
 	}
 	if err := l.file.Sync(); err != nil {
-		return fmt.Errorf("fdatasync segment: %w", err)
+		return l.rollbackTorn(fmt.Errorf("fdatasync segment: %w", err))
 	}
 	if created {
 		if err := l.fs.SyncDir(l.dir); err != nil {
-			return fmt.Errorf("fsync segment dir: %w", err)
+			// The frame is written but its segment's dir entry is not durable
+			// and l's state was not advanced: a retry would append the same
+			// sequence AGAIN after this complete frame — interior duplicate,
+			// hard recovery error. Roll the frame back too.
+			return l.rollbackTorn(fmt.Errorf("fsync segment dir: %w", err))
 		}
 	}
 
@@ -187,6 +201,24 @@ func (l *Log) Append(recordBytes []byte, env *event.Envelope) error {
 		}
 	}
 	return nil
+}
+
+// rollbackTorn recovers a live handle from a failed frame write: partial
+// frame bytes may sit after the last durable frame end (l.segBytes — only
+// advanced on success). Truncating back to that end lets appends continue
+// on the SAME handle; if the truncate itself fails, the handle is poisoned
+// so nothing can ever append after the torn bytes — at the tail they are
+// exactly the benign crash shape recovery already truncates at next start.
+func (l *Log) rollbackTorn(cause error) error {
+	if err := l.file.Truncate(l.segBytes); err != nil {
+		l.poisoned = cause
+		return fmt.Errorf("%w (rollback truncate failed: %v — log handle poisoned, restart to recover)", cause, err)
+	}
+	if err := l.file.Sync(); err != nil {
+		l.poisoned = cause
+		return fmt.Errorf("%w (rollback sync failed: %v — log handle poisoned, restart to recover)", cause, err)
+	}
+	return cause
 }
 
 // seal freezes the open segment: sidecar header via atomic publish, then the
@@ -229,7 +261,7 @@ func segmentRootHash(eventIDs []string) string {
 			// for verified records, and unverified records never reach seal.
 			raw = []byte(id)
 		}
-		h.Write(raw)
+		_, _ = h.Write(raw) // blake3 Write never errors
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

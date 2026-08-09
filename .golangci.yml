@@ -1,0 +1,64 @@
+version: "2"
+
+run:
+  go: "1.25"
+  build-tags:
+    - sqlite_fts5
+  timeout: 10m
+
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - unused
+  settings:
+    errcheck:
+      # Best-effort cleanup idioms (deferred Close/Rollback, stale-file
+      # removal) are tolerated; everything else must handle its error.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Tx).Rollback
+        - (*database/sql.DB).Close
+        - os.Remove
+        - os.Chmod
+        # stale-file removal before an atomic rewrite (regenerated views,
+        # tmp files): the follow-up write is the operation that matters
+        - (github.com/ggoosen/cairn/internal/fsx.FS).Remove
+        - (*os.File).Close
+        - (net.Conn).Close
+        - (net.Conn).SetDeadline
+        - (net.Listener).Close
+        # warn-stream writes are best-effort by design across the codebase
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
+        # hash.Hash writers never error by contract
+        - (hash.Hash).Write
+        # flock release on shutdown is best-effort
+        - syscall.Flock
+        # cobra flag registration errors only on a programmer typo
+        - (*github.com/spf13/cobra.Command).MarkFlagRequired
+        # best-effort refusal/error notices to a peer that may be gone
+        - github.com/ggoosen/cairn/internal/peer.writePair
+        - github.com/ggoosen/cairn/internal/peer.writeMsg
+        - github.com/ggoosen/cairn/internal/daemon.writeSync
+        - github.com/ggoosen/cairn/internal/daemon.writeResponse
+        # error-path/shutdown closes of our own handles
+        - (*github.com/ggoosen/cairn/internal/projection.Projection).Close
+        - (*github.com/ggoosen/cairn/internal/daemon.Daemon).Close
+        - (*github.com/ggoosen/cairn/internal/log.Log).Close
+  exclusions:
+    rules:
+      # Test cleanups (t.Cleanup(func(){ d.Close() }) and friends) are noise,
+      # not risk — errcheck stays strict on production code only.
+      - path: _test\.go
+        linters:
+          - errcheck
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

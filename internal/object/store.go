@@ -23,6 +23,26 @@ import (
 // ErrNotFound: the object does not exist and no expiry explanation applies.
 var ErrNotFound = errors.New("object not found")
 
+// ErrBadHash: the supplied string is not a well-formed BLAKE3 hex address.
+var ErrBadHash = errors.New("malformed object hash (want 64 lowercase hex chars)")
+
+// ValidHash reports whether h is a well-formed BLAKE3 hex address (exactly
+// config.ObjectHashHexLen lowercase hex chars). Every externally-supplied
+// hash MUST pass this before it becomes a store path: Path slices hash[:2]
+// and joins into the filesystem, both unsafe on arbitrary input.
+func ValidHash(h string) bool {
+	if len(h) != config.ObjectHashHexLen {
+		return false
+	}
+	for i := 0; i < len(h); i++ {
+		c := h[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // ExpiredError is the TYPED content_expired result (rulings §5): the
 // referencing event survives forever; the ephemeral object's bytes are gone.
 type ExpiredError struct {
@@ -97,6 +117,9 @@ func (s *Store) Put(data []byte) (string, error) {
 // Get returns the object bytes, verifying them against the address (a
 // corrupt object must never be served as valid).
 func (s *Store) Get(hash string) ([]byte, error) {
+	if !ValidHash(hash) {
+		return nil, ErrBadHash
+	}
 	data, err := s.fs.ReadFile(s.Path(hash))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -112,6 +135,9 @@ func (s *Store) Get(hash string) ([]byte, error) {
 
 // Exists reports whether the object is present (no content verification).
 func (s *Store) Exists(hash string) bool {
+	if !ValidHash(hash) {
+		return false
+	}
 	_, err := s.fs.Stat(s.Path(hash))
 	return err == nil
 }

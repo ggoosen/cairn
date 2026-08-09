@@ -15,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -56,7 +55,12 @@ type Daemon struct {
 	devPriv ed25519.PrivateKey
 	keyID   string
 
-	mu       sync.Mutex // serializes ALL mutations (single writer)
+	mu sync.Mutex // serializes ALL mutations (single writer)
+	// embMu guards the embedder POINTER only (swapped by SetEmbedderForTest
+	// while the enricher goroutine reads it); a dedicated lock so snapshot
+	// reads never interact with d.mu. The embedder itself serializes its own
+	// worker I/O internally.
+	embMu    sync.RWMutex
 	embedder embed.Embedder
 	trust    *identity.Trust
 	lg       *cairnlog.Log
@@ -271,7 +275,9 @@ func Start(opts Options) (*Daemon, error) {
 	lockDir := loaded.DeviceDir
 	if readOnly {
 		lockDir = filepath.Join(opts.Dir, config.DerivedDirName)
-		os.MkdirAll(lockDir, 0o700)
+		if err := os.MkdirAll(lockDir, 0o700); err != nil {
+			return nil, fmt.Errorf("creating read-only lock dir: %w", err)
+		}
 	}
 	lockPath := filepath.Join(lockDir, config.DaemonLockName)
 	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
@@ -296,9 +302,15 @@ func Start(opts Options) (*Daemon, error) {
 		}
 	}
 
+	// DEPLOY-E2 knobs live in the device config, which a portable-only
+	// (read-only) restore does not have.
+	var devCfg config.DeviceConfig
+	if loaded.Device != nil {
+		devCfg = *loaded.Device
+	}
 	if opts.Embedder == nil {
 		var reason string
-		opts.Embedder, reason = embed.DetectVerbose(opts.Dir)
+		opts.Embedder, reason = embed.DetectVerbose(opts.Dir, devCfg.EmbedPython)
 		// R45 (FIX-G5): never fall back to lexical-only SILENTLY. Say so at
 		// startup, on every platform, with the remedy. A loaded embedder is
 		// also announced so the operator can confirm cross-node parity.
@@ -330,8 +342,11 @@ func Start(opts Options) (*Daemon, error) {
 		forks:    loadForks(opts.Dir),
 
 		ladderThresholds: maintenance.DefaultThresholds(),
-		rankP2:           os.Getenv("CAIRN_RANK_PROFILE") == "p2",     // P2-3 opt-in until §9.3 calibration
-		heavyDerive:      os.Getenv("CAIRN_HEAVY_DERIVATIVES") == "1", // P2-7 opt-in (may shell out)
+		// DEPLOY-E2: config-file first (survives service reinstalls and
+		// reaches supervised daemons, which get no environment), env as
+		// override. P2-3 / P2-7 opt-ins until §9.3 calibration.
+		rankP2:      devCfg.RankProfile == "p2" || os.Getenv("CAIRN_RANK_PROFILE") == "p2",
+		heavyDerive: devCfg.HeavyDerivatives || os.Getenv("CAIRN_HEAVY_DERIVATIVES") == "1",
 	}
 	if devPriv != nil {
 		d.keyID = event.KeyID(devPriv.Public().(ed25519.PublicKey))
@@ -517,14 +532,6 @@ func (d *Daemon) recover() error {
 	return nil
 }
 
-func isKeyOrderError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "before genesis") || strings.Contains(msg, "unknown signing key")
-}
-
 func (d *Daemon) releaseLock() {
 	if d.lockFile != nil {
 		syscall.Flock(int(d.lockFile.Fd()), syscall.LOCK_UN)
@@ -557,7 +564,7 @@ func (d *Daemon) Close() error {
 		d.proj = nil
 	}
 	if d.tel != nil {
-		d.tel.Close()
+		_ = d.tel.Close()
 		d.tel = nil
 	}
 	d.releaseLock()
@@ -874,6 +881,37 @@ func (d *Daemon) Publish(req PublishRequest) (*PublishResult, error) {
 		DowngradeReason: decision.Reason,
 	}
 
+	// FIX-A6: topic.create events append BEFORE message.publish. The old
+	// order (publish first) meant a mid-sequence topic append failure
+	// returned an error to a client whose message was already durable and
+	// searchable — and a CLI/MCP retry (no correlation_id) then duplicated
+	// the message. Creates-first shrinks that window to the link appends:
+	// a failure before the publish leaves only idempotent topic creations
+	// durable (a retry resolves them instead of re-creating), and a
+	// re-published message mints a new ID so links never duplicate.
+	//
+	// RULING-NEEDED: FIX-F1 ruling 1 ("ALL events durable before the single
+	// ack") does not say what to report when a LINK append fails after the
+	// publish is durable. Conservative choice implemented: return the error
+	// (never claim success for an incomplete request), accepting that a
+	// client retry duplicates the message body under a new ID. Alternative:
+	// success-with-warning naming the unlinked topics. Author to confirm.
+	for _, tp := range topicPlans {
+		if !tp.create {
+			continue
+		}
+		cenv, crec, err := d.buildEvent("topic.create", "topic", tp.id,
+			map[string]any{"topic_id": tp.id, "name": tp.name}, req)
+		if err != nil {
+			return nil, err
+		}
+		if err := d.lg.Append(crec, cenv); err != nil {
+			return nil, fmt.Errorf("topic.create append failed before ack: %w", err)
+		}
+		res.EventIDs = append(res.EventIDs, cenv.EventID)
+		d.applyProjection(cenv, crec)
+	}
+
 	env, rec, err := d.buildEvent(eventType, "message", msgID, payload, req)
 	if err != nil {
 		return nil, err
@@ -891,21 +929,9 @@ func (d *Daemon) Publish(req PublishRequest) (*PublishResult, error) {
 	res.EventIDs = append(res.EventIDs, env.EventID)
 	d.applyProjection(env, rec)
 
-	// topic.create then topic.link.add, in order, same request — ALL durable
-	// before the single ack (FIX-F1 ruling 1)
+	// topic.link.add in order, same request — ALL durable before the single
+	// ack (FIX-F1 ruling 1)
 	for _, tp := range topicPlans {
-		if tp.create {
-			cenv, crec, err := d.buildEvent("topic.create", "topic", tp.id,
-				map[string]any{"topic_id": tp.id, "name": tp.name}, req)
-			if err != nil {
-				return nil, err
-			}
-			if err := d.lg.Append(crec, cenv); err != nil {
-				return nil, fmt.Errorf("topic.create append failed before ack: %w", err)
-			}
-			res.EventIDs = append(res.EventIDs, cenv.EventID)
-			d.applyProjection(cenv, crec)
-		}
 		linkID := d.newUUID()
 		lenv, lrec, err := d.buildEvent("topic.link.add", "link", linkID,
 			map[string]any{"link_id": linkID, "message_id": msgID, "topic_id": tp.id}, req)
@@ -921,7 +947,7 @@ func (d *Daemon) Publish(req PublishRequest) (*PublishResult, error) {
 
 	// === ACK POINT: the COMPLETE request is durable ===
 	if d.tel != nil {
-		d.tel.RecordLatency("ack_to_lexical_visible", time.Since(ackAt), d.now())
+		_ = d.tel.RecordLatency("ack_to_lexical_visible", time.Since(ackAt), d.now())
 	}
 
 	// N7: blob replication acknowledgement (spec §6.3). accepted_locally is

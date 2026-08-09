@@ -369,12 +369,34 @@ func (d *Daemon) GatesReport(w io.Writer) error {
 		}
 	}
 
+	// DEPLOY-E3: compute the product gates from stored data. final_rank per
+	// (interaction, message) has been in rank_explanations all along — the
+	// release-blocking metric no longer needs a hand-kept diary. A found
+	// outcome without a message id (or without a stored explanation) counts
+	// as found-but-not-at-5: conservative, never inflating the pass rate.
 	outcomes := g.OutcomeFound + g.OutcomeNotFound + g.OutcomeWorkaround
-	successAt5 := "pending (0 outcomes recorded)"
+	successAt5 := fmt.Sprintf("INCONCLUSIVE (0 outcomes recorded; need ≥%d genuine handoffs)", config.GateOutcomeMinSamples)
 	workaround := successAt5
 	if outcomes > 0 {
-		successAt5 = fmt.Sprintf("%d/%d found (needs ≥30 genuine handoffs; diary protocol)", g.OutcomeFound, outcomes)
-		workaround = fmt.Sprintf("%d/%d workarounds", g.OutcomeWorkaround, outcomes)
+		at5 := d.successAt5Count()
+		sPct := at5 * 100 / outcomes
+		wPct := g.OutcomeWorkaround * 100 / outcomes
+		if outcomes < config.GateOutcomeMinSamples {
+			successAt5 = fmt.Sprintf("INCONCLUSIVE (%d/%d at rank ≤5 = %d%% over %d outcomes; need ≥%d; gate ≥%d%%)",
+				at5, outcomes, sPct, outcomes, config.GateOutcomeMinSamples, config.GateSuccessAt5MinPct)
+			workaround = fmt.Sprintf("INCONCLUSIVE (%d/%d = %d%% over %d outcomes; need ≥%d; gate ≤%d%%)",
+				g.OutcomeWorkaround, outcomes, wPct, outcomes, config.GateOutcomeMinSamples, config.GateWorkaroundRateMaxPct)
+		} else {
+			sv, wv := "PASS", "PASS"
+			if sPct < config.GateSuccessAt5MinPct {
+				sv = "FAIL"
+			}
+			if wPct > config.GateWorkaroundRateMaxPct {
+				wv = "FAIL"
+			}
+			successAt5 = fmt.Sprintf("%s (%d/%d at rank ≤5 = %d%%; gate ≥%d%%)", sv, at5, outcomes, sPct, config.GateSuccessAt5MinPct)
+			workaround = fmt.Sprintf("%s (%d/%d = %d%%; gate ≤%d%%)", wv, g.OutcomeWorkaround, outcomes, wPct, config.GateWorkaroundRateMaxPct)
+		}
 	}
 
 	fmt.Fprintf(w, "cairn gates — engineering gates are release blockers (rulings §10)\n\n")
@@ -385,10 +407,32 @@ func (d *Daemon) GatesReport(w io.Writer) error {
 	fmt.Fprintf(w, "%-42s %-16s %s\n", "send-ack → lexical-visible P95 < 200ms", "automated", latency)
 	fmt.Fprintf(w, "%-42s %-16s %s\n", "blob durability targets (N7)", "automated", d.durabilityGate())
 	fmt.Fprintf(w, "%-42s %-16s %s\n", "no unresolved forks (N8)", "automated", d.forkGate())
-	fmt.Fprintf(w, "%-42s %-16s %s\n", "first-query Success@5 ≥ 70%", "human-measured", successAt5)
-	fmt.Fprintf(w, "%-42s %-16s %s\n", "manual-workaround rate ≤ 25%", "human-measured", workaround)
+	fmt.Fprintf(w, "%-42s %-16s %s\n", "first-query Success@5 ≥ 70%", "computed", successAt5)
+	fmt.Fprintf(w, "%-42s %-16s %s\n", "manual-workaround rate ≤ 25%", "computed", workaround)
 	fmt.Fprintf(w, "%-42s %-16s %s\n", "median time-to-context < 60s", "human-measured", "diary protocol (DOGFOOD.md, M8)")
 	return nil
+}
+
+// successAt5Count joins found outcomes to their stored final_rank
+// (DEPLOY-E3): rank ≤5 counts; a missing message id or explanation does not.
+func (d *Daemon) successAt5Count() int {
+	if d.tel == nil {
+		return 0
+	}
+	found, err := d.tel.FoundOutcomes()
+	if err != nil {
+		return 0
+	}
+	at5 := 0
+	for _, fo := range found {
+		if fo.MessageID == "" {
+			continue
+		}
+		if _, _, rank, err := d.proj.Explanation(fo.InteractionID, fo.MessageID); err == nil && rank > 0 && rank <= 5 {
+			at5++
+		}
+	}
+	return at5
 }
 
 // durabilityGate summarizes blob durability for the gates report (N7). A blob

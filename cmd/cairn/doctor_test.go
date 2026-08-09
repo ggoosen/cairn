@@ -72,7 +72,8 @@ func TestReindexCLI(t *testing.T) {
 	if _, err := runCLI(t, "reindex", "--semantic", "--dir", dir); err == nil {
 		t.Fatal("semantic stub should error until M6")
 	}
-	if _, err := runCLI(t, "reindex", "--dir", dir); err == nil {
-		t.Fatal("no-flag reindex should error")
+	// DEPLOY-E5: bare reindex = the lexical rebuild (the README promise)
+	if out, err := runCLI(t, "reindex", "--dir", dir); err != nil || !strings.Contains(out, "lexical projection rebuilt") {
+		t.Fatalf("no-flag reindex should run the lexical rebuild: %v\n%s", err, out)
 	}
 }

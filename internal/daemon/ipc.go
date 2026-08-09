@@ -10,12 +10,15 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/projection"
+	"github.com/ggoosen/cairn/internal/telemetry"
 )
 
 // IPC: one JSON request line per connection over a unix socket, one JSON
@@ -94,33 +97,38 @@ type Request struct {
 	IncludeRetracted bool   `json:"include_retracted,omitempty"`
 	AgentView        string `json:"agent_view,omitempty"` // fetch/digest view
 	InteractionID    string `json:"interaction_id,omitempty"`
+	ThreadID         string `json:"thread_id,omitempty"` // RETR-D4 thread expansion
 }
 
 // Response is the IPC reply.
 type Response struct {
-	OK         bool                         `json:"ok"`
-	Error      string                       `json:"error,omitempty"`
-	Publish    *PublishResult               `json:"publish,omitempty"`
-	EventID    string                       `json:"event_id,omitempty"`
-	Results    []projection.SearchResult    `json:"results,omitempty"`
-	Search     *SearchOutput                `json:"search,omitempty"`
-	Digest     *DigestOutput                `json:"digest,omitempty"`
-	Text       string                       `json:"text,omitempty"`
-	Message    *projection.MessageInfo      `json:"message,omitempty"`
-	Fetched    *FetchResult                 `json:"fetched,omitempty"`
-	Ingest     *IngestResult                `json:"ingest,omitempty"`
-	TopicID    string                       `json:"topic_id,omitempty"`
-	Path       string                       `json:"path,omitempty"`
-	MessageID2 string                       `json:"message_id,omitempty"`
-	Status     map[string]any               `json:"status,omitempty"`
-	Subs       []projection.SubscriptionRow `json:"subscriptions,omitempty"`
-	Sub        *SubscribeResult             `json:"subscription,omitempty"`
-	LocalSub   *LocalSubscription           `json:"local_subscription,omitempty"` // R25 session tier
-	Onboarding *OnboardingResult            `json:"onboarding,omitempty"`         // R56 onboarding record
-	Derivs     []projection.DerivativeRow   `json:"derivatives,omitempty"`
-	Summary    *projection.SummaryRow       `json:"summary,omitempty"`
-	Staged     *StagedAttachment            `json:"staged,omitempty"` // G6: stage-attachment result
-	Saved      []SavedSearch                `json:"saved,omitempty"`  // P2-4 saved-search list
+	OK           bool                         `json:"ok"`
+	Error        string                       `json:"error,omitempty"`
+	Publish      *PublishResult               `json:"publish,omitempty"`
+	EventID      string                       `json:"event_id,omitempty"`
+	Results      []projection.SearchResult    `json:"results,omitempty"`
+	Search       *SearchOutput                `json:"search,omitempty"`
+	Digest       *DigestOutput                `json:"digest,omitempty"`
+	Text         string                       `json:"text,omitempty"`
+	Message      *projection.MessageInfo      `json:"message,omitempty"`
+	Fetched      *FetchResult                 `json:"fetched,omitempty"`
+	Ingest       *IngestResult                `json:"ingest,omitempty"`
+	TopicID      string                       `json:"topic_id,omitempty"`
+	Path         string                       `json:"path,omitempty"`
+	MessageID2   string                       `json:"message_id,omitempty"`
+	Status       map[string]any               `json:"status,omitempty"`
+	Subs         []projection.SubscriptionRow `json:"subscriptions,omitempty"`
+	Sub          *SubscribeResult             `json:"subscription,omitempty"`
+	LocalSub     *LocalSubscription           `json:"local_subscription,omitempty"` // R25 session tier
+	Onboarding   *OnboardingResult            `json:"onboarding,omitempty"`         // R56 onboarding record
+	Derivs       []projection.DerivativeRow   `json:"derivatives,omitempty"`
+	Summary      *projection.SummaryRow       `json:"summary,omitempty"`
+	Staged       *StagedAttachment            `json:"staged,omitempty"`       // G6: stage-attachment result
+	Saved        []SavedSearch                `json:"saved,omitempty"`        // P2-4 saved-search list
+	Peers        []string                     `json:"peers,omitempty"`        // SYNC-C1 peer management
+	Thread       *ThreadOutput                `json:"thread,omitempty"`       // RETR-D4 thread expansion
+	Topics       []projection.TopicInfo       `json:"topics,omitempty"`       // RETR-D5 topic list
+	Interactions []telemetry.InteractionRow   `json:"interactions,omitempty"` // P4-G6 query log
 }
 
 // StagedAttachment is the stage-attachment reply: the stored object's hash and
@@ -132,6 +140,22 @@ type StagedAttachment struct {
 	Filename   string `json:"filename,omitempty"`
 }
 
+// SocketDir returns the per-user 0700 directory holding cairn sockets.
+// FIX-A7: the socket used to sit directly in os.TempDir() with default
+// permissions — on multi-user Linux any local user could connect and,
+// with Session:"" granting the operator tier, act as the operator. A
+// 0700 parent directory is the enforceable guarantee (chmod on the
+// socket itself is not honored everywhere). XDG_RUNTIME_DIR is preferred
+// when set (Linux: /run/user/<uid>, already private and short); the
+// TempDir fallback keeps the path under the ~104-byte unix-socket cap on
+// macOS, where TempDir is per-user private anyway.
+func SocketDir() string {
+	if rd := os.Getenv("XDG_RUNTIME_DIR"); rd != "" {
+		return filepath.Join(rd, "cairn")
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("cairn-%d", os.Getuid()))
+}
+
 // SocketPath returns the daemon's unix socket location: short, deterministic
 // per cairn (unix socket path length limits rule out Application Support).
 // The FULL cairn id is required: a UUIDv7 prefix is a millisecond timestamp,
@@ -139,7 +163,36 @@ type StagedAttachment struct {
 // daemon's startup would silently remove the other's live socket (the root
 // cause of the TestF3 flake recorded in PROGRESS.md).
 func SocketPath(cairnID string) string {
-	return filepath.Join(os.TempDir(), "cairn-"+cairnID+".sock")
+	return filepath.Join(SocketDir(), cairnID+".sock")
+}
+
+// prepareSocketDir creates the socket dir and refuses to serve into one
+// that is a symlink, owned by another user, or group/other-accessible —
+// MkdirAll follows a pre-planted symlink silently, which would let another
+// local user relocate (and access) the socket.
+func prepareSocketDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("creating socket dir: %w", err)
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("socket dir %s is a symlink — refusing to serve into it", dir)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("socket dir %s is not a directory", dir)
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
+		return fmt.Errorf("socket dir %s is owned by uid %d, not %d — refusing to serve into it", dir, st.Uid, os.Getuid())
+	}
+	if fi.Mode().Perm()&0o077 != 0 {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return fmt.Errorf("socket dir %s is group/other-accessible and chmod failed: %w", dir, err)
+		}
+	}
+	return nil
 }
 
 // socketPathFile records the socket location in device-local state.
@@ -149,12 +202,16 @@ func socketPathFile(deviceDir string) string {
 
 // Serve listens on the unix socket until ctx is done.
 func (d *Daemon) Serve(ctx context.Context) error {
+	if err := prepareSocketDir(SocketDir()); err != nil {
+		return err
+	}
 	sock := SocketPath(d.loaded.Portable.CairnID)
 	os.Remove(sock) // stale socket from a dead daemon; the flock is the true owner
 	l, err := net.Listen("unix", sock)
 	if err != nil {
 		return err
 	}
+	os.Chmod(sock, 0o600) // belt and braces; the 0700 dir is the guarantee
 	if err := os.WriteFile(socketPathFile(d.sockDir), []byte(sock), 0o600); err != nil {
 		l.Close()
 		return err
@@ -178,25 +235,37 @@ func (d *Daemon) Serve(ctx context.Context) error {
 
 func (d *Daemon) handleConn(conn net.Conn) {
 	defer conn.Close()
+	// A panic in one request must never take down the single-writer daemon
+	// for the whole mesh: recover, log the stack, answer with a typed error.
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(d.warn, "PANIC recovered in IPC handler: %v\n%s", r, debug.Stack())
+			_ = writeResponse(conn, Response{Error: "internal error (panic recovered; see daemon log)"})
+		}
+	}()
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
 	r := bufio.NewReaderSize(conn, 64<<10)
 	line, err := readLine(r, config.IPCMaxRequestBytes)
 	if err != nil {
-		writeResponse(conn, Response{Error: "bad request: " + err.Error()})
+		_ = writeResponse(conn, Response{Error: "bad request: " + err.Error()})
 		return
 	}
 	var req Request
 	if err := json.Unmarshal(line, &req); err != nil {
-		writeResponse(conn, Response{Error: "bad request json: " + err.Error()})
+		_ = writeResponse(conn, Response{Error: "bad request json: " + err.Error()})
 		return
 	}
 	// G6: stage-attachment streams the raw attachment bytes on THIS connection,
 	// immediately after the JSON header line — never inlined in the request.
+	var werr error
 	if req.Op == "stage-attachment" {
-		writeResponse(conn, d.stageAttachment(req, r))
-		return
+		werr = writeResponse(conn, d.stageAttachment(req, r))
+	} else {
+		werr = writeResponse(conn, d.dispatch(req))
 	}
-	writeResponse(conn, d.dispatch(req))
+	if werr != nil {
+		fmt.Fprintf(d.warn, "IPC response write failed (client gone?): op=%s: %v\n", req.Op, werr)
+	}
 }
 
 // stageAttachment reads exactly AttachMeta.ByteLen raw bytes off the connection
@@ -263,15 +332,27 @@ func readLine(r *bufio.Reader, max int) ([]byte, error) {
 	}
 }
 
-func writeResponse(w io.Writer, resp Response) {
+// writeResponse is best-effort: the client may already have hung up, so the
+// write error is returned for optional logging, never acted on — the
+// request's own durability is settled before any response is written.
+func writeResponse(w io.Writer, resp Response) error {
 	blob, err := json.Marshal(resp)
 	if err != nil {
 		blob = []byte(`{"ok":false,"error":"response marshal failure"}`)
 	}
-	w.Write(append(blob, '\n'))
+	_, werr := w.Write(append(blob, '\n'))
+	return werr
 }
 
+// DispatchHookForTest, when non-nil, runs before every dispatch. Tests use
+// it to inject a panic and exercise handleConn's recover path. Never set in
+// production.
+var DispatchHookForTest func(req Request)
+
 func (d *Daemon) dispatch(req Request) Response {
+	if DispatchHookForTest != nil {
+		DispatchHookForTest(req)
+	}
 	fail := func(err error) Response { return Response{Error: err.Error()} }
 
 	// --- N2 capability gate (rulings §7.2, RULINGS.md R21/R23) ------------
@@ -636,6 +717,23 @@ func (d *Daemon) dispatch(req Request) Response {
 			"status": fmt.Sprintf("sync started in background across %d peer(s) — watch `cairn sync status` or the daemon log for convergence", len(peers)),
 			"peers":  len(peers)}}
 
+	case "peer-add":
+		peers, err := d.PeerAdd(req.Peer)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Peers: peers}
+
+	case "peer-remove":
+		peers, err := d.PeerRemove(req.Peer)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Peers: peers}
+
+	case "peer-list":
+		return Response{OK: true, Peers: d.PeerList()}
+
 	case "sync-status":
 		fr, err := d.Frontiers()
 		if err != nil {
@@ -663,6 +761,30 @@ func (d *Daemon) dispatch(req Request) Response {
 			return fail(err)
 		}
 		return Response{OK: true, Message: info}
+
+	case "thread":
+		out, err := d.Thread(req.ThreadID, req.BudgetChars, principal)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Thread: out}
+
+	case "topic-list":
+		topics, err := d.proj.TopicList()
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Topics: topics}
+
+	case "interaction-list":
+		if d.tel == nil {
+			return fail(errors.New("telemetry unavailable"))
+		}
+		rows, err := d.tel.Interactions(req.K)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Interactions: rows}
 
 	case "fetch":
 		res, err := d.Fetch(req.MessageID, req.AgentView)
@@ -706,6 +828,7 @@ func (d *Daemon) dispatch(req Request) Response {
 			"next_seq":    next,
 			"degradation": d.DegradationLevel().String(), // P2-1 (spec §8.2)
 			"version":     d.version,                     // FIX-H7: RUNNING daemon's build version
+			"pid":         os.Getpid(),                   // DEPLOY-E4: lets `cairn daemon --stop` signal a hand-run daemon
 		}
 		// P2H3: one-shot operator health view — membership, peers, sync listener,
 		// and projection health (parked events) so `cairn status` answers "is this
@@ -714,6 +837,23 @@ func (d *Daemon) dispatch(req Request) Response {
 		st["members"] = d.memberCount()
 		st["peers"] = len(peers)
 		st["sync_listener"] = d.SyncListenState()
+		// DEPLOY-E2: report the LIVE ranking profile and embedder so an
+		// operator reading rank-stats knows which arithmetic they see —
+		// the P2 opt-in used to be invisible (env-only, unreported).
+		d.mu.Lock()
+		rp := "p0"
+		if d.rankP2 {
+			rp = "p2"
+		}
+		hd := d.heavyDerive
+		d.mu.Unlock()
+		st["rank_profile"] = rp
+		st["heavy_derivatives"] = hd
+		if e := d.emb(); e != nil {
+			st["embedder"] = e.ModelID()
+		} else {
+			st["embedder"] = "none (lexical_only)"
+		}
 		if pending, err := d.proj.CountPendingEmbeddings(); err == nil {
 			st["pending_embeddings"] = pending
 		}

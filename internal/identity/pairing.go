@@ -25,8 +25,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -413,4 +415,26 @@ func PairJoinInstall(opts PairJoinOptions) (ed25519.PrivateKey, error) {
 	}
 	fmt.Fprintf(out, "installed identity for cairn %s as device %s (%s) from the invitation\n", inv.CairnID, inv.Cert.DeviceID, inv.Cert.DisplayName)
 	return priv, nil
+}
+
+// AddSyncPeer persists addr into the device-local sync_peers list for the
+// cairn at portableDir (SYNC-C3: `pair join` proved the counterparty
+// answers there — registering it makes pairing sufficient for replication,
+// with no hand-edited TOML). Idempotent; validates host:port.
+func AddSyncPeer(portableDir, addr string) error {
+	if _, _, err := net.SplitHostPort(addr); err != nil {
+		return fmt.Errorf("invalid peer address %q (want host:port): %w", addr, err)
+	}
+	loaded, err := Load(portableDir)
+	if err != nil {
+		return err
+	}
+	for _, p := range loaded.Device.SyncPeers {
+		if p == addr {
+			return nil
+		}
+	}
+	loaded.Device.SyncPeers = append(loaded.Device.SyncPeers, addr)
+	sort.Strings(loaded.Device.SyncPeers)
+	return loaded.Device.SaveDevice(loaded.DeviceDir)
 }

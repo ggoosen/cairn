@@ -45,6 +45,9 @@ var validCaps = map[string]bool{capRead: true, capSend: true, capSignal: true, c
 var opCapability = map[string]string{
 	"search": capRead, "digest": capRead, "peek": capRead, "fetch": capRead,
 	"why-ranked": capRead, "status": capRead, "source-ref": capRead,
+	"thread": capRead, "topic-list": capRead, // RETR-D4/D5
+	// P4-G6: the query log names principals and queries — operator-tier
+	"interaction-list": capAdmin,
 	"saved-list": capRead, "saved-run": capRead, // P2-4
 	"saved-add": capAdmin, "saved-remove": capAdmin,
 	"rank-stats": capAdmin, // P2-3b calibration (analysis, operator-tier)
@@ -63,6 +66,9 @@ var opCapability = map[string]string{
 	"reserve-status": capAdmin, "emergency-publish": capAdmin,
 	"housekeep": capAdmin, "reindex-semantic": capAdmin,
 	"sync-now": capAdmin, "sync-status": capRead,
+	// SYNC-C1: peer topology is device policy — mutation is operator-tier;
+	// listing is read-tier (sync-status already exposes the peer list there)
+	"peer-add": capAdmin, "peer-remove": capAdmin, "peer-list": capRead,
 	"session-create": capAdmin, "session-revoke": capAdmin, "session-list": capAdmin,
 
 	// durable subscriptions are structural (N3): agent-standard cannot
@@ -274,12 +280,12 @@ func (s *sessions) resolve(token string, now time.Time) (*Session, *Profile, err
 	exp, err := time.Parse(config.WallTimeFormat, sess.ExpiresAt)
 	if err != nil || !now.Before(exp) {
 		delete(s.byToken, token)
-		s.persist()
+		_ = s.persist()
 		return nil, nil, fmt.Errorf("session expired")
 	}
 	if now.Sub(sess.lastUsed) > config.SessionIdleTimeout {
 		delete(s.byToken, token)
-		s.persist()
+		_ = s.persist()
 		return nil, nil, fmt.Errorf("session idle-revoked (idle > %v)", config.SessionIdleTimeout)
 	}
 	prof, ok := s.profiles[sess.Profile]

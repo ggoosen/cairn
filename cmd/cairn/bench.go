@@ -39,7 +39,7 @@ func newBenchCmd(dirFlag *string) *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("real embedder unavailable: %w", err)
 				}
-				defer p.Close()
+				defer func() { _ = p.Close() }()
 				embedder = p
 			default:
 				return fmt.Errorf("--embedder must be dev or real, not %q", embedderKind)

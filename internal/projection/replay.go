@@ -151,7 +151,10 @@ func ReindexLexicalCtx(ctx context.Context, fsys fsx.FS, portableDir, dbPath str
 			report.ParkedRetryable++
 		}
 	}
-	p.db.QueryRow(`SELECT count(*) FROM events`).Scan(&report.Events)
+	if err := p.db.QueryRow(`SELECT count(*) FROM events`).Scan(&report.Events); err != nil {
+		p.Close()
+		return nil, fmt.Errorf("counting replayed events: %w", err)
+	}
 	// fold WAL into the main file so the rename moves ONE complete db
 	if _, err := p.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
 		p.Close()

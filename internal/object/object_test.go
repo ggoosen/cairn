@@ -284,3 +284,38 @@ func TestHousekeepingAndContentExpired(t *testing.T) {
 		t.Fatalf("second housekeep: %v %v", deleted, err)
 	}
 }
+
+func TestValidHash(t *testing.T) {
+	valid := Hash([]byte("x"))
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{valid, true},
+		{"", false},
+		{"z", false},
+		{"zz", false},
+		{"../../../etc/passwd", false},
+		{strings.Repeat("a", 63), false},
+		{strings.Repeat("a", 64), true},
+		{strings.Repeat("a", 65), false},
+		{strings.Repeat("A", 64), false}, // uppercase is not a store address
+		{strings.Repeat("g", 64), false}, // non-hex
+		{strings.Repeat("0", 64), true},
+	}
+	for _, c := range cases {
+		if got := ValidHash(c.in); got != c.want {
+			t.Errorf("ValidHash(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestGetExistsRejectMalformedHash(t *testing.T) {
+	_, s := newStore(t)
+	if _, err := s.Get("zz"); !errors.Is(err, ErrBadHash) {
+		t.Fatalf("Get(zz) = %v, want ErrBadHash", err)
+	}
+	if s.Exists("../../x") {
+		t.Fatal("Exists accepted a malformed hash")
+	}
+}

@@ -58,6 +58,15 @@ func newStatusCmd(dirFlag *string) *cobra.Command {
 			fmt.Fprintf(out, "  members:       %v\n", s["members"])
 			fmt.Fprintf(out, "  sync peers:    %v\n", s["peers"])
 			fmt.Fprintf(out, "  sync listener: %v\n", s["sync_listener"])
+			fmt.Fprintf(out, "  rank profile:  %v\n", s["rank_profile"])
+			fmt.Fprintf(out, "  embedder:      %v\n", s["embedder"])
+			// SYNC-C4: a multi-device mesh with zero configured peers never
+			// replicates — say so instead of letting the operator find out.
+			members, _ := s["members"].(float64)
+			peers, _ := s["peers"].(float64)
+			if members > 1 && peers == 0 {
+				fmt.Fprintf(out, "  WARNING: %d devices but 0 sync peers configured — nothing will replicate; add one with `cairn peer add <host:port>`\n", int(members))
+			}
 			return nil
 		},
 	}

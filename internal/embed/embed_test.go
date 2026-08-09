@@ -59,7 +59,7 @@ func TestCosineMismatchedDims(t *testing.T) {
 // it loudly at startup). With no venv provisioned it returns (nil, remedy).
 func TestG5DetectVerboseAlwaysExplains(t *testing.T) {
 	t.Setenv("CAIRN_EMBED_PYTHON", "") // force "no venv" regardless of host
-	e, reason := DetectVerbose(t.TempDir())
+	e, reason := DetectVerbose(t.TempDir(), "")
 	if e != nil {
 		t.Skip("host has a discoverable embed venv; skipping the no-venv assertion")
 	}

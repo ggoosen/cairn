@@ -233,6 +233,19 @@ const (
 	BruteForceMaxCandidates = 5000
 )
 
+// Embed-worker watchdogs. The subprocess protocol has no deadline of its
+// own, so a wedged worker would block its caller (and, holding the worker
+// mutex, every later embed) forever. On timeout the worker is killed and
+// the caller degrades to lexical_only.
+const (
+	// EmbedHandshakeTimeout covers the first request only: it absorbs the
+	// model download/deserialization that sentence-transformers does lazily.
+	EmbedHandshakeTimeout = 120 * time.Second
+	// EmbedRequestTimeout bounds every post-handshake batch (the model is
+	// resident by then; seconds, not minutes).
+	EmbedRequestTimeout = 30 * time.Second
+)
+
 // ---------------------------------------------------------------------------
 // Projection / FTS (rulings §6)
 // ---------------------------------------------------------------------------
@@ -297,6 +310,15 @@ const (
 	// 30 aligns with the 30-handoff evaluation cadence and gives the 95th
 	// percentile at least one observation above it.
 	GateLatencyMinSamples = 30
+
+	// Product-gate thresholds (spec §11, DEPLOY-E3). Success@5: the found
+	// message ranked ≤5 in its interaction; workaround rate: fraction of
+	// outcomes resolved by going around cairn. Below GateOutcomeMinSamples
+	// recorded outcomes the verdicts are INCONCLUSIVE, never FAIL — same
+	// small-sample honesty as the latency gate (FIX-J2).
+	GateSuccessAt5MinPct     = 70
+	GateWorkaroundRateMaxPct = 25
+	GateOutcomeMinSamples    = 30
 )
 
 // ---------------------------------------------------------------------------
@@ -306,6 +328,12 @@ const (
 const (
 	// DefaultDirName under $HOME when --dir / $CAIRN_DIR are unset.
 	DefaultDirName = "cairn"
+
+	// ObjectHashHexLen is the exact length of a BLAKE3-256 hex object
+	// address. Every externally-supplied hash is validated against this
+	// before it is turned into an objects/<first2>/<rest> path — the
+	// path construction slices hash[:2] and is unsafe on arbitrary input.
+	ObjectHashHexLen = 64
 
 	// Portable-dir entries (build/ARCHITECTURE.md on-disk layout).
 	PortableConfigName = "cairn.toml"
@@ -364,6 +392,12 @@ const (
 	// per call via tool arguments; these are the no-argument defaults.
 	MCPDigestBudgetDefault = 1500
 	MCPSearchBudgetDefault = 2000
+
+	// SearchSnippetChars (RETR-D1): Unicode scalars of body excerpted into
+	// each search result so agents can triage without a fetch per hit. The
+	// snippet is quoted (QuotePrefix) and counts against budget_chars like
+	// everything else in the payload.
+	SearchSnippetChars = 200
 
 	// MCPMaxLineBytes bounds one stdio JSON-RPC message (N1). Matches the
 	// IPC bound: the MCP layer never carries more than one IPC payload.

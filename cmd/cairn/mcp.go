@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -26,11 +27,16 @@ func newMCPCmd(dirFlag *string) *cobra.Command {
 	var view, actor, profile string
 	cmd := &cobra.Command{
 		Use:   "mcp",
-		Short: "Serve the eleven §5.5 tools to an MCP client over stdio (requires a running daemon; never tier-1)",
+		Short: "Serve the twelve tools (§5.5 nine + thread + two local-subscription) to an MCP client over stdio (requires a running daemon; never tier-1)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if profile == "full" {
 				return errors.New("MCP is never tier-1 (RULINGS.md R21): --profile full is refused")
+			}
+			// view becomes a filesystem path under views/ on every digest/fetch;
+			// refuse traversal-shaped names here, before the daemon has to.
+			if view == "" || strings.ContainsAny(view, "/\\") || strings.Contains(view, "..") {
+				return fmt.Errorf("invalid agent view name %q (plain names only)", view)
 			}
 			dir, err := config.PortableDir(*dirFlag)
 			if err != nil {
@@ -58,7 +64,9 @@ func newMCPCmd(dirFlag *string) *cobra.Command {
 					return err
 				}
 				token = resp.Status["session"].(string)
-				defer daemon.Call(clientDir, daemon.Request{Op: "session-revoke", TargetSession: token})
+				defer func() {
+					_, _ = daemon.Call(clientDir, daemon.Request{Op: "session-revoke", TargetSession: token})
+				}()
 			}
 
 			caller := func(req daemon.Request) (*daemon.Response, error) {

@@ -86,7 +86,7 @@ func groupGuard(cmd *cobra.Command) {
 		if len(args) > 0 {
 			return fmt.Errorf("unknown %s subcommand %q — see `cairn %s --help`", c.Name(), args[0], c.Name())
 		}
-		c.Help()
+		_ = c.Help()
 		return fmt.Errorf("%s requires a subcommand", c.Name())
 	}
 }
@@ -102,7 +102,7 @@ func newUUID() string {
 }
 
 func newDaemonCmd(dirFlag *string) *cobra.Command {
-	var install, uninstall bool
+	var install, uninstall, stop, restart bool
 	cmd := &cobra.Command{
 		Use:   "daemon",
 		Short: "Run the resident single-writer daemon (log, projection, outbox, housekeeping, IPC)",
@@ -113,14 +113,31 @@ func newDaemonCmd(dirFlag *string) *cobra.Command {
 				return err
 			}
 			// FIX-G4: manage the daemon as a user service instead of running it.
-			if install && uninstall {
-				return fmt.Errorf("--install and --uninstall are mutually exclusive")
+			exclusive := 0
+			for _, f := range []bool{install, uninstall, stop, restart} {
+				if f {
+					exclusive++
+				}
+			}
+			if exclusive > 1 {
+				return fmt.Errorf("--install, --uninstall, --stop and --restart are mutually exclusive")
 			}
 			if uninstall {
 				return uninstallService(cmd.OutOrStdout())
 			}
 			if install {
 				return installService(dir, cmd.OutOrStdout())
+			}
+			// DEPLOY-E4: the lexical-reindex flow says "stop the daemon" —
+			// now there's a verb for it instead of service-manager trivia.
+			if stop {
+				return stopDaemon(*dirFlag, cmd.OutOrStdout())
+			}
+			if restart {
+				if err := stopDaemon(*dirFlag, cmd.OutOrStdout()); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "note: %v\n", err)
+				}
+				return startService(cmd.OutOrStdout())
 			}
 			// FIX-H7: if a daemon is ALREADY running a different binary, warn
 			// loudly before we try to start (and fail on its lock) — the stale
@@ -162,6 +179,8 @@ func newDaemonCmd(dirFlag *string) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&install, "install", false, "install + start the daemon as a user service (launchd on macOS, systemd --user on Linux)")
 	cmd.Flags().BoolVar(&uninstall, "uninstall", false, "stop + remove the installed daemon user service")
+	cmd.Flags().BoolVar(&stop, "stop", false, "stop the running daemon (via the service manager if installed, else SIGTERM)")
+	cmd.Flags().BoolVar(&restart, "restart", false, "stop, then start the installed user service")
 	return cmd
 }
 
@@ -284,6 +303,85 @@ func newTopicCmd(dirFlag *string) *cobra.Command {
 			return nil
 		},
 	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "List every topic with its live message count (RETR-D5: browse the taxonomy)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resp, err := call(dirFlag, daemon.Request{Op: "topic-list"})
+			if err != nil {
+				return err
+			}
+			if len(resp.Topics) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "no topics yet")
+				return nil
+			}
+			for _, t := range resp.Topics {
+				fmt.Fprintf(cmd.OutOrStdout(), "%-40s %5d message(s)  %s\n", t.Name, t.Messages, t.TopicID)
+			}
+			return nil
+		},
+	})
+	return cmd
+}
+
+func newThreadCmd(dirFlag *string) *cobra.Command {
+	var budget int
+	cmd := &cobra.Command{
+		Use:   "thread <thread-id>",
+		Short: "Read a whole conversation (every live message of a thread, budget-capped)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := call(dirFlag, daemon.Request{Op: "thread", ThreadID: args[0], BudgetChars: budget})
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(cmd.OutOrStdout(), resp.Thread.Payload)
+			if resp.Thread.Omitted > 0 {
+				fmt.Fprintf(cmd.ErrOrStderr(), "omitted: %d (raise --budget to see more)\n", resp.Thread.Omitted)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&budget, "budget", 4000, "budget_chars over the COMPLETE payload")
+	return cmd
+}
+
+func newUnlinkCmd(dirFlag *string) *cobra.Command {
+	var actor string
+	cmd := &cobra.Command{
+		Use:   "unlink <link-id>",
+		Short: "Remove a message↔topic link (link ids: `cairn peek <message-id>` / projection)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := call(dirFlag, daemon.Request{Op: "unlink", LinkID: args[0], Actor: actor})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "unlinked:", resp.EventID)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&actor, "actor", "operator", "acting principal")
+	return cmd
+}
+
+func newUnpinCmd(dirFlag *string) *cobra.Command {
+	var actor string
+	cmd := &cobra.Command{
+		Use:   "unpin <pin-id>",
+		Short: "Release a pin (the object stays while ANY active pin remains)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := call(dirFlag, daemon.Request{Op: "unpin", PinID: args[0], Actor: actor})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "unpinned:", resp.EventID)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&actor, "actor", "operator", "acting principal")
 	return cmd
 }
 
@@ -359,13 +457,18 @@ func newSignalCmd(dirFlag *string) *cobra.Command {
 func newSearchCmd(dirFlag *string) *cobra.Command {
 	var k, budget int
 	var includeRetracted bool
+	var topics []string
+	var sender, thread string
 	cmd := &cobra.Command{
 		Use:   "search <query>",
 		Short: "Hybrid search (FTS + vector RRF fusion, P0 search profile, budget-capped)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resp, err := call(dirFlag, daemon.Request{
-				Op: "search", Query: args[0], K: k, BudgetChars: budget, IncludeRetracted: includeRetracted,
+				Op: "search", Search2: &daemon.SearchOptions{
+					Query: args[0], K: k, BudgetChars: budget, IncludeRetracted: includeRetracted,
+					Topics: topics, Sender: sender, ThreadID: thread,
+				},
 			})
 			if err != nil {
 				return err
@@ -376,6 +479,9 @@ func newSearchCmd(dirFlag *string) *cobra.Command {
 	cmd.Flags().IntVar(&k, "k", 10, "max results")
 	cmd.Flags().IntVar(&budget, "budget", 0, "budget_chars over the COMPLETE payload (0 = unbudgeted)")
 	cmd.Flags().BoolVar(&includeRetracted, "include-retracted", false, "include retracted messages (capability-gated in P1)")
+	cmd.Flags().StringSliceVar(&topics, "topic", nil, "scope: only messages in these topics (existing names; repeatable)")
+	cmd.Flags().StringVar(&sender, "sender", "", "scope: only messages from this principal")
+	cmd.Flags().StringVar(&thread, "thread", "", "scope: only messages in this thread")
 	return cmd
 }
 
@@ -651,5 +757,35 @@ func newSetupAgentCmd(dirFlag *string) *cobra.Command {
 	}
 	cmd.Flags().StringSliceVar(&topics, "topic", nil, "hard topic filter(s) for this view's digest")
 	cmd.Flags().StringVar(&interest, "interest", "", "natural-language interest query for digest relevance")
+	return cmd
+}
+
+func newInteractionsCmd(dirFlag *string) *cobra.Command {
+	var limit int
+	cmd := &cobra.Command{
+		Use:   "interactions",
+		Short: "Show the recent retrieval log: query, results, mode, outcome (operator-tier)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resp, err := call(dirFlag, daemon.Request{Op: "interaction-list", K: limit})
+			if err != nil {
+				return err
+			}
+			if len(resp.Interactions) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "no interactions recorded yet")
+				return nil
+			}
+			for _, r := range resp.Interactions {
+				outcome := r.Outcome
+				if outcome == "" {
+					outcome = "(no outcome)"
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "%s  %-7s %3d hit(s)  %-13s %-16s %q  %s\n",
+					r.CreatedAt, r.Kind, r.ResultCount, outcome, r.Principal, r.Query, r.InteractionID)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&limit, "limit", 50, "max interactions to show (newest first)")
 	return cmd
 }

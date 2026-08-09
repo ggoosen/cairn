@@ -3,7 +3,7 @@
 # these targets or pass -tags sqlite_fts5 manually.
 GOTAGS := -tags sqlite_fts5
 
-.PHONY: build test test-short vet verify all install deploy
+.PHONY: build test test-short test-race vet verify all install deploy fuzz
 
 all: vet test build
 
@@ -61,6 +61,18 @@ test:
 
 test-short:
 	go test $(GOTAGS) -short ./...
+
+# The embedder, enricher goroutine, IPC connections and sync sweeps share a
+# daemon: the race detector is part of the green bar, not an extra.
+test-race:
+	go test $(GOTAGS) -race ./...
+
+# Short smoke of each fuzz target (CI runs this; leave -fuzztime higher for
+# a real session: FUZZTIME=10m make fuzz).
+FUZZTIME ?= 30s
+fuzz:
+	go test $(GOTAGS) -run '^$$' -fuzz FuzzCanonicalRoundTrip -fuzztime $(FUZZTIME) ./internal/event/
+	go test $(GOTAGS) -run '^$$' -fuzz FuzzDecodeFrame -fuzztime $(FUZZTIME) ./internal/log/
 
 vet:
 	go vet $(GOTAGS) ./...

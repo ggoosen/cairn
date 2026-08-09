@@ -88,7 +88,7 @@ type App struct {
 	// cliAdd / cliRemove build the CLI argument vector (after cliName) for the
 	// add/remove of the cairn server. They differ per client (e.g. Claude takes
 	// --scope user; Codex is global with no scope).
-	cliAdd    func(self string) []string
+	cliAdd    func(self, view string) []string
 	cliRemove func() []string
 }
 
@@ -143,8 +143,8 @@ func Registry() []App {
 			configPath: func(e Env) (string, error) { return claudeCodePath(e), nil },
 			codec:      jsonCodec(),
 			cliName:    "claude",
-			cliAdd: func(self string) []string {
-				return []string{"mcp", "add", "cairn", "--scope", "user", "--", self, "mcp"}
+			cliAdd: func(self, view string) []string {
+				return []string{"mcp", "add", "cairn", "--scope", "user", "--", self, "mcp", "--view", view, "--actor", view}
 			},
 			cliRemove: func() []string {
 				return []string{"mcp", "remove", "cairn", "--scope", "user"}
@@ -171,9 +171,9 @@ func Registry() []App {
 			configPath: func(e Env) (string, error) { return codexPath(e), nil },
 			codec:      tomlCodec(),
 			cliName:    "codex",
-			cliAdd: func(self string) []string {
-				// codex mcp add cairn -- <self> mcp   (global; no scope flag)
-				return []string{"mcp", "add", "cairn", "--", self, "mcp"}
+			cliAdd: func(self, view string) []string {
+				// codex mcp add cairn -- <self> mcp ...   (global; no scope flag)
+				return []string{"mcp", "add", "cairn", "--", self, "mcp", "--view", view, "--actor", view}
 			},
 			cliRemove: func() []string {
 				return []string{"mcp", "remove", "cairn"}
@@ -259,11 +259,15 @@ func marshalTOML(cfg map[string]any) ([]byte, error) {
 
 // ---- pure config-merge core (regression-tested in mcpinstall_test.go) ----
 
-// DesiredEntry is the cairn server entry we install: the current binary + ["mcp"].
-// The args slice is []any{"mcp"} so it compares equal (reflect.DeepEqual) to the
-// same entry after a JSON *or* TOML round-trip (both decode arrays to []any).
-func DesiredEntry(self string) map[string]any {
-	return map[string]any{"command": self, "args": []any{"mcp"}}
+// DesiredEntry is the cairn server entry we install: the current binary +
+// ["mcp", "--view", <view>, "--actor", <view>]. DEPLOY-E1: every client
+// used to share the single default view "mcp", collapsing per-view
+// interest, onboarding records and attributable telemetry into one bucket
+// (DOGFOOD's "one view per client" was only true for hand-written
+// configs). The args are []any so the entry compares equal
+// (reflect.DeepEqual) after a JSON *or* TOML round-trip.
+func DesiredEntry(self, view string) map[string]any {
+	return map[string]any{"command": self, "args": []any{"mcp", "--view", view, "--actor", view}}
 }
 
 // ParseConfig parses a JSON client config. Retained as the JSON entry point used
@@ -295,13 +299,13 @@ func CairnCommand(cfg map[string]any) (cmd string, present bool) {
 // preserving every other server, table, and setting. It reports whether
 // anything changed and the previous cairn command (empty if none), so callers
 // can detect stale paths.
-func mergeCairn(cfg map[string]any, self, serversKey string) (changed bool, prevCmd string) {
+func mergeCairn(cfg map[string]any, self, view, serversKey string) (changed bool, prevCmd string) {
 	servers, _ := cfg[serversKey].(map[string]any)
 	if servers == nil {
 		servers = map[string]any{}
 	}
 	prevCmd, _ = cairnCommand(cfg, serversKey)
-	desired := DesiredEntry(self)
+	desired := DesiredEntry(self, view)
 	if reflect.DeepEqual(servers["cairn"], desired) {
 		return false, prevCmd
 	}
@@ -312,8 +316,8 @@ func mergeCairn(cfg map[string]any, self, serversKey string) (changed bool, prev
 
 // MergeCairn merges into a JSON config ("mcpServers"). Kept for the CLI-surface
 // tests; format-aware callers use mergeCairn.
-func MergeCairn(cfg map[string]any, self string) (changed bool, prevCmd string) {
-	return mergeCairn(cfg, self, "mcpServers")
+func MergeCairn(cfg map[string]any, self, view string) (changed bool, prevCmd string) {
+	return mergeCairn(cfg, self, view, "mcpServers")
 }
 
 // removeCairn removes ONLY the cairn server entry under serversKey, leaving
@@ -463,7 +467,12 @@ func (a App) Inspect(e Env) Status {
 
 // Install adds/updates only the cairn entry for this app. It is idempotent, backs
 // up before any write, and refuses (without clobbering) a malformed config.
-func (a App) Install(e Env) (Result, error) {
+// view "" defaults to the app's name (DEPLOY-E1: one view per client keeps
+// digests, interest and telemetry attributable).
+func (a App) Install(e Env, view string) (Result, error) {
+	if view == "" {
+		view = a.Name
+	}
 	r := Result{App: a.Name, NextStep: a.nextStep()}
 	path, err := a.configPath(e)
 	if err != nil {
@@ -483,7 +492,7 @@ func (a App) Install(e Env) (Result, error) {
 		return r, fmt.Errorf("existing config is malformed, backed up to %s and skipped: %w", bp, perr)
 	}
 
-	changed, prevCmd := mergeCairn(cfg, e.Self, a.codec.serversKey)
+	changed, prevCmd := mergeCairn(cfg, e.Self, view, a.codec.serversKey)
 	if !changed {
 		r.Message = "already up to date"
 		return r, nil
@@ -506,7 +515,7 @@ func (a App) Install(e Env) (Result, error) {
 		if prevCmd != "" {
 			_ = e.Run(a.cliName, a.cliRemove()...)
 		}
-		if err := e.Run(a.cliName, a.cliAdd(e.Self)...); err != nil {
+		if err := e.Run(a.cliName, a.cliAdd(e.Self, view)...); err != nil {
 			return r, err
 		}
 	} else {

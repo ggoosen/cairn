@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/gowebpki/jcs"
@@ -44,9 +45,17 @@ func CanonicalizeStripped(raw []byte, strip ...string) ([]byte, error) {
 	return Canonicalize(remarshalled)
 }
 
+// maxSafeJSONInt is the largest integer RFC 8785 can serialize exactly:
+// JCS renders numbers as ES6 IEEE-754 doubles, so an integer beyond 2^53-1
+// silently loses precision AND comes out in exponent form ("1e+21") — which
+// this very validator would then reject on re-verification. Found by
+// FuzzCanonicalRoundTrip; the i-JSON exact range is the protocol bound.
+const maxSafeJSONInt = 1<<53 - 1
+
 // ValidateNoFloats walks raw JSON and rejects any number that is not a plain
-// integer literal (fraction or exponent present). This closes the
-// float-normalization signature-fork risk that motivated CBOR (rulings §1).
+// integer literal within the IEEE-754 exact range (fraction, exponent, or
+// magnitude beyond 2^53-1). This closes the float-normalization
+// signature-fork risk that motivated CBOR (rulings §1).
 func ValidateNoFloats(raw []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
@@ -62,6 +71,10 @@ func ValidateNoFloats(raw []byte) error {
 			s := n.String()
 			if strings.ContainsAny(s, ".eE") {
 				return fmt.Errorf("float forbidden in event payloads: %q (integers and strings only)", s)
+			}
+			i, perr := strconv.ParseInt(s, 10, 64)
+			if perr != nil || i > maxSafeJSONInt || i < -maxSafeJSONInt {
+				return fmt.Errorf("integer %q exceeds the RFC 8785 exact range (±2^53-1): canonical serialization would corrupt it", s)
 			}
 		}
 	}

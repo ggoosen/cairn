@@ -40,15 +40,20 @@ func (d *Daemon) Fetch(messageID, agentView string) (*FetchResult, error) {
 	if agentView == "" {
 		agentView = "operator"
 	}
+	base, err := d.viewDir(agentView)
+	if err != nil {
+		return nil, err
+	}
 	info, err := d.proj.MessageInfo(messageID)
 	if err != nil {
 		return nil, err
 	}
 
-	fetchedDir := filepath.Join(d.dir, config.ViewsDirName, agentView, "fetched")
+	fetchedDir := filepath.Join(base, "fetched")
 	if err := d.fs.MkdirAll(fetchedDir, config.DirPerm); err != nil {
 		return nil, err
 	}
+	// Paths use the projection's canonical ID, never the raw request string.
 	res := &FetchResult{
 		MessageID:    info.MessageID,
 		RevisionID:   info.HeadRevisionID,
@@ -56,8 +61,8 @@ func (d *Daemon) Fetch(messageID, agentView string) (*FetchResult, error) {
 		SourceEvent:  info.CreatedEventID,
 		Trust:        "untrusted",
 		Retracted:    info.Retracted,
-		ManifestPath: filepath.Join(fetchedDir, messageID+".manifest.json"),
-		BodyPath:     filepath.Join(fetchedDir, messageID+".body.md"),
+		ManifestPath: filepath.Join(fetchedDir, info.MessageID+".manifest.json"),
+		BodyPath:     filepath.Join(fetchedDir, info.MessageID+".body.md"),
 	}
 
 	refs := []object.Ref{{Hash: info.BodyHash, TextClass: info.TextClass, CreatedAt: parseWall(info.CreatedAt)}}
@@ -190,7 +195,7 @@ func (d *Daemon) Run(ctx context.Context, processOutbox func() error) error {
 			go srv.Serve()
 			go func() {
 				<-ctx.Done()
-				srv.Close()
+				_ = srv.Close()
 			}()
 		}
 	}
@@ -198,7 +203,10 @@ func (d *Daemon) Run(ctx context.Context, processOutbox func() error) error {
 	// N6: anti-entropy sweep (R29) — dial every configured peer on a timer
 	// and on every push-on-append kick, running one bidirectional reconcile
 	// per peer. A peer that is offline is logged and retried next tick.
-	if len(d.loaded.Device.SyncPeers) > 0 && !d.readOnly && d.transport != nil {
+	// SYNC-C1: the loop runs whenever a transport exists (zero peers = cheap
+	// idle ticks) so a peer added live via peer-add replicates WITHOUT a
+	// daemon restart — the sweep re-reads the peer list every pass.
+	if !d.readOnly && d.transport != nil {
 		go d.antiEntropyLoop(ctx)
 	}
 

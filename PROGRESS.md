@@ -90,6 +90,8 @@ Tasks completed (one commit each):
 - **UUID note:** `github.com/google/uuid` v1.6.0 `NewV7()` used per CLAUDE.md.
 
 ### Author rulings needed
+> CLOSED (bookkeeping 2026-08-06): adjudicated by RULINGS.md **R1** —
+> entry preserved as written.
 - **Root key storage (P0):** spec §3.1 places the root key in offline
   operator recovery material, but P0 `device migrate` (M4) must root-sign
   `device.revoke` offline. Conservative interpretation implemented: root key
@@ -487,6 +489,8 @@ Tasks completed:
   field not verifiable against the log (not stored); all others are.
 
 ### Author rulings needed
+> CLOSED (bookkeeping 2026-08-06): adjudicated by RULINGS.md **R2** —
+> entry preserved as written.
 - **Resolve base semantics** (above): confirm resolution-merges-against-
   conflict-time-head; P0 behavior is conservative and never loses either
   branch.
@@ -846,6 +850,16 @@ Treated as load-induced timing; will re-diagnose if it recurs under normal
 single-suite runs.
 
 ## Resume-cold notes
+> STALE MARKER (refreshed 2026-08-06): this block described the end of P0
+> only. Current state — P0–P3 + AFFORDANCE built; P1 N1–N8 complete with
+> N9 code-complete; P2 built (opt-in via the `rank_profile` device-config
+> key since DEPLOY-E2); P3 offline scope built (two-node live checkout
+> hardware-gated); WP-A…WP-F remediation (audit 2026-08-05) landed with CI
+> in .github/workflows. Still owed by the operator: the 30-handoff
+> evaluation (gates are now COMPUTED — see DEPLOY-E3), the overnight 1M
+> scorecard, embed-venv provisioning on each node, and the open author
+> rulings indexed under "Author rulings needed" (FIX-A6 residual, R38,
+> R40/R41 confirmation, ladder rungs 6–7 if WP-G4 lands).
 - **Every milestone in BUILD-PLAN.md (M0–M9) is complete.** What remains is
   operator work and future phases: the 30-handoff evaluation (DOGFOOD.md),
   the overnight 1M scorecard, embed-venv provisioning, the two open author
@@ -3391,3 +3405,214 @@ exists (pins are object-durability), so the authoritative record is the latest
 operator message on the topic; its head revision is the re-apply trigger.
 
 **This completes the CAIRN-AFFORDANCE-PLAN work-order (Phases 0–4).**
+
+---
+
+## WP-A — Safety/correctness remediation (audit 2026-08-05) — DONE
+
+Branch `claude/cairn-agent-topic-scoping-kxr3ow`, commits FIX-A1…FIX-A8. All
+from the three-way audit (status vs plan / code quality / product). Full
+tagged suite + vet green at every commit.
+
+- **FIX-A1** object-hash validation (`object.ValidHash`, `ObjectHashHexLen`)
+  + `recover()` in the IPC handler. Pre-fix: a 1-char hash via `pin` or a
+  pre-staged attachment panicked `store.Path` (`hash[:2]`) and killed the
+  daemon — no recover existed anywhere in the connection path.
+- **FIX-A2** `viewDir` choke point: view-name validation on EVERY
+  path-forming entry (Fetch/map/compaction/readViewConfig were unguarded;
+  Digest already was — audit overstated that one). Fetch paths now use the
+  projection's canonical message ID. `cairn mcp` refuses traversal-shaped
+  `--view`.
+- **FIX-A3** CLI `cairn subscribe` routes through `subscribe-local`; the
+  direct view.json rewrite erased operator topic filters and raced the
+  daemon. Session-view binding deliberately NOT added — the crossed-review
+  verdict above (AFFORDANCE P2 section) rules the view-trust model
+  consistent with R22 and defers binding until per-view auth exists.
+- **FIX-A4** embed.Python: mutex-serialized round-trip (concurrent callers
+  could receive each other's vectors), watchdog timeouts
+  (`EmbedHandshakeTimeout`/`EmbedRequestTimeout`), stdin-close + kill +
+  Wait on Close (zombie reap). Daemon embedder pointer reads snapshot
+  under a dedicated RWMutex. First tests for python.go (fake worker).
+- **FIX-A5** log append rollback: truncate to last durable frame end on
+  write/sync/dir-sync failure, or poison the handle (typed refusal) if the
+  rollback fails. Pre-fix a transient EIO left torn bytes mid-segment on a
+  live handle → next append landed after them → interior corruption →
+  unopenable log. fsx.MemFS O_APPEND corrected to POSIX every-write-at-EOF
+  semantics (offset emulation modeled an impossible state).
+- **FIX-A6** publish sequencing: topic.create* → message.publish →
+  topic.link.add*. **Author ruling needed (recorded below).**
+- **FIX-A7** socket in per-user 0700 dir (XDG_RUNTIME_DIR/cairn or
+  TempDir/cairn-<uid>), symlink/ownership/mode verification, chmod 0600.
+  Cross-user Linux exposure closed; R22 same-user honest-tiering
+  unchanged. SO_PEERCRED enforcement considered and NOT added (would
+  exceed R22's model); revisit only with per-view auth.
+- **FIX-A8** MCP schema truth (text_class enum had nonexistent "working",
+  missing eager-searchable; priority max 10 vs daemon's 3), score via
+  rank.Dec, ignored-error fixes, ForTest-hook lock audit.
+
+### Author rulings needed
+
+- **FIX-A6 / FIX-F1 residual:** when a topic.link.add append fails AFTER
+  message.publish is durable, the daemon returns an error for a request
+  whose message is already searchable; a CLI/MCP retry (no correlation_id)
+  re-publishes the body under a new message ID. FIX-F1 ruling 1 ("ALL
+  durable before the single ack") does not say what to report here.
+  Implemented (conservative): return the error — never claim success for
+  an incomplete request. Alternative: success-with-warning naming the
+  unlinked topics. Marker: `// RULING-NEEDED:` at the publish sequence in
+  internal/daemon/daemon.go.
+
+## WP-B — CI + test infrastructure (audit 2026-08-05) — DONE
+
+Commits CI-B1…CI-B4. GitHub Actions now runs `make verify` (both halves of
+the FIX-F4 guard) on ubuntu+macos, the race detector, a 30s fuzz smoke, and
+golangci-lint on every push. New Makefile targets `test-race` and `fuzz`.
+Lint triage landed at ZERO issues with errcheck strict on production code.
+
+**Fuzzing found a real protocol bug on its first run:** ValidateNoFloats
+accepted integers beyond 2^53-1, which JCS (RFC 8785 = ES6 doubles)
+serializes precision-corrupted in exponent form ("1e+21") — canonical bytes
+the validator itself then rejects. Integers are now bounded to the i-JSON
+exact range at validation (internal/event/canonical.go); the corpus seed is
+pinned in testdata. FuzzDecodeFrame covers the recovery-path frame decoder
+(never panics; decode∘encode stable). New BenchmarkAppend/BenchmarkRecovery;
+TestConcurrentSearchEnrichRace exercises retrieval vs enricher under -race.
+
+## WP-C — Sync/multi-device usability (audit 2026-08-05) — DONE
+
+Commits SYNC-C1…C4. The biggest day-one gap: `sync_peers` was read-only
+from the device TOML — NO verb wrote it, `pair join` didn't either, so two
+freshly-paired machines never replicated until the operator hand-edited
+config-device.toml and restarted the daemon (docs/cairn-p3-onboarding-
+transport.md's "start syncing" claim was false).
+
+- `peer-add`/`peer-remove`/`peer-list` IPC ops (add/remove capAdmin, list
+  capRead) + `cairn peer add|rm|list` CLI. Mutations apply LIVE (the
+  anti-entropy sweep re-reads the peer list; PeerAdd kicks it) AND persist
+  via SaveDevice.
+- The anti-entropy loop now starts whenever a transport exists (zero peers
+  = cheap idle ticks), so a live-added peer replicates with no restart.
+- `pair join` persists its counterparty address as a sync peer
+  (identity.AddSyncPeer) — reconciles are bidirectional per connection, so
+  that one entry converges both nodes; the doc claim is now true.
+- `cairn status` warns when members>1 with 0 peers; `cairn net` says
+  "nothing will replicate" at 0 peers, both pointing at `cairn peer add`.
+- Tests: add/rm/list + persistence across restart, invalid addresses,
+  capability gating over the socket, AddSyncPeer unit, and a live two-node
+  drill proving a peer added at runtime converges without restart.
+
+## WP-D — Retrieval usability (audit 2026-08-05) — DONE
+
+Commit RETR-D1..D5. Search results now carry sender/created_at/topics and a
+200-char body snippet (quoted, budget-counted); digest entries carry an
+attribution line; search takes hard scope pre-filters (topic names / sender
+/ thread — closes the spec §7.1 `search(query, scope, k)` gap; nonexistent
+scope topics refuse pre-ack); `cairn thread` / MCP `cairn_thread` expand a
+whole conversation (the root is matched by message_id — roots carry no
+thread_id); `cairn topic list` browses the taxonomy with live counts; and
+`cairn unlink`/`cairn unpin` surface the daemon ops that existed with no
+CLI. MCP tool count is now 12 (§5.5 nine + thread + R55 two).
+
+Scope note recorded: the FTS candidate pool is cut at FusionCandidatesFTS
+BEFORE the scope filter, so a very narrow scope in a very large corpus can
+under-fill lexically; the vector path filters BEFORE its top-K and
+compensates. Revisit if scoped-search recall complaints appear in dogfood.
+
+## WP-E — Deployment/config correctness (audit 2026-08-05) — DONE
+
+Commit DEPLOY-E1..E5.
+
+- **E1** every auto-wired MCP client now gets ITS OWN view/actor (named
+  after the app): `mcp-install` used to emit bare `["mcp"]`, collapsing
+  claude-desktop/claude-code/codex into one shared "mcp" view and
+  defeating per-view interest, onboarding records and attributable
+  telemetry. `--view` overrides for a single targeted app.
+- **E2** `rank_profile` / `embed_python` / `heavy_derivatives` are
+  device-TOML keys (env vars remain overrides). The env-only knobs never
+  reached a launchd/systemd daemon (the unit passes no environment and is
+  overwritten on reinstall) — the entire P2 ranking phase was unreachable
+  on the recommended deployment, and supervised daemons silently ran
+  lexical-only. `cairn status` now reports the LIVE rank profile and
+  embedder. Nil-guarded for portable-only (read-only) restores.
+- **E3** Success@5 and workaround-rate are COMPUTED (found outcomes joined
+  to stored final_rank), PASS/FAIL vs the spec §11 thresholds
+  (GateSuccessAt5MinPct/GateWorkaroundRateMaxPct) at ≥GateOutcomeMinSamples
+  outcomes, INCONCLUSIVE below (FIX-J2 small-sample honesty). The
+  release-blocking gate no longer requires a hand-kept diary; found
+  outcomes without a message id count conservatively as not-at-5.
+- **E4** `cairn daemon --stop` (service manager when installed — KeepAlive
+  would resurrect a bare SIGTERM — else SIGTERM at the PID the status op
+  now reports) and `--restart`. `mcp-install --all` now really means
+  "every INSTALLED app" (it used to create configs for absent apps).
+- **E5** bare `cairn reindex` runs the lexical rebuild (the README
+  promise); stale "(stub until M6)" help text corrected.
+
+---
+
+## DEPLOY (retroactive record, work done 2026-07-20…23) — bookkeeping 2026-08-06
+
+The `cairn setup` wizard, `make deploy`, `install.sh`, `cairn daemon
+--install` service management, and `mcp-install` shipped in commits
+422a82b/55828e9/a79403a/2b46890 WITHOUT a PROGRESS.md section — a
+process-discipline miss (CLAUDE.md: PROGRESS is updated per milestone).
+Recorded retroactively; the WP-E section above documents the fixes layered
+on top of that work.
+
+## WP-F — Docs/rulings reconciliation (audit 2026-08-05) — DONE
+
+- RULINGS.md: **R41 backfilled** (revoke bundling — was cited as binding by
+  fork_resolve.go/fork_test.go/pre-N9 doc but never landed in the file,
+  violating its own process rule; flagged pending author confirmation), a
+  divergence note appended to R40 (its "Conservative scoping" bullet
+  predates G7.4), and the 2026-07-16 pairing trust decision numbered
+  **R57**.
+- PROGRESS.md: stale "Author rulings needed" for M0 (→R1) and M5 (→R2)
+  closed with bookkeeping notes; Resume-cold notes refreshed; the DEPLOY
+  work order recorded retroactively (above).
+- README/DOGFOOD truth pass: why-ranked takes two args; "nine tools" →
+  twelve; the never-built entity/typed-edge graph claim removed; P1/P3
+  audit claims restated to what PROGRESS actually records (three live
+  audit rounds, blockers fixed and re-verified — no final "zero blockers"
+  crossed verdict is on record); the launchd hand-recipes superseded by
+  `cairn daemon --install/--stop/--restart`; §12 peer setup now documents
+  `cairn peer add` (live, no restart); completion + new verbs documented;
+  CLAUDE.md outcome instructions now carry the interaction id and
+  --message (which the computed Success@5 gate credits).
+- docs/cairn-p3-onboarding-transport.md: the pair-join→sync claim is now
+  TRUE (SYNC-C3) and says why; dangling P3-PLAN.md reference repointed.
+
+## WP-G — Optional deferred items (audit 2026-08-05) — PARTIAL BY DESIGN
+
+Every WP-G item was planned as independently droppable. Landed:
+
+- **G2 model-artifact pinning:** the bootstrap script now downloads the
+  model into `<venv>/hf-cache` (deterministic location; the worker runs
+  with HF_HOME pinned there) and records `<venv>/model.hash` (sha256 over
+  a sorted relpath+content walk). DetectVerbose verifies the pin BEFORE
+  starting the worker: a swapped/tampered artifact refuses into loud
+  lexical-only. Unpinned venvs (older bootstrap) still pass. sha256 not
+  BLAKE3 deliberately: the pin is written by the venv's python at
+  provision time (hashlib has no blake3) and is a local integrity
+  fingerprint, not mesh content addressing — the BLAKE3 rule targets the
+  latter. `config.EmbeddingModelHash` stays "" (it pins the never-vendored
+  ONNX artifact). Tamper test: TestVerifyModelPin.
+- **G6 `cairn interactions`:** the query log finally has a reader —
+  `interaction-list` IPC op (capAdmin: it names principals and queries) +
+  CLI table (query, hits, mode, outcome, newest first).
+
+Deliberately DEFERRED (with reasons, not silence):
+
+- **G1 sqlite-vec:** new CGO dependency + candidate-query rework; the
+  brute-force cosine fallback is correct below
+  `BruteForceMaxCandidates` and the corpus is nowhere near the ~100k
+  cliff. Revisit when head-vector count approaches that bound.
+- **G3 duplicate/thread-saturation penalties (spec §9.1, PenaltyCap):**
+  changes ruled why-ranked arithmetic — R47 requires every additive term
+  to print and reconcile exactly against R51's EXTERNAL recompute, so the
+  penalty needs a components-record extension + renderer + external
+  reconciliation update in one lockstep change. Do as its own reviewed
+  task, not as an audit tail.
+- **G4 ladder rungs 6–7 enforcement:** pre-ack rejection conflicts with
+  send-never-blocks; needs the author ruling recorded under WP-A before
+  code (conservative shape proposed there: rung 7 rejects, rung 6 warns).
+- **G5 ONNX embedder:** excluded (fallback previously ruled acceptable).

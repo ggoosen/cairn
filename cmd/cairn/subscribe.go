@@ -7,14 +7,10 @@ package main
 // LOCAL view.json (the session tier) — no events, telemetry-class only.
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
-	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/daemon"
 )
 
@@ -29,22 +25,24 @@ func newSubscribeCmd(dirFlag *string) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !durable {
-				// session tier (R25): local view.json, never events
-				dir, err := config.PortableDir(*dirFlag)
+				// session tier (R25): local view.json, never events. Routed
+				// through the daemon's subscribe-local so an unset --topic
+				// PRESERVES operator-set hard topic filters (the old direct
+				// write rebuilt view.json from scratch and erased them, and
+				// raced the daemon's reader).
+				var t []string
+				if cmd.Flags().Changed("topic") {
+					t = topics
+				}
+				resp, err := call(dirFlag, daemon.Request{Op: "subscribe-local", LocalSub: &daemon.LocalSubRequest{
+					View: view, InterestQuery: args[0], Topics: t,
+				}})
 				if err != nil {
-					return err
-				}
-				base := filepath.Join(dir, config.ViewsDirName, view)
-				if err := os.MkdirAll(base, 0o700); err != nil {
-					return err
-				}
-				blob, _ := json.MarshalIndent(daemon.ViewConfig{Topics: topics, InterestQuery: args[0]}, "", "  ")
-				if err := os.WriteFile(filepath.Join(base, "view.json"), blob, 0o644); err != nil {
-					return err
+					return fmt.Errorf("%w\n(the session tier is daemon-managed; start the daemon and retry)", err)
 				}
 				fmt.Fprintf(cmd.OutOrStdout(),
-					"local subscription: view %q now ranks digests against %q (no events; use --durable to replicate)\n",
-					view, args[0])
+					"local subscription: view %q now ranks digests against %q (topics: %v; no events; use --durable to replicate)\n",
+					view, resp.LocalSub.InterestQuery, resp.LocalSub.Topics)
 				return nil
 			}
 			resp, err := call(dirFlag, daemon.Request{Op: "subscribe-durable", Subscribe: &daemon.SubscribeRequest{

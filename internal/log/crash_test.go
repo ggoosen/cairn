@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -403,4 +404,76 @@ func TestSealCrashMatrix(t *testing.T) {
 type preppedEvent struct {
 	env *event.Envelope
 	rec []byte
+}
+
+// FIX-A5: a failed append must leave the SAME live handle either usable
+// (rollback-truncated to the last durable frame) or poisoned with a typed
+// refusal — never in a state where a later successful append lands after
+// torn bytes. Pre-fix, partial frame bytes stayed in the open segment, the
+// next append succeeded after them, and recovery classified the result as
+// interior corruption: a transient EIO made the log unopenable at restart.
+// Every other fault test reopens the log after the fault; this one doesn't.
+func TestAppendFailureThenReuseSameHandle(t *testing.T) {
+	base, c0 := buildBase(t)
+	probe := base.Clone()
+	cProbe := *c0
+	lgP, _, err := cairnlog.Open(probe, "/p", origin(&cProbe), identity.NewChainVerifier().Verify, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := probe.MutatingOps()
+	sendPipeline(probe, "/p", lgP, &cProbe, "/dev", []byte("fault body"))
+	lgP.Close()
+	totalOps := probe.MutatingOps() - before
+
+	ackedBefore := baselineEventIDs(t, base, c0)
+
+	faults := []struct {
+		name  string
+		err   error
+		short int
+	}{
+		{"enospc", syscall.ENOSPC, 0},
+		{"eio", syscall.EIO, 0},
+		{"shortwrite", syscall.EIO, 3},
+	}
+	for _, f := range faults {
+		for i := 1; i <= totalOps; i++ {
+			label := fmt.Sprintf("%s@op%d", f.name, i)
+			m := base.Clone()
+			c := *c0
+			lg, _, err := cairnlog.Open(m, "/p", origin(&c), identity.NewChainVerifier().Verify, nil)
+			if err != nil {
+				t.Fatalf("%s: open: %v", label, err)
+			}
+			m.FailAt(i, f.err, f.short)
+			out1 := sendPipeline(m, "/p", lg, &c, "/dev", []byte("fault body"))
+
+			// KEEP USING THE SAME HANDLE: re-sync chain state from the log
+			// and retry. Allowed outcomes: ack (rollback worked) or a typed
+			// poisoned refusal — nothing else.
+			c2 := c
+			c2.nextSeq = lg.NextSeq()
+			c2.lastID = lg.LastEventID()
+			out2 := sendPipeline(m, "/p", lg, &c2, "/dev", []byte("retry on same handle"))
+			lg.Close()
+
+			if !out2.acked {
+				if out2.err == nil {
+					t.Fatalf("%s: same-handle retry neither acked nor errored", label)
+				}
+				if !strings.Contains(out2.err.Error(), "poisoned") {
+					t.Fatalf("%s: same-handle retry failed without the typed poison: %v", label, out2.err)
+				}
+			}
+
+			// Recovery must replay every acked event exactly once and doctor
+			// must be clean — the log is NEVER unopenable.
+			acked := append([]string{}, ackedBefore...)
+			if out1.acked {
+				acked = append(acked, out1.eventID)
+			}
+			recoverAndCheck(t, m, &c, acked, out2, label)
+		}
+	}
 }

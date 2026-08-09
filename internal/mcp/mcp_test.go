@@ -23,6 +23,7 @@ import (
 	cairnembed "github.com/ggoosen/cairn/internal/embed"
 	"github.com/ggoosen/cairn/internal/identity"
 	"github.com/ggoosen/cairn/internal/mcp"
+	"github.com/ggoosen/cairn/internal/object"
 )
 
 // startMesh initializes a cairn, runs a daemon + IPC socket, and returns an
@@ -131,11 +132,11 @@ func TestN1HandshakeAndToolList(t *testing.T) {
 
 	list := rpc(t, s, 2, "tools/list", nil)
 	tools := list["result"].(map[string]any)["tools"].([]any)
-	want := []string{"cairn_digest", "cairn_search", "cairn_peek", "cairn_fetch",
+	want := []string{"cairn_digest", "cairn_search", "cairn_peek", "cairn_thread", "cairn_fetch",
 		"cairn_send", "cairn_reply", "cairn_signal", "cairn_outcome", "cairn_why_ranked",
 		"cairn_subscribe", "cairn_subscriptions"}
 	if len(tools) != len(want) {
-		t.Fatalf("tool count %d, want %d (§5.5 nine + R55 two, nothing else)", len(tools), len(want))
+		t.Fatalf("tool count %d, want %d (§5.5 nine + RETR-D4 thread + R55 two, nothing else)", len(tools), len(want))
 	}
 	for i, tl := range tools {
 		tool := tl.(map[string]any)
@@ -519,5 +520,40 @@ func TestR55LocalSubscribe(t *testing.T) {
 	}
 	if other.LocalSub != nil && other.LocalSub.InterestQuery != "" {
 		t.Fatalf("caller leaked interest into another view: %v", other.LocalSub)
+	}
+}
+
+// FIX-A8: the advertised tool schemas must match what the daemon actually
+// validates — a schema-conformant client must never be refused pre-ack for
+// following the schema.
+func TestToolSchemasMatchDaemonValidation(t *testing.T) {
+	s := mcp.New(nil, "a", "v", "test")
+	var send, reply string
+	for _, tool := range s.Tools() {
+		switch tool.Name {
+		case "cairn_send":
+			send = string(tool.InputSchema)
+		case "cairn_reply":
+			reply = string(tool.InputSchema)
+		}
+	}
+	for _, schema := range []string{send, reply} {
+		if schema == "" {
+			t.Fatal("cairn_send/cairn_reply schema missing")
+		}
+		for _, class := range []string{object.ClassCanonical, object.ClassEager, object.ClassEphemeral} {
+			if !strings.Contains(schema, `"`+class+`"`) {
+				t.Errorf("schema omits real text class %q: %s", class, schema)
+			}
+		}
+		if strings.Contains(schema, `"working"`) {
+			t.Errorf("schema advertises nonexistent text class \"working\"")
+		}
+		if !strings.Contains(schema, fmt.Sprintf(`"maximum":%d`, config.DeclaredPriorityMax)) {
+			t.Errorf("schema priority max diverges from config.DeclaredPriorityMax=%d", config.DeclaredPriorityMax)
+		}
+		if strings.Contains(schema, `"maximum":10`) {
+			t.Errorf("schema still advertises priority max 10 (daemon refuses >%d pre-ack)", config.DeclaredPriorityMax)
+		}
 	}
 }

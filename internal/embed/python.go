@@ -3,10 +3,14 @@ package embed
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"github.com/ggoosen/cairn/internal/config"
 )
@@ -16,10 +20,19 @@ import (
 // provisioned venv at <portable>/.cairn/embed-venv (or $CAIRN_EMBED_PYTHON).
 // Protocol: one JSON array of strings per request line on stdin, one JSON
 // array of float arrays per response line on stdout.
+//
+// The worker multiplexes ONE stdin encoder and ONE stdout scanner, so the
+// whole request/response round-trip is serialized under mu: concurrent
+// callers (search, digest, the background enricher, subscription
+// calibration) would otherwise interleave request lines and read each
+// other's vectors.
 type Python struct {
-	cmd    *exec.Cmd
-	stdin  *json.Encoder
-	stdout *bufio.Scanner
+	mu       sync.Mutex
+	cmd      *exec.Cmd
+	stdinRaw io.WriteCloser
+	stdin    *json.Encoder
+	stdout   *bufio.Scanner
+	dead     bool
 }
 
 const pythonWorker = `
@@ -35,8 +48,19 @@ for line in sys.stdin:
 
 // PythonInterpreter locates the venv python for a cairn dir; "" if absent.
 func PythonInterpreter(portableDir string) string {
+	return PythonInterpreterConfigured(portableDir, "")
+}
+
+// PythonInterpreterConfigured resolves the interpreter with precedence
+// env override > device-config embed_python (DEPLOY-E2: supervised
+// daemons get no environment, so the TOML key is the durable knob) >
+// the provisioned venv.
+func PythonInterpreterConfigured(portableDir, configured string) string {
 	if env := os.Getenv("CAIRN_EMBED_PYTHON"); env != "" {
 		return env
+	}
+	if configured != "" {
+		return configured
 	}
 	p := filepath.Join(portableDir, config.DerivedDirName, "embed-venv", "bin", "python3")
 	if _, err := os.Stat(p); err == nil {
@@ -48,7 +72,21 @@ func PythonInterpreter(portableDir string) string {
 // NewPython starts the worker. Fails fast if the interpreter or the model
 // is unavailable (caller degrades to lexical_only).
 func NewPython(interpreter string) (*Python, error) {
-	cmd := exec.Command(interpreter, "-c", pythonWorker)
+	return newPythonWorker(interpreter, pythonWorker)
+}
+
+// newPythonWorker is NewPython with the worker source injectable (tests run
+// a fake line-protocol worker; production always uses pythonWorker).
+func newPythonWorker(interpreter, worker string) (*Python, error) {
+	cmd := exec.Command(interpreter, "-c", worker)
+	// P4-G2: a venv interpreter reads the PINNED model cache inside its
+	// venv (the same one the bootstrap hashed), not whatever the ambient
+	// HF cache holds.
+	if venv := venvDirOf(interpreter); venv != "" {
+		if cache := filepath.Join(venv, modelCacheDir); dirExists(cache) {
+			cmd.Env = append(os.Environ(), "HF_HOME="+cache)
+		}
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -63,10 +101,11 @@ func NewPython(interpreter string) (*Python, error) {
 	}
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 1<<20), 64<<20)
-	p := &Python{cmd: cmd, stdin: json.NewEncoder(stdin), stdout: sc}
-	// handshake: embed one empty batch to force model load errors now
-	if _, err := p.Embed([]string{"handshake"}); err != nil {
-		p.Close()
+	p := &Python{cmd: cmd, stdinRaw: stdin, stdin: json.NewEncoder(stdin), stdout: sc}
+	// handshake: embed one batch to force model-load errors now. First load
+	// downloads/deserializes the model, so it gets the long timeout.
+	if _, err := p.embed([]string{"handshake"}, config.EmbedHandshakeTimeout); err != nil {
+		_ = p.Close()
 		return nil, err
 	}
 	return p, nil
@@ -76,11 +115,37 @@ func (p *Python) ModelID() string { return config.EmbeddingModelID }
 func (p *Python) Dim() int        { return config.EmbeddingDim }
 
 func (p *Python) Embed(texts []string) ([][]float32, error) {
+	return p.embed(texts, config.EmbedRequestTimeout)
+}
+
+func (p *Python) embed(texts []string, timeout time.Duration) ([][]float32, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.dead {
+		return nil, errors.New("embed worker closed")
+	}
 	if err := p.stdin.Encode(texts); err != nil {
 		return nil, err
 	}
-	if !p.stdout.Scan() {
-		return nil, fmt.Errorf("embed worker died: %v", p.stdout.Err())
+	// Scanner has no deadline: watchdog it. On timeout the worker is killed,
+	// which unblocks the Scan, and the handle is poisoned — callers already
+	// degrade to lexical_only on embed errors.
+	done := make(chan bool, 1)
+	go func() { done <- p.stdout.Scan() }()
+	var scanned bool
+	select {
+	case scanned = <-done:
+	case <-time.After(timeout):
+		p.killLocked()
+		<-done // Scan returns once the pipe closes; then the reap is safe
+		_ = p.cmd.Wait()
+		return nil, fmt.Errorf("embed worker timed out after %s (killed; retrieval degrades to lexical_only)", timeout)
+	}
+	if !scanned {
+		err := p.stdout.Err()
+		p.killLocked()
+		_ = p.cmd.Wait()
+		return nil, fmt.Errorf("embed worker died: %v", err)
 	}
 	var vecs [][]float32
 	if err := json.Unmarshal(p.stdout.Bytes(), &vecs); err != nil {
@@ -92,10 +157,29 @@ func (p *Python) Embed(texts []string) ([][]float32, error) {
 	return vecs, nil
 }
 
-func (p *Python) Close() error {
-	if p.cmd.Process != nil {
-		p.cmd.Process.Kill()
+// killLocked poisons the handle and signals the worker. Callers hold mu and
+// are responsible for cmd.Wait() once any in-flight pipe read has returned.
+func (p *Python) killLocked() {
+	if p.dead {
+		return
 	}
+	p.dead = true
+	if p.stdinRaw != nil {
+		p.stdinRaw.Close() // a well-behaved worker exits on stdin EOF
+	}
+	if p.cmd.Process != nil {
+		_ = p.cmd.Process.Kill()
+	}
+}
+
+func (p *Python) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.dead {
+		return nil
+	}
+	p.killLocked()
+	_ = p.cmd.Wait() // reap: without this every closed worker is a zombie child
 	return nil
 }
 
@@ -103,7 +187,7 @@ func (p *Python) Close() error {
 // real-model worker when provisioned, else nil (lexical_only). Tests use
 // BagOfWords explicitly.
 func Detect(portableDir string) Embedder {
-	e, _ := DetectVerbose(portableDir)
+	e, _ := DetectVerbose(portableDir, "")
 	return e
 }
 
@@ -112,11 +196,19 @@ func Detect(portableDir string) Embedder {
 // with the remedy — this feeds the daemon's startup log on every platform,
 // macOS and Linux alike). A provisioned-but-broken venv surfaces its error
 // instead of being swallowed. The reason is "" when a real embedder loaded.
-func DetectVerbose(portableDir string) (Embedder, string) {
-	interp := PythonInterpreter(portableDir)
+func DetectVerbose(portableDir, configuredInterp string) (Embedder, string) {
+	interp := PythonInterpreterConfigured(portableDir, configuredInterp)
 	if interp == "" {
 		return nil, "no embed venv found (semantic search disabled; retrieval is lexical-only). " +
 			"Provision it with scripts/cairn-embed-bootstrap.sh, or point CAIRN_EMBED_PYTHON at a python with sentence-transformers, then `cairn reindex --semantic`."
+	}
+	// P4-G2: verify the recorded model pin BEFORE starting the worker; a
+	// swapped/tampered artifact refuses into loud lexical-only, never a
+	// silent different-model embedder.
+	if venv := venvDirOf(interp); venv != "" {
+		if err := VerifyModelPin(venv); err != nil {
+			return nil, fmt.Sprintf("embed venv at %s REFUSED: %v; retrieval is lexical-only.", interp, err)
+		}
 	}
 	p, err := NewPython(interp)
 	if err != nil {
@@ -124,4 +216,19 @@ func DetectVerbose(portableDir string) (Embedder, string) {
 			"Re-provision with scripts/cairn-embed-bootstrap.sh, then `cairn reindex --semantic`.", interp, err)
 	}
 	return p, ""
+}
+
+// venvDirOf maps <venv>/bin/python3 back to <venv>; "" when the
+// interpreter is not venv-shaped (env/config overrides carry no pin).
+func venvDirOf(interpreter string) string {
+	dir := filepath.Dir(filepath.Dir(interpreter))
+	if filepath.Base(filepath.Dir(interpreter)) == "bin" && filepath.Base(dir) == "embed-venv" {
+		return dir
+	}
+	return ""
+}
+
+func dirExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
 }

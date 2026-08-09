@@ -89,16 +89,16 @@ func RunGolden(w io.Writer, embedder cairnembed.Embedder) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(scratch)
+	defer func() { _ = os.RemoveAll(scratch) }()
 	// isolate device state so the bench never touches the operator's real
 	// identity area (restored afterwards)
 	oldEnv, hadEnv := os.LookupEnv("CAIRN_DEVICE_STATE_DIR")
-	os.Setenv("CAIRN_DEVICE_STATE_DIR", filepath.Join(scratch, "devstate"))
+	_ = os.Setenv("CAIRN_DEVICE_STATE_DIR", filepath.Join(scratch, "devstate"))
 	defer func() {
 		if hadEnv {
-			os.Setenv("CAIRN_DEVICE_STATE_DIR", oldEnv)
+			_ = os.Setenv("CAIRN_DEVICE_STATE_DIR", oldEnv)
 		} else {
-			os.Unsetenv("CAIRN_DEVICE_STATE_DIR")
+			_ = os.Unsetenv("CAIRN_DEVICE_STATE_DIR")
 		}
 	}()
 

@@ -77,9 +77,10 @@ Regenerate digests any time: `cairn digest --view <name> --budget 4000`.
 
 ### 3b. MCP surface (P1 N1): Claude Desktop / Claude Code
 
-With the daemon running, any MCP client gets the eleven §5.5 tools
-(`cairn_digest/search/peek/fetch/send/reply/signal/outcome/why_ranked`
-plus `cairn_subscribe/cairn_subscriptions`)
+With the daemon running, any MCP client gets the twelve tools — the nine
+§5.5 tools (`cairn_digest/search/peek/fetch/send/reply/signal/outcome/
+why_ranked`), `cairn_thread` for thread expansion, and the two R55
+local-tier subscription tools (`cairn_subscribe/cairn_subscriptions`) —
 over stdio. Claude Desktop — add to
 `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
@@ -169,13 +170,15 @@ cairn doctor     # log integrity
 cairn doctor conflicts   # unresolved merge debt
 ```
 
-Autostart the daemon (macOS):
+Autostart the daemon (macOS or Linux — installs and starts the user service;
+supersedes the old hand-edited-plist recipe):
 
 ```sh
-sed "s|CAIRN_BIN|$(command -v cairn)|; s|CAIRN_DIR_PATH|$HOME/cairn|; s|HOME_PATH|$HOME|" \
-  scripts/com.cairn.daemon.plist > ~/Library/LaunchAgents/com.cairn.daemon.plist
-launchctl load ~/Library/LaunchAgents/com.cairn.daemon.plist
+cairn daemon --install
 ```
+
+(`cairn daemon --stop` / `--restart` manage it afterwards — no launchctl
+incantations needed.)
 
 ## 6. Backups (portable data only)
 
@@ -301,13 +304,13 @@ authorization (R27). The root key touches disk only during this ceremony.
 cairn device enroll --name windows-wsl --out req.json     # key stays here
 
 # THIS machine (signing): stop the daemon, restore the root key
-launchctl unload ~/Library/LaunchAgents/com.cairn.daemon.plist  # or Ctrl-C
+cairn daemon --stop
 cp /Volumes/OfflineUSB/cairn-root.key /tmp/root.key
 cairn device approve req.json --root-key /tmp/root.key --grant grant.json
 rm -P /tmp/root.key                                        # REMOVE the key
 # enable the listener (device-local config next to the device key):
 #   sync_listen = "100.x.y.z:9700"     ← your tailnet IP (never 0.0.0.0)
-launchctl load ~/Library/LaunchAgents/com.cairn.daemon.plist
+cairn daemon --restart
 
 # NEW machine: install the identity and prove membership
 cairn device join grant.json
@@ -326,14 +329,17 @@ becomes fully operational (digest/search) once N6 replication lands (below);
 ## 12. Peer sync — reconciliation (P1 N6)
 
 Once two machines are enrolled (§11), point them at each other and knowledge
-replicates automatically.
+replicates automatically. Peers are LIVE + persisted — no TOML edit, no
+daemon restart (a `pair join` registers its counterparty automatically):
 
-```toml
-# in EACH machine's device config (path from `cairn identity show`):
-sync_listen = "100.x.y.z:9700"          # this machine's tailnet IP (never 0.0.0.0)
-sync_peers  = ["100.a.b.c:9700"]         # the other machine(s)' tailnet IP:port
+```bash
+cairn peer add 100.a.b.c:9700   # the other machine's tailnet IP:port
+cairn peer list                 # what this node dials
 ```
-Restart both daemons. From then on:
+
+(`sync_listen` stays a device-config key — `"auto"` detects the tailnet
+interface. The old hand-edited `sync_peers` TOML field is still honored,
+but `cairn peer add` is the supported path.) From then on:
 
 - **Automatic**: every send pushes to connected peers immediately, and an
   anti-entropy sweep reconciles every 5 minutes (both config-tunable). A

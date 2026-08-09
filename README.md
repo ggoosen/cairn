@@ -45,6 +45,7 @@ If you run multiple AI agent sessions — Claude Code here, Codex there, a chat 
 - **`cairn digest --budget 1500`** — any agent gets a *ranked* rollup of what's new and relevant, hard-capped to a character budget (oversized items are dropped whole, never truncated mid-item)
 - **`cairn search "council approval status"`** — hybrid keyword + semantic search across everything, from any session, offline
 - **`cairn fetch <id>`** — deliberately pull the full original, with provenance back to the signed source event
+- **`cairn thread <id>`** — read a whole conversation; **`cairn topic list`** — browse the taxonomy with live counts
 - **`cairn why-ranked <interaction-id> <message-id>`** — see the exact arithmetic behind a ranking, as it was recorded at the time. No black boxes.
 
 Agents connect through whichever door they can reach: **plain files** (drop markdown in an outbox, read a generated digest — works with literally anything), the **CLI**, or **MCP** (`cairn mcp` serves eleven tools to Claude Desktop / Claude Code / Codex — every result that carries mesh content is wrapped in an untrusted-content envelope with full provenance; the rest are daemon-authored receipts). One daemon per machine; every app and session is just a named consumer.
@@ -114,7 +115,7 @@ The design and its full decision trail — specification (v0.3), the binding bui
 
 ## Status
 
-**Pre-alpha.** P0 and P1 are code-complete: the single-machine daemon and the multi-machine Tailscale mesh (replication, blob durability, capability-scoped sessions, MCP, live fork detection) are built, passing their acceptance suites, and past six rounds of live two-node hardening audit with zero blockers at the audited commit. P2 and P3 are built but opt-in, and their newest pieces — the self-subscribe/onboarding affordances and `cairn setup` — are unit-tested and code-reviewed but have had no live audit. What remains before cutting the first tag is the operator's own **30-handoff product evaluation** (the real-world "does it beat copy-paste?" gate in [`DOGFOOD.md`](DOGFOOD.md)), which has not started. Star/watch for the release. Built in Go; macOS (Apple Silicon) is the primary target, Linux is exercised by hand on a WSL2 Ubuntu node — there is no CI, so treat it as best-effort and run `make verify` yourself.
+**Pre-alpha.** P0 and P1 are code-complete: the single-machine daemon and the multi-machine Tailscale mesh (replication, blob durability, capability-scoped sessions, MCP, live fork detection) are built, passing their acceptance suites, and past six rounds of live two-node hardening audit with zero blockers at the audited commit. P2 and P3 are built but opt-in, and their newest pieces — the self-subscribe/onboarding affordances and `cairn setup` — are unit-tested and code-reviewed but have had no live audit. What remains before cutting the first tag is the operator's own **30-handoff product evaluation** (the real-world "does it beat copy-paste?" gate in [`DOGFOOD.md`](DOGFOOD.md)), which has not started. Star/watch for the release. Built in Go; macOS (Apple Silicon) is the primary target and gates CI, Linux runs in CI and by hand on a WSL2 Ubuntu node — best-effort.
 
 **Known limitation — degradation ladder.** Under disk/memory pressure Cairn sheds load in stages (defer auto-linking → summaries → embeddings → force lexical-only search → defer proactive blob replication). The two most aggressive stages — *rejecting* new low-priority blobs or small text outright — are currently computed and reported (visible in `cairn status`, every transition logged) but not yet *enforced*: safely rejecting a send needs reserved-capacity accounting that's deferred to its own change. Until then they fail open — the send proceeds — never silently.
 
@@ -204,8 +205,13 @@ cairn setup                      # mesh + daemon service + MCP clients, idempote
 ```bash
 cairn init                       # create your mesh + device identity + genesis
 cairn daemon --install           # resident single writer under launchd/systemd
-cairn mcp-install --all          # wire cairn into detected MCP clients
+cairn mcp-install --all          # wire cairn into detected MCP clients (one view per app)
 ```
+
+Shell completion is built in: `cairn completion zsh|bash|fish --help` shows
+the one-liner for your shell. A second machine pairs with
+`cairn pair invite` + `cairn pair join` (the join registers the sync peer;
+`cairn peer add <host:port>` manages peers live afterwards).
 
 Then, whichever way you set up, use it (`setup-agent` mints a named consumer view — that's a different command from `setup`):
 

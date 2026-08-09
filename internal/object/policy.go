@@ -131,7 +131,7 @@ func (u *UsageTracker) Add(n int64, now time.Time) {
 	if blob, err := json.Marshal(u); err == nil {
 		if err := u.fs.MkdirAll(filepath.Dir(u.path), config.DirPerm); err == nil {
 			if f, err := u.fs.OpenFile(u.path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, config.FilePerm); err == nil {
-				f.Write(blob)
+				_, _ = f.Write(blob)
 				f.Close()
 			}
 		}

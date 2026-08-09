@@ -88,7 +88,7 @@ func newIdentityExportRootCmd(dirFlag *string) *cobra.Command {
 				if fi, _ := os.Stdin.Stat(); fi != nil && (fi.Mode()&os.ModeCharDevice) != 0 {
 					fmt.Fprint(cmd.OutOrStdout(), "Remove the device-local copy now? Migration will then REQUIRE this export. [y/N]: ")
 					var answer string
-					fmt.Fscanln(cmd.InOrStdin(), &answer)
+					_, _ = fmt.Fscanln(cmd.InOrStdin(), &answer)
 					remove = strings.EqualFold(strings.TrimSpace(answer), "y")
 				} else {
 					fmt.Fprintln(cmd.OutOrStdout(), "Device-local copy kept (non-interactive; pass --remove-local to remove it after export).")

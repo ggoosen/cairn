@@ -45,7 +45,7 @@ func Diff3(base, current, operator []byte) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	paths := map[string][]byte{
 		"OPERATOR": operator,
