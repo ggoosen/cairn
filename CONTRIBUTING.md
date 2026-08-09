@@ -19,11 +19,18 @@ You need **Go 1.25+** (or any Go 1.21+ with `GOTOOLCHAIN=auto`), **git** — at
 runtime too, for `git merge-file` — and a **C toolchain**, because Cairn uses cgo
 for SQLite/FTS5 (`xcode-select --install` on macOS).
 
-Always build through `make`, or pass `-tags sqlite_fts5` yourself. A plain
-`go build ./...` **fails at compile time by design**: `mattn/go-sqlite3` only
-compiles FTS5 behind that tag, and a silent non-FTS5 build would be worse than a
-loud failure. `make verify` asserts both that the untagged build fails with the
+Always build and test through `make`. A plain `go build ./...` **fails at
+compile time by design**: `mattn/go-sqlite3` only compiles FTS5 behind
+`-tags sqlite_fts5`, and a silent non-FTS5 build would be worse than a loud
+failure. `make verify` asserts both that the untagged build fails with the
 instructive message *and* that the tagged suite is green.
+
+Tests need a second tag, `cairn_testhooks`, which compiles in the
+volume-status fault injector the encryption tests drive. `make test` sets it;
+`make build` deliberately does not, so a release binary has no way to be told
+"this volume is encrypted" by its environment. If you run `go test` by hand,
+use `-tags sqlite_fts5,cairn_testhooks` or roughly thirty tests will fail on
+the encryption gate.
 
 macOS arm64 is the primary target. Linux is best-effort and runs in CI without
 gating the merge.

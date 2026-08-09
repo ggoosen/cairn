@@ -55,14 +55,14 @@ restate them will be closed with a pointer here — though a report showing one 
   profiles (`cairn run --profile`, `cairn mcp`) bound what an *agent* can do;
   they are not a boundary against a hostile local process. See "Security
   posture" in the README.
-- **`CAIRN_FAKE_VOLUME_STATUS`** is a fault-injection hook for the encrypted
-  volume tests that is present in release builds. Setting it to `encrypted`
-  causes the encryption gate to pass without checking, and unlike
-  `--allow-unencrypted` it does not warn on every start. It requires control of
-  the daemon's environment. This should be behind a build tag and is tracked as
-  a fix.
 - **Key file mode is enforced on write, not on read.** Keys are written `0600`;
   a key you later loosen yourself will still load.
+- **Test hooks are not in release builds.** The volume-status fault injector
+  (`CAIRN_FAKE_VOLUME_STATUS`) is compiled in only under the
+  `cairn_testhooks` build tag, which `make test` sets and `make build` does
+  not. A binary built the documented way cannot be told "this volume is
+  encrypted" by its environment. If you find a release build that responds
+  to it, that IS a finding — report it.
 - **The unencrypted-volume escape hatch is real.** `--allow-unencrypted` puts
   your device key on unencrypted storage on purpose. It warns on every start.
 - **The two most aggressive degradation-ladder stages are not enforced** — they

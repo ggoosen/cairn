@@ -2,7 +2,6 @@ package identity
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -43,16 +42,12 @@ type VolumeChecker interface {
 type SystemVolumeChecker struct{}
 
 func (SystemVolumeChecker) Status(path string) (VolumeStatus, string, error) {
-	// Fault-injection hook for the TESTING.md volume-state rows (encrypted /
-	// unencrypted / indeterminate) at the process boundary. Never set outside
-	// tests.
-	switch os.Getenv("CAIRN_FAKE_VOLUME_STATUS") {
-	case "encrypted":
-		return VolumeEncrypted, "injected by CAIRN_FAKE_VOLUME_STATUS", nil
-	case "unencrypted":
-		return VolumeUnencrypted, "injected by CAIRN_FAKE_VOLUME_STATUS", nil
-	case "unknown":
-		return VolumeUnknown, "injected by CAIRN_FAKE_VOLUME_STATUS", nil
+	// Fault-injection hook for the TESTING.md volume-state rows, compiled in
+	// only under the `cairn_testhooks` build tag (see volume_testhook.go).
+	// Release builds get the no-op variant, so the environment cannot forge
+	// an "encrypted" verdict.
+	if status, reason, injected := fakeVolumeStatus(); injected {
+		return status, reason, nil
 	}
 	switch runtime.GOOS {
 	case "darwin":
