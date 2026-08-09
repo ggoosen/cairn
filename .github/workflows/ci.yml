@@ -48,4 +48,8 @@ jobs:
           go-version-file: go.mod
       - uses: golangci/golangci-lint-action@v8
         with:
-          version: v2.1
+          # Must be built with a Go >= the go directive in go.mod, or it
+          # refuses to load the config: "the Go language version (go1.24)
+          # used to build golangci-lint is lower than the targeted Go
+          # version (1.25)". Bump this whenever the go.mod floor rises.
+          version: v2.12.2

@@ -212,7 +212,21 @@ func (d *Daemon) Serve(ctx context.Context) error {
 		return err
 	}
 	os.Chmod(sock, 0o600) // belt and braces; the 0700 dir is the guarantee
-	if err := os.WriteFile(socketPathFile(d.sockDir), []byte(sock), 0o600); err != nil {
+	// Publish the socket path ATOMICALLY. os.WriteFile creates-and-truncates,
+	// so a client that stats the file and reads it while the daemon is still
+	// starting gets an EMPTY path and fails with the misleading "daemon not
+	// running (dial unix: missing address)". Rename is atomic on POSIX, so a
+	// reader sees either the previous path or the new one, never a partial.
+	// (fsx.WriteFileAtomic can't be reused: it is refuse-if-exists by design,
+	// for immutable objects — this pointer file is rewritten every start.)
+	pathFile := socketPathFile(d.sockDir)
+	tmpPathFile := pathFile + ".tmp"
+	if err := os.WriteFile(tmpPathFile, []byte(sock), 0o600); err != nil {
+		l.Close()
+		return err
+	}
+	if err := os.Rename(tmpPathFile, pathFile); err != nil {
+		os.Remove(tmpPathFile)
 		l.Close()
 		return err
 	}
