@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -73,8 +74,14 @@ func TestReleaseBuildHasNoClockHook(t *testing.T) {
 
 	daemonCmd := exec.Command(bin, "daemon", "--dir", dir)
 	daemonCmd.Env = env
-	var daemonOut bytes.Buffer
-	daemonCmd.Stdout, daemonCmd.Stderr = &daemonOut, &daemonOut
+	// NOT a bare bytes.Buffer: Start() hands the buffer to an os/exec copier
+	// goroutine that keeps writing for the daemon's whole lifetime, while this
+	// test reads it below to report readiness failures and to check for the
+	// simulated-clock banner. A plain buffer makes that a data race (caught by
+	// the -race CI job, not by the default suite). Stdout and Stderr share ONE
+	// writer value on purpose — os/exec then uses a single copier goroutine.
+	daemonOut := &lockedBuffer{}
+	daemonCmd.Stdout, daemonCmd.Stderr = daemonOut, daemonOut
 	if err := daemonCmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +123,27 @@ func TestReleaseBuildHasNoClockHook(t *testing.T) {
 		t.Fatalf("release binary timestamped an event %v away from now (%s) — the environment moved its clock",
 			skew, info.CreatedAt)
 	}
-	if strings.Contains(daemonOut.String(), "SIMULATED CLOCK") {
-		t.Fatalf("release daemon announced a simulated clock:\n%s", daemonOut.String())
+	if out := daemonOut.String(); strings.Contains(out, "SIMULATED CLOCK") {
+		t.Fatalf("release daemon announced a simulated clock:\n%s", out)
 	}
+}
+
+// lockedBuffer is a bytes.Buffer that is safe to read while an os/exec copier
+// goroutine writes into it. (The eval harness carries its own copy — it is a
+// separate module, so the two cannot share one.)
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
