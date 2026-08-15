@@ -17,7 +17,11 @@ review. Your job is implementation, not redesign.
 1. `build/ARCHITECTURE.md` — condensed implementation architecture (start here)
 2. `docs/rulings-v0.3.1.md` — **binding build rulings; where anything conflicts, this wins**
 3. `docs/spec-v0.3.md` — full specification (P0 scope is §12)
-4. `build/BUILD-PLAN.md` — milestones M0–M8 with acceptance criteria
+4. `ROADMAP.md` — **the index of everything still to be built** (start here for
+   current work); `build/BUILD-PLAN.md` is the COMPLETED P0 plan (M0–M8), kept
+   for its acceptance criteria and decision trail. Active work orders:
+   `build/CAPTURE-PLAN.md` (zero-effort capture), `build/EVAL-PLAN.md`
+   (proving the claims)
 5. `build/TESTING.md` — crash/fault matrix (the zero-loss gate depends on it)
 6. `build/schemas/p0-events.schema.json` — normative event payload schemas
 7. `build/sql/projection.sql` — SQLite projection DDL
@@ -74,8 +78,10 @@ review. Your job is implementation, not redesign.
 
 ## Workflow
 
-- Work **one milestone at a time** from BUILD-PLAN.md, in order. Do not start
-  M(n+1) until M(n) acceptance criteria pass.
+- Work **one milestone at a time**, in order, from the work order that owns it.
+  Do not start M(n+1) until M(n) acceptance criteria pass. BUILD-PLAN.md
+  (M0–M8) is complete; current work is indexed by `ROADMAP.md` and specified by
+  `build/CAPTURE-PLAN.md` and `build/EVAL-PLAN.md`.
 - Maintain `PROGRESS.md` at repo root: per milestone — status, deviations,
   rulings needed, test results.
 - TDD where it matters: the event log (M1) and outbox (M4) get their crash
@@ -123,6 +129,10 @@ provenance on fetched results; 100% budget compliance; P95 send-ack →
 lexical-digest-visible < 200 ms on the dev machine. `cairn doctor` reports
 clean on a corpus that has survived the fault matrix. The operator can then
 begin the 30-handoff product evaluation described in BUILD-PLAN M8.
+*(Since superseded in method, not in intent: `build/EVAL-PLAN.md` E7
+strengthens that evaluation with pre-registration and randomized
+withholding, because as originally specified it is n=1, self-reported and
+uncontrolled.)*
 
 ## Cairn — shared agent memory
 

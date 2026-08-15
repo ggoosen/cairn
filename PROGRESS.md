@@ -3960,3 +3960,26 @@ Design points worth keeping:
   blocker), recall across fork repair, and revoked-device knowledge policy.
 - E9's highest-fidelity variant replays real session history
   chronologically — which makes it mutually reinforcing with CAPTURE C3.
+
+### Planning-document graph reconciled (bookkeeping 2026-08-09)
+
+Audit found three gaps that would have misled anyone reading cold:
+
+1. **README roadmap had a CAPTURE row but no EVAL row** — zero mentions of
+   the evaluation work anywhere in the README. Added.
+2. **`build/BUILD-PLAN.md` was orphaned.** It is the COMPLETED P0 plan
+   (M0–M8) with zero references to anything since, so a reader would take
+   it for the current work queue. It now opens with a STATUS: COMPLETE
+   banner pointing at ROADMAP.md and the active work orders; ROADMAP says
+   why it is deliberately not indexed.
+3. **CLAUDE.md still routed work through BUILD-PLAN.md** ("work one
+   milestone at a time from BUILD-PLAN.md") — stale since P0 closed. Read
+   order and workflow now point at ROADMAP.md as the index, with
+   CAPTURE-PLAN and EVAL-PLAN as the active work orders. The P0
+   definition-of-done note now records that EVAL E7 supersedes the
+   30-handoff evaluation in METHOD, not in intent.
+
+The graph is now: README (coarse phases) → ROADMAP.md (full inventory) →
+per-area work orders (CAPTURE-PLAN, EVAL-PLAN + eval/claims.yaml) →
+PROGRESS.md (what shipped). BUILD-PLAN and the spec/rulings remain the
+historical and normative layers respectively.

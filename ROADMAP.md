@@ -10,6 +10,10 @@ Legend: **[code]** buildable now · **[ruling]** needs an author ruling
 first · **[operator]** human activity, not code · **[hardware]** needs
 the two-machine rig · **[data]** needs real usage data first.
 
+Not indexed here because it is finished: `build/BUILD-PLAN.md` (M0–M8) is
+the COMPLETED P0 plan, kept for its acceptance criteria and decision trail.
+Everything still outstanding — from any phase — is below.
+
 ---
 
 ## 1. Release blockers (before the first tag)
