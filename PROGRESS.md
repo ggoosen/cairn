@@ -3643,3 +3643,14 @@ Explicit non-goals recorded in the plan: LLM reranking/summarization in
 the daemon (breaks R47/R51 explainability), query-expansion models
 (shipped hybrid already covers the failure they address), and transcripts
 as digest content (capture is a substrate, not an attention surface).
+
+## ROADMAP.md — consolidated to-build inventory (bookkeeping 2026-08-09)
+
+Outstanding work was scattered across the README roadmap table, the
+CAPTURE work order, PROGRESS deferred/owed notes, RULINGS, and spec
+§12/§13. `ROADMAP.md` (repo root) is now the ONE index: release blockers,
+CAPTURE, P2/P3 completion criteria, scaling/distribution debt, small
+specified-but-unbuilt gaps, P4, and the open author rulings — each row
+linking to its authoritative source. Maintenance rule recorded in the
+file: planned work gets a row; shipped work moves to PROGRESS and the row
+is deleted. The README table stays the coarse view and links there.

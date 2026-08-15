@@ -93,6 +93,11 @@ The five commands above are the daily loop. The rest of what's built:
 
 ## Roadmap
 
+This table is the coarse phase-level view. The complete, consolidated
+inventory of everything still to be built — including the smaller gaps,
+deferred debt, and open design rulings scattered across the docs — lives
+in **[ROADMAP.md](ROADMAP.md)**.
+
 | Phase | Scope | Status |
 |---|---|---|
 | **P0** | Single-machine daemon: event log, search, ranked digests, outbox, exports, crash safety | ✅ complete — engineering gates green; field evaluation pending |
