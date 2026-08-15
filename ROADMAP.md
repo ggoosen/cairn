@@ -52,7 +52,7 @@ validates configuration, not capability.
 | E6 adversarial/safety eval: prompt-injection compliance rate through digest/search/fetch | [code] |
 | E7 longitudinal dogfood strengthened: pre-registration + randomized withholding (supersedes the bare 30-handoff) | [operator] + [code] |
 | E8 replication artifacts (corpora + harness + raw results published) | [operator] |
-| **E9 longitudinal + mesh recall** — recall-over-age, recall-under-growth at fixed budget, supersession accuracy, stale-confidence, thin-node partiality honesty, transitive convergence. Needs a time-control hook behind `cairn_testhooks`; the growth curve is T0 and should land with E4 | [code, large] |
+| **E9 longitudinal + mesh recall** — recall-over-age, recall-under-growth at fixed budget, supersession accuracy, stale-confidence, thin-node partiality honesty, transitive convergence. The time-control hook behind `cairn_testhooks` is BUILT (E9.2) and asserted absent from release binaries; what remains is the measurement. The growth curve is T0 and should land with E4 | [code, large] |
 
 ## 3. P2 completion (built, opt-in — what "done" still needs)
 
