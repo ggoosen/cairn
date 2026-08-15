@@ -3922,3 +3922,41 @@ not an agent's. Measurement work on a claim does not begin until its
 signoff lands. Four operator decisions are listed at the foot of the file;
 the load-bearing one is whether losing to grep-over-transcripts (B1) is
 genuinely accepted as disproof of the curation layer.
+
+### EVAL E9 — longitudinal + mesh recall added to the plan (2026-08-09)
+
+E4/E5 as drafted are SNAPSHOT evaluations (fixed corpus, run queries,
+measure). Long-term memory is a claim about time and growth, and a mesh
+adds partiality — four failure modes no snapshot can see. Added as E9,
+with five new claims registered (LONG-*, MESH-*) taking the register to 21.
+
+Design points worth keeping:
+
+- **Surface distinction, stated before measuring.** The digest has a 72h
+  freshness half-life, search has 90d — deliberately. The digest is the
+  working set and is ALLOWED to forget; search is the memory and is not.
+  Measuring long-horizon recall through the digest would falsely condemn
+  the design; measuring it only through search would let the digest off a
+  hook it should be on. E9 measures both with different expectations.
+- **Time control is the enabling prerequisite.** `Options.Now` is
+  injectable but Go-API-only, which the black-box harness cannot reach by
+  design. The sanctioned answer is a clock hook behind the
+  `cairn_testhooks` build tag — the same mechanism that already keeps the
+  volume-status hook out of release builds. Fallback: controlled system
+  clock in a container.
+- **Recall-under-growth is the cheapest experiment in the whole plan and
+  the most likely to find a real limit** — fixed query set, corpus grown
+  10x/100x/1000x around it, budget held fixed as in real use, no agent and
+  no LLM cost. Sequenced to land with E4 rather than late.
+- **A structural gap this will quantify:** `relates_to` is payload-only
+  with no projection table, so supersession ACROSS messages is not
+  queryable — only within a message's revision chain. Cairn therefore
+  recalls what was written, not necessarily what is currently true. E9's
+  supersession-accuracy split measures what that costs before deciding
+  whether to build structural supersession edges.
+- **Mesh-specific:** transitive convergence recall (written on A, needed on
+  C which only synced with B), partiality honesty in BOTH directions (a
+  falsely-absent `partial` flag is proposed as a thin-node release
+  blocker), recall across fork repair, and revoked-device knowledge policy.
+- E9's highest-fidelity variant replays real session history
+  chronologically — which makes it mutually reinforcing with CAPTURE C3.

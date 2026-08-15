@@ -172,6 +172,60 @@ claims:
     kill_criterion: "PROPOSED — thresholds missed after one documented tuning pass. Reported as a CASE STUDY with limits stated (n=1 operator, non-blinded, self-reported) — it is evidence about this operator, not a general claim."
     signoff: pending
 
+  # ------------------------------------------------- longitudinal / mesh (E9)
+  # Long-term memory claims. Distinct from RET-* because they are about TIME
+  # and GROWTH, which no snapshot evaluation can see.
+
+  - id: LONG-old-material-survives
+    claim: "Freshness is an additive bonus decaying to zero, never a subtractive penalty — old canonical material is never annihilated."
+    source: "spec §9.1 (verbatim design rationale)"
+    class: retrieval
+    evidence: untested
+    measurement: "E9 — recall-over-age curve: recall as a function of the target item's age at query time, measured on SEARCH (the memory surface), reported separately from digest (the working-set surface, which is designed to forget)."
+    threshold: "search recall materially flat across target age; digest may decay, and is expected to"
+    kill_criterion: "PROPOSED — if search recall collapses past some age, additive freshness is not achieving what §9.1 claims for it. Revisit the half-lives, or withdraw the claim."
+    signoff: pending
+
+  - id: LONG-scales-with-corpus
+    claim: "A ranked, budget-capped digest remains useful as the mesh grows."
+    source: "implied by the whole design; never stated as a bound"
+    class: retrieval
+    evidence: untested
+    measurement: "E9 — recall-under-growth: fixed query set, corpus grown 10x/100x/1000x around it, BUDGET HELD FIXED as in real use. T0: no agent, no LLM cost."
+    threshold: "recall and precision@budget hold within a stated tolerance to at least 100k messages"
+    kill_criterion: "PROPOSED — if quality collapses as the corpus grows at fixed budget, Cairn does not scale as long-term memory. Duplicate/saturation penalties and/or summarization stop being optional. This is the cheapest experiment in the plan and the most likely to find a real limit — run it early."
+    signoff: pending
+
+  - id: LONG-current-truth
+    claim: "Retrieval surfaces what is true now, not merely what was written."
+    source: "implied by revisions/retractions and `cairn compact`"
+    class: retrieval
+    evidence: untested
+    measurement: "E9 — supersession accuracy, reported as a three-way split: correct (returns the superseding item) / stale / ambiguous (both, undifferentiated). Plus stale-confidence rate: how often an agent acts on a stale return without signalling uncertainty."
+    threshold: "stale-preferred rate low; stale-confidence rate near zero"
+    kill_criterion: "PROPOSED — if the stale-preferred rate is material, cross-message supersession needs structural representation (`relates_to` is payload-only, with no projection table, so only WITHIN-message revision chains are queryable today). Until built, state plainly that Cairn recalls what was written, not what is currently true."
+    signoff: pending
+
+  - id: MESH-convergence-recall
+    claim: "What one session learns, another can find — across machines."
+    source: "README opening; public thread"
+    class: product
+    evidence: untested
+    measurement: "E9 — transitive convergence recall: knowledge written on node A, queried on node C which has only ever synced with B; recall as a function of time-since-write and sync topology."
+    threshold: "converges to full recall within a bounded, stated time"
+    kill_criterion: "PROPOSED — if transitive convergence fails or is unbounded in time, the mesh claim narrows to directly-paired nodes and must be restated."
+    signoff: pending
+
+  - id: MESH-partial-honesty
+    claim: "A thin node's universal search is honestly partial — it says so when its local corpus is only a recent window."
+    source: "spec §6.1/§7; `partial` + `partial_reason` in search output"
+    class: safety
+    evidence: untested
+    measurement: "E9 — partiality honesty in BOTH directions: partial set when the answer was genuinely missing, and never absent when the corpus was in fact incomplete."
+    threshold: "zero falsely-absent partial flags"
+    kill_criterion: "PROPOSED — any falsely-absent partial flag is a node claiming completeness it does not have. Release blocker for thin nodes: silent incompleteness is worse than declared partiality."
+    signoff: pending
+
   # ---------------------------------------------------------------- safety
   # Structural assertions that have never been run at an actual agent.
 

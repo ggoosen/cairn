@@ -170,11 +170,100 @@ study, and say so.
 Publish corpora + harness + raw results so a third party can rerun and
 disagree. An evaluation nobody else can reproduce is a press release.
 
+### E9 — Longitudinal + mesh recall (L) — the long-term memory question
+
+E4/E5 are **snapshot** evaluations: fixed corpus, run queries, measure. But
+"long-term memory" is a claim about *time* and *growth*, and a mesh adds
+*partiality*. Four failure modes live here that no snapshot can see.
+
+**9.1 The surface distinction — get this right or the results are garbage.**
+The digest profile has a 72-hour freshness half-life; search has 90 days.
+That is deliberate: the digest is a *working set* ("what's new that I care
+about"), search is the *memory* ("find the right thing ever written").
+Testing long-horizon recall through the digest would measure the wrong
+surface and produce a falsely damning result; testing it only through
+search would let the digest off a hook it should be on. Measure both, with
+different expectations stated up front: **the digest is allowed to forget;
+search is not.**
+
+**9.2 Prerequisite: time control.** Simulating a year of mesh must not take
+a year. The daemon's clock is injectable (`Options.Now`) but only through
+the Go API, which the black-box harness cannot reach by design. The
+sanctioned fix already has precedent in this repo: a clock hook compiled in
+**only under the `cairn_testhooks` build tag** (the same mechanism that
+keeps the volume-status hook out of release builds). Eval builds get
+controllable time; release builds cannot have it. Alternative if that
+proves unwise: run the daemon under a controlled system clock in a
+container — fully black-box, at the cost of harness complexity.
+
+**9.3 Metrics — curves, not point estimates.**
+
+- **Recall-over-age.** Fix (query → known-relevant-item) pairs; plot recall
+  against the *age of the target at query time*. This directly tests spec
+  §9.1's design claim that additive freshness "never annihilates old
+  canonical material". If recall collapses past some age, the claim is
+  false and the half-lives need revisiting.
+- **Recall-under-growth (interference).** Same query set; grow the
+  surrounding corpus 10× → 100× → 1000× while **holding the budget fixed**
+  (as it is in real use). Selectivity demand rises with N, so this is the
+  scariest curve in the whole plan: does a mesh that works at 1k messages
+  still work at 100k? Cheap to run (T0/T1, no agent needed) and the most
+  likely place to find a real limit.
+- **Supersession accuracy.** For fact pairs where B supersedes A, report a
+  three-way split: returns B (correct) / returns A (**stale**) / returns
+  both undifferentiated (ambiguous — the agent may pick wrong). Note the
+  known structural gap: `relates_to` is payload-only with no projection
+  table, so supersession *across messages* is not queryable — only
+  supersession *within* a message's revision chain is. This metric will
+  quantify how much that gap costs.
+- **Stale-confidence rate.** Of the stale returns above, how often does the
+  agent act on them without signalling uncertainty? A miss is visible to
+  the user; a confidently-stale hit is not. This is the dangerous one.
+- **Duplicate dilution.** The same fact restated across N sessions: what
+  fraction of a fixed budget does one fact consume? Directly measures the
+  cost of the unimplemented duplicate/saturation penalties (spec §9.1,
+  `PenaltyCap`), and tells you whether to build them.
+- **Temporal competence.** Can an agent answer "what did we decide about X,
+  and has that changed?" — history, not just current state. Cairn has
+  revisions, retractions and `cairn compact` (current state), but no
+  "history of X" retrieval surface. If this scores badly, that absence is
+  the finding.
+
+**9.4 Mesh-specific recall.** Single-node evaluation cannot see these:
+
+- **Transitive convergence recall.** Knowledge written on node A, needed on
+  node C, which has only ever synced with B. Measure recall as a function
+  of time-since-write and sync topology.
+- **Partiality honesty.** A thin node holds only a recent window and sets
+  `partial: true`. The claim to test is that the flag is *honest in both
+  directions*: partial when it genuinely is, and — far more important —
+  never absent when the answer was in fact incomplete. A silently-complete
+  claim on an incomplete corpus is the mesh version of stale confidence.
+- **Recall across repair.** After an equivocation repair, the losing
+  branch's messages are reissued under a recovery origin carrying
+  `recovered_from_event_id`. Is that knowledge still findable afterwards,
+  and correctly attributed? Long-term memory has to survive the ceremonies.
+- **Revoked-device knowledge.** Knowledge authored by a since-revoked
+  device: still retrievable? Should it be? That is a policy question with a
+  recall consequence, and it should be answered deliberately rather than
+  discovered.
+
+**9.5 Highest-fidelity variant.** If CAPTURE C3 lands, real session history
+with real timestamps can be replayed chronologically, querying at each
+point — a true longitudinal replay rather than a synthetic one. That makes
+E9 and C3 mutually reinforcing: C3 supplies the corpus E9 most wants.
+
 ## 6. Sequencing
 
 E1 → E2 → E3 → E4 (T0/T1 value lands here) → E5/E6 in parallel → E7
 alongside real usage → E8 at first tag. E1 is cheap and gates everything:
 write the kill criteria before you can be tempted by results.
+
+E9 splits: its **recall-under-growth** curve is T0 (synthetic corpus, no
+agent, no LLM cost) and should land WITH E4 — it is the cheapest experiment
+in the plan and the most likely to find a real limit. The rest of E9 needs
+the time-control hook (§9.2) and, for the highest-fidelity variant, CAPTURE
+C3.
 
 ## 7. Pre-registered kill criteria
 
@@ -190,6 +279,10 @@ is to change the product, not the metric.
 | **Cross-model transfer** underperforms single-model | The mesh pitch narrows to single-model multi-session. Rewrite the claim. |
 | Injection **compliance rate is materially above baseline** | The untrusted-content envelope is decorative. Treat as a release blocker. |
 | P2 profile does not beat P0 after calibration | Ship P0 as default and archive P2's extra terms. |
+| **Recall collapses with target age** (E9) | Additive freshness is not protecting old canonical material as spec §9.1 claims. Revisit half-lives, or the claim. |
+| **Recall collapses as the corpus grows** at fixed budget (E9) | The mesh does not scale as long-term memory. Duplicate/saturation penalties and/or summarization become mandatory, not optional. |
+| **Stale-preferred rate is material** (E9) | Cross-message supersession needs structural representation (`relates_to` is payload-only today). Until then, say plainly that Cairn recalls what was written, not what is currently true. |
+| **Thin-node `partial` is ever falsely absent** (E9) | A node claims completeness it does not have. Release blocker for thin nodes: silent incompleteness is worse than declared partiality. |
 
 ## 8. Non-goals
 
