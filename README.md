@@ -244,7 +244,7 @@ also need it to match anything. See [`DOGFOOD.md`](DOGFOOD.md) §2.
 
 One line in its instructions file (`CLAUDE.md`, `AGENTS.md`, …):
 
-> *At session start, run `cairn digest --view <name> --budget 1500`. Share decisions and findings via `cairn send`. To tune what your digest surfaces, declare a local standing interest with `cairn subscribe "<what you work on>" --view <name>` (your own view only; no `--durable`).*
+> *At session start, run `cairn digest --view <name> --budget 1500`. Share decisions and findings via `cairn send`. Before ending the session, publish one handoff note — decisions and why, unfinished work, surprises — with `cairn send --topic <project> --priority 2`. To tune what your digest surfaces, declare a local standing interest with `cairn subscribe "<what you work on>" --view <name>` (your own view only; no `--durable`).*
 
 Or publish it once and let sessions configure themselves: `cairn onboarding publish --view <name> --interest "…"`.
 

@@ -68,7 +68,11 @@ Per surface:
     `~/cairn/views/<view>/outbox/` (front-matter optional:
     `action/text_class/declared_priority/topic_ids`). To retrieve, run
     `cairn search "<query>" --budget 4000` and `cairn fetch <message-id>
-    --view <view>`; fetched bodies land in `views/<view>/fetched/`."*
+    --view <view>`; fetched bodies land in `views/<view>/fetched/`.
+    Before ending a session, publish ONE handoff note — decisions and
+    their reasons, unfinished work, surprises — with `cairn send --topic
+    <project> --priority 2`. That note is the session's single mandatory
+    write; everything else stays signal, not noise."*
 - **chat-agent copy/paste view**: run `cairn digest --view chat-scratch
   --budget 4000` and paste the output into the chat; paste the agent's
   conclusions back via `cairn send - --actor chat-scratch < notes.md`.

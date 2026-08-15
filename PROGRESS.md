@@ -3654,3 +3654,31 @@ specified-but-unbuilt gaps, P4, and the open author rulings — each row
 linking to its authoritative source. Maintenance rule recorded in the
 file: planned work gets a row; shipped work moves to PROGRESS and the row
 is deleted. The README table stays the coarse view and links there.
+
+---
+
+## CAPTURE C1 — end-of-session handoff convention — DONE (2026-08-15)
+
+Docs only, per `build/CAPTURE-PLAN.md` C1. The capture gap has a quality
+layer above any automatic ingest: the agent is the best summarizer of its
+own session and it is present at session end — but nothing ever told it to
+write one. Sessions ended with their reasoning still in the transcript.
+
+All three agent-instruction surfaces now carry the same instruction: before
+ending a session, publish ONE handoff note (decisions and their reasons,
+unfinished work, surprises) via `cairn send … --priority 2`.
+
+- `CLAUDE.md` agent block: new END OF SESSION bullet, immediately after the
+  "signal, not noise" bullet it qualifies.
+- `README.md` "Wiring an agent" one-liner: handoff sentence added between
+  the send and subscribe clauses.
+- `DOGFOOD.md` §3 Claude Code agent-instruction snippet: same, in the
+  snippet's own voice.
+
+Wording deliberately bounds the instruction in every surface — "the
+session's single mandatory write, not licence to dump" — so the handoff
+does not read as permission to dump the transcript into the mesh. The
+existing "signal, not noise" guidance is unchanged.
+
+No code change; `make vet`, `make test`, `golangci-lint run` (0 issues)
+green.
