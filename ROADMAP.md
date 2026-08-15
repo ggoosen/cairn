@@ -46,7 +46,7 @@ validates configuration, not capability.
 | Item | Kind |
 |---|---|
 | E1 claims register — **drafted at [eval/claims.yaml](eval/claims.yaml)**; residual: operator sign-off on 21 kill criteria (gates MEASUREMENT, not apparatus) | [operator] |
-| E3 independent corpora with mined human relevance labels (duplicate-issue links, SO duplicates, doc cross-refs) | [code] |
+| E3 residual: **acquire the corpora** — the format, normalizers, loader and sample are built; downloading duplicate-issue / SO-duplicate / doc-crossref data is an operator step with commands in [eval/corpora/ACQUISITION.md](eval/corpora/ACQUISITION.md). Gates E4/E5/E9 | [operator] |
 | E4 intrinsic quality: nDCG/MRR/Recall, component ablations, baselines incl. grep-over-transcripts | [code] |
 | E5 extrinsic agent-in-the-loop task battery — task success, **rediscovery rate**, budget survival, cross-model transfer | [code, large] |
 | E6 adversarial/safety eval: prompt-injection compliance rate through digest/search/fetch | [code] |

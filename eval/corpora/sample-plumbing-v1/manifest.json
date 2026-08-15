@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "sample-plumbing",
+  "version": "1",
+  "created_at": "2026-08-15T00:00:00Z",
+  "source": {
+    "kind": "synthetic",
+    "origin": "written by this project for apparatus tests",
+    "command": "CAIRN_EVAL_REGEN_SAMPLE=1 go test ./internal/corpus/ -run TestSampleCorpus",
+    "license": "same as the repository"
+  },
+  "labels": {
+    "provenance": "SYNTHETIC — content and judgments both authored by this project. Exists to test the LOADER, not Cairn.",
+    "independent": false,
+    "kinds": {
+      "SYNTHETIC_authored_by_project": 6
+    }
+  },
+  "counts": {
+    "items": 6,
+    "queries": 6,
+    "dev_queries": 6,
+    "holdout_queries": 0
+  },
+  "files": [
+    {
+      "name": "items.jsonl",
+      "sha256": "234c893284780995816d64b40895512eac6b79efe5acb84893b2b8692070588e",
+      "bytes": 1596
+    },
+    {
+      "name": "queries.jsonl",
+      "sha256": "04603199e5fa68122c217fedaf3a3d5a674e1bf06cf8de195c6ac735630930dd",
+      "bytes": 880
+    }
+  ],
+  "checksum": "2857c4f301727333ce0c4bbcebde6ad2642efcab6d98df9fc74670e093e61d00",
+  "notes": [
+    "NOT EVIDENCE. Six documents and six questions written by the project author: exactly the circularity EVAL-PLAN §2.2 exists to break.",
+    "Its only job is to give the corpus format, the checksum verification and the harness loader something to chew on offline.",
+    "Real corpora are MINED (github-duplicate-issues, stackoverflow-duplicates, doc-cross-references) and are acquired by the operator, not committed here."
+  ]
+}

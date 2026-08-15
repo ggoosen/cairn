@@ -37,6 +37,8 @@ func main() {
 		err = runBackends(args[1:])
 	case "smoke":
 		err = runSmoke(ctx, args[1:])
+	case "corpus":
+		err = runCorpus(args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return
@@ -57,6 +59,10 @@ func usage() {
 usage:
   cairn-eval backends            list memory conditions and what each models
   cairn-eval smoke [flags]       plumbing check: provision, write, retrieve, record
+  cairn-eval corpus verify DIR   check a corpus against its manifest checksums
+  cairn-eval corpus info DIR     where a corpus came from and who made its labels
+  cairn-eval corpus mine …       build a corpus from mined human relevance labels
+                                 (github | stackoverflow | docs)
 
 No measurement verbs exist yet. E4 adds them, once eval/claims.yaml carries
 operator signoffs on the kill criteria those measurements would test.

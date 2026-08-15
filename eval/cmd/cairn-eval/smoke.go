@@ -12,6 +12,7 @@ import (
 
 	"github.com/ggoosen/cairn/eval/internal/backend"
 	"github.com/ggoosen/cairn/eval/internal/cairnctl"
+	"github.com/ggoosen/cairn/eval/internal/corpus"
 	"github.com/ggoosen/cairn/eval/internal/result"
 	"github.com/ggoosen/cairn/eval/internal/tunables"
 )
@@ -25,8 +26,18 @@ func runSmoke(ctx context.Context, args []string) error {
 	backends := fs.String("backends", "B0,B1,B2,B5", "comma-separated memory conditions to exercise")
 	outDir := fs.String("out", "", "directory for run records (default: a temp dir, printed)")
 	seed := fs.Int64("seed", 1, "deterministic seed recorded with the run")
+	corpusDir := fs.String("corpus", "", "exercise the loader against a corpus directory instead of the built-in fixture (non-independent corpora only)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	fixture := plumbingFixture()
+	if *corpusDir != "" {
+		loaded, err := loadPlumbingCorpus(*corpusDir)
+		if err != nil {
+			return err
+		}
+		fixture = loaded
 	}
 
 	dest := *outDir
@@ -43,19 +54,79 @@ func runSmoke(ctx context.Context, args []string) error {
 		if id == "" {
 			continue
 		}
-		path, err := smokeOne(ctx, id, dest, *seed)
+		path, err := smokeOne(ctx, id, dest, *seed, fixture)
 		if err != nil {
 			return fmt.Errorf("%s: %w", id, err)
 		}
 		fmt.Printf("%-3s plumbing OK — %s\n", id, path)
 	}
 	fmt.Printf("\nrun records in %s\n", dest)
-	fmt.Println("These are PLUMBING-VERIFICATION records over a 3-document synthetic fixture.")
+	fmt.Printf("These are PLUMBING-VERIFICATION records over %s (%d items, %d queries).\n",
+		fixture.corpus.ID, fixture.corpus.ItemCount, fixture.corpus.QueryCount)
+	fmt.Printf("Label source: %s\n", fixture.corpus.LabelSource)
 	fmt.Println("They are not evaluation results and no metric has been computed from them.")
 	return nil
 }
 
-func smokeOne(ctx context.Context, id backend.ID, outDir string, seed int64) (string, error) {
+// fixtureSet is the material a plumbing run pushes through a backend: items,
+// questions with their known answers, and the provenance of both. It is
+// deliberately the SAME shape whether it came from the built-in fixture or
+// from a corpus directory, so the loader path is exercised by the same code
+// the fixture path uses.
+type fixtureSet struct {
+	items   []backend.Item
+	queries []backend.PlumbingQuery
+	corpus  result.Corpus
+}
+
+func plumbingFixture() fixtureSet {
+	items := backend.PlumbingFixture()
+	return fixtureSet{
+		items:   items,
+		queries: backend.PlumbingQueries(),
+		corpus: result.Corpus{
+			ID: "plumbing-fixture", Version: "1",
+			ItemCount: len(items), QueryCount: len(backend.PlumbingQueries()),
+			LabelSource: "SYNTHETIC — authored by this project; apparatus check only, not evidence",
+		},
+	}
+}
+
+// loadPlumbingCorpus exercises the E3 loader through the harness.
+//
+// It REFUSES an independent corpus, on purpose. Pushing mined human-labelled
+// ground truth through the backends and recording per-query outcomes is the
+// first half of a measurement, and measurement does not begin until the kill
+// criteria in eval/claims.yaml carry an operator signoff (EVAL-PLAN §5-E1).
+// The guard is here rather than in a comment because a flag that quietly did
+// the thing would be used.
+func loadPlumbingCorpus(dir string) (fixtureSet, error) {
+	c, err := corpus.Load(dir)
+	if err != nil {
+		return fixtureSet{}, err
+	}
+	if c.Manifest.Labels.Independent {
+		return fixtureSet{}, fmt.Errorf(
+			"corpus %s carries INDEPENDENT human labels: running it here would be the first half of a measurement.\n"+
+				"Measurement verbs arrive with E4, after eval/claims.yaml carries operator signoffs on the kill criteria.\n"+
+				"Use `cairn-eval corpus verify` to check this corpus, or the sample corpus to exercise the plumbing",
+			c.Manifest.ID)
+	}
+	set := fixtureSet{
+		items: c.BackendItems(),
+		corpus: result.Corpus{
+			ID: c.Manifest.ID, Version: c.Manifest.Version, Checksum: c.Manifest.Checksum,
+			ItemCount: c.Manifest.Counts.Items, QueryCount: c.Manifest.Counts.Queries,
+			LabelSource: c.Manifest.Labels.Provenance,
+		},
+	}
+	for _, q := range c.Queries {
+		set.queries = append(set.queries, backend.PlumbingQuery{ID: q.ID, Query: q.Query, Expected: q.Relevant[0]})
+	}
+	return set, nil
+}
+
+func smokeOne(ctx context.Context, id backend.ID, outDir string, seed int64, fixture fixtureSet) (string, error) {
 	b, err := backend.New(id)
 	if err != nil {
 		return "", err
@@ -85,23 +156,16 @@ func smokeOne(ctx context.Context, id backend.ID, outDir string, seed int64) (st
 	}
 	defer func() { _ = b.Close(ctx) }()
 
-	items := backend.PlumbingFixture()
-	for _, it := range items {
+	for _, it := range fixture.items {
 		if _, err := b.Write(ctx, it); err != nil {
 			return "", fmt.Errorf("write %s: %w", it.ID, err)
 		}
 	}
 
-	run := result.NewRun(result.KindPlumbing, seed, meta, result.Corpus{
-		ID:          "plumbing-fixture",
-		Version:     "1",
-		ItemCount:   len(items),
-		QueryCount:  len(backend.PlumbingQueries()),
-		LabelSource: "SYNTHETIC — authored by this project; apparatus check only, not evidence",
-	})
+	run := result.NewRun(result.KindPlumbing, seed, meta, fixture.corpus)
 	run.Note("plumbing verification: proves the harness can drive %s end to end. No metric computed.", id)
 
-	for _, q := range backend.PlumbingQueries() {
+	for _, q := range fixture.queries {
 		for _, surface := range []backend.Surface{backend.SurfaceSearch, backend.SurfaceDigest} {
 			out := result.Outcome{QueryID: q.ID + "/" + string(surface), Query: q.Query, Surface: string(surface)}
 			resp, err := b.Retrieve(ctx, backend.Request{

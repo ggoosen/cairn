@@ -72,4 +72,28 @@ const (
 
 	// CorpusSchemaVersion versions the corpus manifest format (E3).
 	CorpusSchemaVersion = 1
+
+	// MaxCorpusLineBytes bounds one JSONL record. Mined issue bodies can be
+	// long; a stack trace pasted into a bug report is routinely tens of KB.
+	MaxCorpusLineBytes = 4 << 20
+
+	// MinedBodyChars caps how much of a source body is included when a query
+	// is built from title AND body. Whole bug reports as queries would be an
+	// unusual thing for a person to ask.
+	MinedBodyChars = 500
+)
+
+// Split assignment (EVAL-PLAN §8: no tuning on the evaluation set).
+const (
+	// SplitSalt fixes the dev/holdout partition. It is a CONSTANT and must
+	// never be changed to "rebalance" a corpus: a split that can be re-rolled
+	// is a split that can be re-rolled until the holdout flatters the system.
+	// Changing it invalidates every result measured against the old split,
+	// and any change belongs in the same commit as that admission.
+	SplitSalt = "cairn-eval-split-v1:"
+
+	// HoldoutFractionPerMyriad is the share of queries held out, in parts per
+	// ten thousand (3000 = 30%). Integer parts-per-myriad rather than a float
+	// so the partition is exactly reproducible on any machine.
+	HoldoutFractionPerMyriad = 3000
 )

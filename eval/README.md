@@ -14,7 +14,7 @@ show the product claims to be false.
 |---|---|
 | E1 claims register | drafted — **every `signoff:` is `pending`** |
 | E2 harness skeleton | built (this module) |
-| E3 independent corpora | tooling + format + sample built; bulk acquisition is an operator step |
+| E3 independent corpora | format, normalizers, loader and sample built; **bulk acquisition not run** — an operator step, see [corpora/ACQUISITION.md](corpora/ACQUISITION.md) |
 | E4–E8 | not started |
 | E9 time-control hook | built (`cairn_testhooks`); the rest not started |
 
@@ -67,9 +67,16 @@ eval/
 
 ```sh
 make eval          # from the repo root: vet + test the harness
-cairn-eval backends   # what each memory condition is, and what it models
-cairn-eval smoke      # plumbing check; writes labelled run records
+cairn-eval backends              # what each memory condition is, and what it models
+cairn-eval smoke                 # plumbing check; writes labelled run records
+cairn-eval corpus info  <dir>    # where a corpus came from and who made its labels
+cairn-eval corpus verify <dir>   # bytes still match the manifest checksums
+cairn-eval corpus mine …         # normalize mined human labels into a corpus
 ```
+
+The harness module contains **no HTTP client**: corpus downloading is an
+operator step (`gh api`, `curl`), so the T0 tier's offline property is
+structural rather than a habit. Format: [corpora/FORMAT.md](corpora/FORMAT.md).
 
 The driver builds `cairn` from the enclosing repository with
 `-tags sqlite_fts5,cairn_testhooks`. Point `CAIRN_EVAL_BINARY` at a prebuilt
