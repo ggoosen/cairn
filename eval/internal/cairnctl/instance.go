@@ -43,6 +43,11 @@ type Options struct {
 	// topology explicitly rather than inheriting "auto".
 	SyncListen string
 
+	// Clock, when non-zero, runs the daemon on a SIMULATED clock (clock.go).
+	// Requires a binary built with cairn_testhooks — which is what
+	// FindBinary produces, and which a release binary is not.
+	Clock Clock
+
 	// ExtraEnv entries ("K=V") are appended to every subprocess environment.
 	ExtraEnv []string
 }
@@ -112,6 +117,11 @@ func Provision(ctx context.Context, opts Options) (*Instance, error) {
 	// missing --dir point at the operator's real mesh.
 	env = filterEnv(env, "CAIRN_DIR", "CAIRN_SESSION", "CAIRN_DEVICE_STATE_DIR")
 	env = append(env, "CAIRN_DEVICE_STATE_DIR="+inst.DeviceDir)
+	// The clock hook is read by the DAEMON only; `cairn init` runs its
+	// identity ceremonies on the real clock either way. Exporting it to
+	// every verb keeps one environment for the instance rather than two
+	// that could drift.
+	env = append(env, opts.Clock.env()...)
 	env = append(env, opts.ExtraEnv...)
 	inst.env = env
 

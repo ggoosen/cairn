@@ -4110,3 +4110,71 @@ vet, test and lint are untouched: `./...` stops at the nested module.
 
 Green: main `make vet` + `golangci-lint run` (0 issues) unchanged; `make
 eval` green; eval `golangci-lint run` 0 issues.
+
+### EVAL E9.2 — time-control hook SHIPPED (prerequisite only, 2026-08-15)
+
+E9's recall-over-age and recall-under-growth curves need to replay months of
+mesh in minutes. `daemon.Options.Now` is injectable but Go-API-only, and the
+harness is a separate module driving cairn as a black box on purpose — so
+the daemon now takes a simulated clock from the ENVIRONMENT, behind the
+`cairn_testhooks` build tag, exactly mirroring the volume-status hook
+(`clock_testhook.go` / `clock_notesthook.go`, the same tagged pair shape).
+
+**Only the hook was built. No E9 measurement was run** — the curves need E3
+corpora and operator signoff on the LONG-*/MESH-* kill criteria.
+
+Mechanism, and the reasoning behind each choice:
+
+- `CAIRN_FAKE_CLOCK_OFFSET` (Go duration) or `CAIRN_FAKE_CLOCK` (RFC 3339
+  instant). Both at once is REFUSED rather than resolved by precedence:
+  their meanings differ and guessing is worse than failing.
+- **Offset, never frozen.** The clock advances at the real rate; only its
+  origin moves. A frozen clock stalls everything that waits for time to pass
+  (TTLs, leases, debounces, housekeeping) and a hung harness looks
+  disturbingly like a result. It also keeps the clock monotonic, which every
+  duration measurement in the daemon assumes.
+- **An epoch is a daemon lifetime.** The offset resolves once at `Start`, so
+  simulated time never jumps under a running daemon mid-transaction; the
+  harness restarts the daemon to advance an epoch. That restart also
+  exercises recovery between epochs, which a long-horizon experiment should
+  be doing anyway.
+- **A malformed value is fatal.** A silent fall back to real time would give
+  a run whose timestamps mean something other than what the harness believes
+  — and the run would look entirely normal.
+- **The daemon announces it** (`WARNING: … SIMULATED CLOCK …` on the warn
+  stream), so the harness confirms the hook took effect rather than assuming
+  an env var was honoured. The eval driver asserts on that line.
+- **Explicit `Options.Now` still wins.** The environment hook is the fallback
+  for callers that cannot reach the Go API, never an override of one that
+  can; existing main-suite tests that inject clocks are unaffected.
+
+**Release absence is asserted two ways** (`cmd/cairn/clock_hook_release_test.go`,
+following the FIX-F4 precedent that a property of a build the suite never
+uses must be checked by building it): an untagged (`sqlite_fts5` only)
+binary is compiled, and (1) the env var NAMES must be absent from its bytes
+— the constants live only in the tagged file, so their presence would mean
+the hook shipped — and (2) running it with both variables set must still
+produce real timestamps. Either check alone is defeatable (a rename beats
+the first; a malformed value passes the second), so both run. Consistent
+with R22, the threat model is accidents and packaging mistakes, not a
+malicious local process with code execution.
+
+**Scope limit, recorded rather than papered over:** `cairn init` runs the
+identity ceremonies on the real clock. Safe, because `wall_time` is NEVER
+used for ordering (event.Envelope says so explicitly) and device certs carry
+no validity window — but ceremonies that DO have wall-clock TTLs (pairing
+invitations, enrolment requests) will correctly expire if a simulated clock
+crosses their window. That is the hook being honest.
+
+Harness side: `cairnctl.Clock{Offset|Anchor}` sets it from outside the
+process, with a driver test that drives the whole path (harness → env →
+daemon hook → an event's `created_at` read back through the CLI). The env
+var names are duplicated in the harness because it cannot import the
+daemon's internals; that duplication is the deliberate cost of the module
+split, and the driver test fails if the two ever drift apart.
+
+`build/EVAL-PLAN.md` §9.2 now records the built mechanism where it is more
+specific than the original sketch.
+
+Green: `make verify` (untagged guard + tagged vet/test), `golangci-lint run`
+0 issues in both modules, `make eval` green.

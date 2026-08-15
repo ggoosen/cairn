@@ -196,6 +196,38 @@ controllable time; release builds cannot have it. Alternative if that
 proves unwise: run the daemon under a controlled system clock in a
 container — fully black-box, at the cost of harness complexity.
 
+*Built (2026-08-15). The mechanism, where it is more specific than the
+sketch above:*
+
+- Two environment variables, read by the daemon at `Start` and compiled in
+  only under `cairn_testhooks`: `CAIRN_FAKE_CLOCK_OFFSET` (a Go duration,
+  e.g. `-2160h`) or `CAIRN_FAKE_CLOCK` (an RFC 3339 instant). Both at once
+  is refused rather than resolved by precedence.
+- **Offset, never frozen.** The clock advances at the real rate; only its
+  origin moves. A frozen clock stalls everything that waits for time to pass
+  — TTLs, leases, debounces, housekeeping — and a hung harness looks
+  disturbingly like a result.
+- **An epoch is a daemon lifetime.** The offset is resolved once at start, so
+  simulated time never jumps under a running daemon; the harness restarts the
+  daemon to advance to the next epoch (which also exercises recovery between
+  epochs, as a long-horizon experiment should).
+- **A malformed value is fatal.** Falling back to real time would produce a
+  run whose timestamps mean something other than what the harness believes,
+  and it would look entirely normal.
+- **The daemon announces it** on its warn stream (`SIMULATED CLOCK …`), so
+  the harness confirms the hook took effect instead of assuming the variable
+  was honoured.
+- **Release builds are asserted clean** by `cmd/cairn`'s release test, which
+  builds an untagged (`sqlite_fts5` only) binary and checks both that the
+  variable NAMES are absent from its bytes and that setting them changes no
+  timestamp. Either check alone is defeatable — a rename beats the first, a
+  malformed value passes the second — so both run.
+- Scope: `cairn init` runs the identity ceremonies on the real clock. That is
+  safe (`wall_time` is never used for ordering; device certificates carry no
+  validity window), but ceremonies that DO have wall-clock TTLs — pairing
+  invitations, enrolment requests — will expire if a simulated clock crosses
+  their window. That is the hook being honest, not a defect to work around.
+
 **9.3 Metrics — curves, not point estimates.**
 
 - **Recall-over-age.** Fix (query → known-relevant-item) pairs; plot recall
