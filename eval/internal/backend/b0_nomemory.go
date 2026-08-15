@@ -8,7 +8,7 @@ import "context"
 // It is the control condition, and it is the reason the rest of the
 // framework can say anything at all. Without a no-memory arm there is no
 // counterfactual, and without a counterfactual there is no claim — only a
-// description (EVAL-PLAN §2.1).
+// description (BUILD-PLAN §2.1).
 type noMemory struct{ writes int }
 
 func (b *noMemory) ID() ID { return B0NoMemory }

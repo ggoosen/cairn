@@ -82,7 +82,7 @@ fuzz:
 vet:
 	go vet $(GOTESTTAGS) ./...
 
-# The evaluation harness (build/EVAL-PLAN.md) is a SEPARATE module, so the
+# The evaluation harness (build/BUILD-PLAN.md §3) is a SEPARATE module, so the
 # main targets above do not see it — `./...` does not cross a module
 # boundary. Its own targets live here, and are deliberately NOT wired into
 # `test`, `vet` or `verify`: the main suite gates every commit and its

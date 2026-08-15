@@ -1,7 +1,7 @@
 // Command cairn-eval drives the evaluation apparatus.
 //
 // WHAT IT DELIBERATELY DOES NOT DO: compute a metric, compare backends, or
-// print anything that reads as a verdict on Cairn. EVAL-PLAN §5-E1
+// print anything that reads as a verdict on Cairn. BUILD-PLAN §5-E1
 // pre-registers falsification criteria BEFORE measurement so that results
 // cannot influence the criteria, and every `signoff:` in eval/claims.yaml is
 // still `pending`. Measurement verbs arrive with E4, after those signoffs.
@@ -54,7 +54,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `cairn-eval — evaluation apparatus for Cairn (build/EVAL-PLAN.md)
+	fmt.Fprint(os.Stderr, `cairn-eval — evaluation apparatus for Cairn (build/BUILD-PLAN.md)
 
 usage:
   cairn-eval backends            list memory conditions and what each models

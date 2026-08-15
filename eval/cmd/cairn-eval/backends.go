@@ -15,7 +15,7 @@ func runBackends(args []string) error {
 		return err
 	}
 	out := os.Stdout
-	fmt.Fprintln(out, "memory conditions (EVAL-PLAN §5-E4):")
+	fmt.Fprintln(out, "memory conditions (BUILD-PLAN §5-E4):")
 	for _, id := range backend.All() {
 		b, err := backend.New(id)
 		if err != nil {

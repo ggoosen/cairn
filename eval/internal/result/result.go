@@ -12,7 +12,7 @@
 // cannot accidentally publish a result before its criteria were fixed.
 //
 // Second, a run must be re-inspectable years later by someone who does not
-// trust us (EVAL-PLAN §5-E8). So: an explicit schema version, the exact
+// trust us (BUILD-PLAN §5-E8). So: an explicit schema version, the exact
 // binary and corpus checksums, the seed, raw backend output, and a Kind that
 // says plainly whether the run was a plumbing check or a real measurement.
 package result

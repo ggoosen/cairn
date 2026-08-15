@@ -1,6 +1,6 @@
 # eval — the apparatus that could falsify Cairn's claims
 
-Work order: [`../build/EVAL-PLAN.md`](../build/EVAL-PLAN.md).
+Work order: [`../build/BUILD-PLAN.md`](../build/BUILD-PLAN.md).
 Claims register: [`claims.yaml`](claims.yaml).
 
 Cairn's engineering claims are backed by gates. Its **product** claims are
@@ -20,7 +20,7 @@ show the product claims to be false.
 
 **Nothing here has measured anything.** No metric is computed, no backend is
 compared to another, and no verdict on Cairn exists in this tree. That is
-deliberate and it is the ordering EVAL-PLAN §5-E1 requires: the kill criteria
+deliberate and it is the ordering BUILD-PLAN §5-E1 requires: the kill criteria
 are written down and accepted *before* results exist to be tempted by. Until
 an operator signs off the criteria in `claims.yaml`, measurement does not
 start.
@@ -83,7 +83,7 @@ The driver builds `cairn` from the enclosing repository with
 binary to evaluate a release artifact instead. `CAIRN_EVAL_KEEP=1` leaves a
 throwaway instance's directory on disk for inspection.
 
-## The memory conditions (EVAL-PLAN §5-E4)
+## The memory conditions (BUILD-PLAN §5-E4)
 
 | ID | Condition | State |
 |---|---|---|

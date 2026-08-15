@@ -1,4 +1,4 @@
-// Package backend defines the ONE interface every EVAL-PLAN §5-E4 memory
+// Package backend defines the ONE interface every BUILD-PLAN §5-E4 memory
 // condition is driven through: B0 no-memory, B1 grep-over-transcripts, B2
 // flat markdown notes, B3 naive vector RAG, B4 full-context stuffing, B5
 // Cairn.
@@ -24,7 +24,7 @@ import (
 	"github.com/ggoosen/cairn/eval/internal/cairnctl"
 )
 
-// ID identifies a memory condition. The letters are EVAL-PLAN §5-E4's.
+// ID identifies a memory condition. The letters are BUILD-PLAN §5-E4's.
 type ID string
 
 const (
@@ -36,7 +36,7 @@ const (
 	B5Cairn          ID = "B5"
 )
 
-// Surface distinguishes EVAL-PLAN §9.1's two retrieval surfaces, which have
+// Surface distinguishes BUILD-PLAN §3.4 E9's two retrieval surfaces, which have
 // different design intent and therefore different expectations:
 //
 //   - SurfaceSearch is the MEMORY. It is not allowed to forget.

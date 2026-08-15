@@ -144,7 +144,7 @@ type SearchOptions struct {
 	Thread      string
 }
 
-// Search runs the hybrid search surface — EVAL-PLAN §9.1's MEMORY surface,
+// Search runs the hybrid search surface — BUILD-PLAN §3.4 E9's MEMORY surface,
 // the one that is not allowed to forget.
 func (i *Instance) Search(ctx context.Context, opts SearchOptions) (*SearchResult, error) {
 	args := []string{"search", opts.Query}
@@ -183,7 +183,7 @@ type DigestResult struct {
 	Raw     string
 }
 
-// Digest generates the ranked, budget-capped digest for a view — EVAL-PLAN
+// Digest generates the ranked, budget-capped digest for a view — BUILD-PLAN
 // §9.1's WORKING-SET surface, which is allowed to forget.
 func (i *Instance) Digest(ctx context.Context, view string, budgetChars int) (*DigestResult, error) {
 	if view == "" {

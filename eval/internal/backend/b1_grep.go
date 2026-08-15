@@ -14,7 +14,7 @@ import (
 
 // grepTranscripts is B1: raw session transcripts on disk, searched literally.
 //
-// This is THE baseline to beat (EVAL-PLAN §7): it is roughly what shipping
+// This is THE baseline to beat (BUILD-PLAN §7): it is roughly what shipping
 // agent harnesses do today, it costs nothing to build, and if Cairn's
 // ranking and curation layer cannot beat it then that layer is not earning
 // its complexity. The kill criterion attached to it is the most important

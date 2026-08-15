@@ -93,19 +93,18 @@ The five commands above are the daily loop. The rest of what's built:
 
 ## Roadmap
 
-This table is the coarse phase-level view. The complete, consolidated
-inventory of everything still to be built — including the smaller gaps,
-deferred debt, and open design rulings scattered across the docs — lives
-in **[ROADMAP.md](ROADMAP.md)**, which also carries the execution order and
-says what each blocked item is blocked *on*.
+This table is the coarse phase-level view. Everything still to be built —
+release blockers, capture, evaluation, deferred debt, unbuilt spec surfaces,
+later phases and the open design rulings — lives in one file:
+**[build/BUILD-PLAN.md](build/BUILD-PLAN.md)**, which also carries the
+execution order and says what each blocked item is blocked *on*.
 
 Worth knowing when reading the table: some outstanding work maps to **no
 phase row at all** — deferred scaling debt (vector search beyond the
 brute-force cliff, prebuilt binaries, the origin-liveness beacon) and
 surfaces the spec describes but no milestone built (capability resource
-selectors, token budgets, mutes). Those have their own work order,
-[build/DEBT-PLAN.md](build/DEBT-PLAN.md). A green phase row is not a claim
-that nothing is owed underneath it.
+selectors, token budgets, mutes). A green phase row is not a claim that
+nothing is owed underneath it.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -113,8 +112,8 @@ that nothing is owed underneath it.
 | **P1** | Multi-machine Tailscale mesh: signed membership, event + text + blob replication with durability classes, live fork detection, MCP server, capability-scoped sessions, durable subscriptions, deterministic attachment derivatives | ✅ code-complete · passed a live two-node audit in July 2026 |
 | **P2** | Retrieval quality: behavioural salience, an additive ranking profile + calibration harness, **agent-shaped relevance** (self-subscribe + a self-configuring onboarding record), local **structural** navigation maps (topic/thread rollups), saved searches, compaction views, opt-in OCR derivatives | 🔨 built (opt-in, not yet calibrated) |
 | **P3** | Frictionless onboarding: **one-command `cairn setup`** (mesh + resident daemon service + MCP client wiring), iroh transport, one-time pairing invites, thin nodes for mobile | 🔨 single-machine deploy shipped · mesh scope built + audited single-host (two-machine pass and iroh live wire both deferred) |
-| **CAPTURE** | Zero-effort capture: session-transcript ingest as a low-trust searchable substrate (opt-in, redacted, never in digests), trigram substring search, end-of-session handoff convention, memory-provider packaging for agent harnesses | 🔨 partial — trigram search, handoff convention and [memory-provider packaging](docs/memory-provider.md) shipped; transcript ingest designed but unbuilt, pending a crossed review of its privacy model ([work order](build/CAPTURE-PLAN.md) · [design note](build/CAPTURE-C3-DESIGN.md)) |
-| **EVAL** | Proving the claims rather than making them: an independent black-box harness, corpora with **mined human relevance labels** (not author-written), component ablations, baselines including grep-over-transcripts, an agent-in-the-loop task battery, adversarial injection testing, and long-horizon/mesh recall — with **falsification criteria registered before measurement** | 🔨 apparatus built, **nothing measured yet** — harness ([`eval/`](eval/), its own module so the compiler enforces black-box access), corpus format/normalizers/loader and the time-control hook all ship and gate in CI; corpora are unacquired and the 21 kill criteria are unsigned, and measuring before either would defeat the point ([work order](build/EVAL-PLAN.md) · [claims register](eval/claims.yaml)) |
+| **CAPTURE** | Zero-effort capture: session-transcript ingest as a low-trust searchable substrate (opt-in, redacted, never in digests), trigram substring search, end-of-session handoff convention, memory-provider packaging for agent harnesses | 🔨 partial — trigram search, handoff convention and [memory-provider packaging](docs/memory-provider.md) shipped; transcript ingest designed but unbuilt, pending a crossed review of its privacy model ([build plan](build/BUILD-PLAN.md) §2 · [design note](build/CAPTURE-C3-DESIGN.md)) |
+| **EVAL** | Proving the claims rather than making them: an independent black-box harness, corpora with **mined human relevance labels** (not author-written), component ablations, baselines including grep-over-transcripts, an agent-in-the-loop task battery, adversarial injection testing, and long-horizon/mesh recall — with **falsification criteria registered before measurement** | 🔨 apparatus built, **nothing measured yet** — harness ([`eval/`](eval/), its own module so the compiler enforces black-box access), corpus format/normalizers/loader and the time-control hook all ship and gate in CI; corpora are unacquired and the 21 kill criteria are unsigned, and measuring before either would defeat the point ([build plan](build/BUILD-PLAN.md) §3 · [claims register](eval/claims.yaml)) |
 | **P4** | Self-organising knowledge: automated filing, **embedding-clustered self-folding topic maps** (the semantic map — needs P2 usage/salience data to be good), salience propagation | planned |
 
 **On P1:** the full multi-machine mesh — replication of events, canonical text and attachment blobs with explicit durability classes; capability-scoped sessions; the MCP server and its untrusted-content envelope; live fork detection; and durable subscriptions — is built and passing its acceptance suites. In July 2026 it went through six rounds of live two-node audit on real hardware over a real tailnet (macOS + Linux), by two independent AI auditors working from separate adversarial briefs, ending with zero blockers — one of which found a genuine ephemeral-backfill leak that was fixed and re-verified live. Two caveats worth stating plainly: those auditors were AI agents, not human security reviewers; and the audit certifies a July commit — the pairing, trust and sync code has been extended since and has not been re-audited live. Treat it as thoroughly exercised, not independently certified.

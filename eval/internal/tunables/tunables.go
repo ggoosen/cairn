@@ -83,7 +83,7 @@ const (
 	MinedBodyChars = 500
 )
 
-// Split assignment (EVAL-PLAN §8: no tuning on the evaluation set).
+// Split assignment (BUILD-PLAN §3.7: no tuning on the evaluation set).
 const (
 	// SplitSalt fixes the dev/holdout partition. It is a CONSTANT and must
 	// never be changed to "rebalance" a corpus: a split that can be re-rolled

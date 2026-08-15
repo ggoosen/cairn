@@ -4267,3 +4267,28 @@ synthetic sample.
 
 Green: `make verify`, `make eval`, `golangci-lint run` 0 issues in both
 modules.
+
+### Bookkeeping — plan documents consolidated to ONE (2026-08-15)
+
+Five plan documents had accumulated (`ROADMAP.md`, `build/BUILD-PLAN.md`,
+`build/CAPTURE-PLAN.md`, `build/EVAL-PLAN.md`, `build/DEBT-PLAN.md`) and the
+sprawl was itself the problem: "what is left to build" had five possible
+answers, each partly right, and the newest one was the least likely to be
+read. Operator called it — one source of truth.
+
+Now: **`build/BUILD-PLAN.md` is the only plan.** It carries the execution
+order up front, then release blockers, CAPTURE, EVAL, DEBT, P2/P3/P4
+completion and the open author rulings. The completed P0 plan moved to
+`build/P0-BUILD-PLAN-HISTORICAL.md` (kept for acceptance criteria and the
+decision trail; explicitly not a work queue). ROADMAP/CAPTURE/EVAL/DEBT are
+deleted, their content merged, nothing dropped.
+
+References repointed: README, CLAUDE.md (read order + workflow), ci.yml, and
+every `EVAL-PLAN §x` citation across the eval module (section numbers remapped
+to their BUILD-PLAN homes, e.g. §5-E1 → §3.4 E1, §2.2 → §3.2). Entries ABOVE
+this line still cite the old filenames; they are a historical log and are left
+as written rather than rewritten after the fact.
+
+Maintenance rule, restated because it is what failed: new planned work gets a
+section in BUILD-PLAN.md; shipped work moves here and its section is deleted.
+Do not start a new plan document.

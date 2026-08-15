@@ -4,7 +4,7 @@
 // as a subprocess, and talks to it only through the two surfaces a real
 // agent has: the `cairn` CLI and the `cairn mcp` stdio JSON-RPC server. It
 // links nothing from the main module — it cannot, because eval/ is a
-// separate module and the daemon lives under internal/ (EVAL-PLAN §3).
+// separate module and the daemon lives under internal/ (BUILD-PLAN §3.3).
 //
 // One consequence is deliberate and worth stating: the response types in
 // this package are hand-written duplicates of the CLI's JSON output, not
@@ -35,7 +35,7 @@ const BinaryEnvVar = "CAIRN_EVAL_BINARY"
 //     it; an untagged build fails at compile time by design).
 //   - cairn_testhooks adds the fault-injection and clock hooks that a
 //     release binary must never contain. The harness needs the clock hook
-//     for EVAL-PLAN §9.2 long-horizon replay, and the volume-status hook so
+//     for BUILD-PLAN §3.4 E9 long-horizon replay, and the volume-status hook so
 //     provisioning does not depend on the CI runner's disk encryption.
 //
 // A binary supplied through CAIRN_EVAL_BINARY is used as-is: whatever tags
