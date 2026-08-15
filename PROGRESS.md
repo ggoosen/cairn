@@ -3860,3 +3860,49 @@ append-to-an-existing-session case), and six things the review should try to
 break.
 
 Still needs the crossed review before any code. Not started.
+
+## EVAL — proving the thesis — PLANNED (2026-08-09)
+
+Work order at `build/EVAL-PLAN.md`. Motivation, stated plainly: Cairn's
+engineering claims are proven (crash matrix, budget compliance, provenance,
+latency, explainable ranking) but its PRODUCT claims are not, and the two
+have been sitting in the same README paragraph as if they were the same
+kind of statement.
+
+The structural gap: every measurement to date is INTRINSIC (does retrieval
+return the right document?) while the thesis — "knowledge compounds instead
+of being re-explained" — is EXTRINSIC (does the agent do better work?). No
+amount of the former establishes the latter. Compounding that, the golden
+corpus is author-written, author-queried and author-judged; it validates
+configuration, not capability (as rulings §10 already says of it), and it
+is now labelled that way rather than cited as evidence.
+
+Design decisions worth recording:
+
+- **`eval/` becomes its own Go module, in-repo.** Go's `internal/`
+  visibility rule then MECHANICALLY prevents the harness from importing
+  daemon internals — black-box access is compiler-enforced, not a
+  convention. It also keeps LLM-client and statistics dependencies out of
+  the daemon's deliberately small offline dependency tree, and keeps the
+  main suite's properties (offline, deterministic, free, gates every
+  commit) uncontaminated by evaluation that is networked, stochastic and
+  costly. In-repo rather than a separate repository so it cannot rot out
+  of sync with the surface it tests.
+- **Independent ground truth is mined, not authored.** GitHub
+  duplicate-issue links, Stack Overflow duplicate markers and documentation
+  cross-references are human relevance judgments made at scale by people
+  with no stake in Cairn — the cheapest available break in the
+  self-authorship circularity.
+- **Kill criteria are pre-registered (EVAL §7).** Including the two that
+  would hurt most: if Cairn cannot beat grep-over-transcripts on task
+  success, the ranking layer is not earning its complexity; if ablating
+  vector search does not degrade quality, the embedder (and with it the
+  venv, the model pin and the enrichment pipeline) should be deleted.
+- **The untrusted-content claim is treated as a testable safety claim**
+  (E6): plant injection payloads in mesh content and measure agent
+  compliance rate through digest/search/fetch. It has never been tested at
+  an agent, only asserted structurally.
+- **The 30-handoff evaluation is strengthened, not replaced** (E7):
+  pre-registered success definitions plus randomized withholding for a
+  within-operator control; reported as a case study with its limits stated
+  (n=1, non-blinded, self-reported).

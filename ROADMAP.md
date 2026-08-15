@@ -16,7 +16,7 @@ the two-machine rig · **[data]** needs real usage data first.
 
 | Item | Kind | Source |
 |---|---|---|
-| **30-handoff product evaluation** — the "does it beat copy-paste?" gate. Success@5 / workaround-rate are now computed by `cairn gates` from recorded outcomes; the handoffs themselves are the missing input | [operator] | [DOGFOOD.md §4](DOGFOOD.md), spec §11 |
+| **30-handoff product evaluation** — the "does it beat copy-paste?" gate. Success@5 / workaround-rate are now computed by `cairn gates` from recorded outcomes; the handoffs themselves are the missing input. **As designed this is n=1, self-reported and uncontrolled — see EVAL E7, which strengthens it with pre-registration and randomized withholding rather than replacing it** | [operator] | [DOGFOOD.md §4](DOGFOOD.md), spec §11, [build/EVAL-PLAN.md](build/EVAL-PLAN.md) |
 | Embed venv provisioning on each node (`scripts/cairn-embed-bootstrap.sh`) so the evaluation runs semantic, not lexical-only | [operator] | [DOGFOOD.md §2](DOGFOOD.md) |
 | Overnight 1M-event synthetic scorecard (`CAIRN_SCORECARD=1`, TESTING.md §5 — includes reindex/backup/restore/RSS numbers never recorded) | [operator] | [build/TESTING.md](build/TESTING.md), PROGRESS M7 |
 
@@ -28,6 +28,27 @@ Full milestones + acceptance criteria: **[build/CAPTURE-PLAN.md](build/CAPTURE-P
 |---|---|
 | C3 session-transcript ingest — opt-in, redacted, eager-searchable/ephemeral, pull-only; privacy design gets a crossed review before code | [code] |
 | C4 residual: submit provider-directory listings (awesome-hermes-agent, Hermes Atlas) now that [docs/memory-provider.md](docs/memory-provider.md) exists | [operator] |
+
+## 2b. EVAL — proving the thesis (planned work order)
+
+Full milestones + pre-registered kill criteria: **[build/EVAL-PLAN.md](build/EVAL-PLAN.md)**
+
+The claims are currently claims. Cairn measures whether retrieval returns
+the right document (intrinsic); it has never measured whether an agent does
+better work (extrinsic) — and the product thesis is extrinsic. The existing
+golden corpus is author-written, author-queried and author-judged, so it
+validates configuration, not capability.
+
+| Item | Kind |
+|---|---|
+| E1 claims register + pre-registered kill criteria (gates everything else) | [code] |
+| E2 harness skeleton: `eval/` as its own Go module, black-box (CLI+MCP) access compiler-enforced | [code] |
+| E3 independent corpora with mined human relevance labels (duplicate-issue links, SO duplicates, doc cross-refs) | [code] |
+| E4 intrinsic quality: nDCG/MRR/Recall, component ablations, baselines incl. grep-over-transcripts | [code] |
+| E5 extrinsic agent-in-the-loop task battery — task success, **rediscovery rate**, budget survival, cross-model transfer | [code, large] |
+| E6 adversarial/safety eval: prompt-injection compliance rate through digest/search/fetch | [code] |
+| E7 longitudinal dogfood strengthened: pre-registration + randomized withholding (supersedes the bare 30-handoff) | [operator] + [code] |
+| E8 replication artifacts (corpora + harness + raw results published) | [operator] |
 
 ## 3. P2 completion (built, opt-in — what "done" still needs)
 
