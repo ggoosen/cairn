@@ -868,6 +868,12 @@ func (p *Projection) indexRevision(tx *sql.Tx, revisionID, bodyHash, inline, tex
 	if _, err := tx.Exec(`INSERT INTO fts_revisions(rowid, body) VALUES (?,?)`, rowid, string(body)); err != nil {
 		return err
 	}
+	// C2: the trigram companion index shares this rowid and this transaction —
+	// one write path, so the two indexes can never disagree about what is
+	// indexed, and reindex reproduces both or neither.
+	if _, err := tx.Exec(`INSERT INTO fts_revisions_trigram(rowid, body) VALUES (?,?)`, rowid, string(body)); err != nil {
+		return err
+	}
 	_, err = tx.Exec(`INSERT OR REPLACE INTO enrichment(revision_id, lexical_indexed, embedded) VALUES (?,1,0)`, revisionID)
 	return err
 }

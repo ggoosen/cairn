@@ -3682,3 +3682,63 @@ existing "signal, not noise" guidance is unchanged.
 
 No code change; `make vet`, `make test`, `golangci-lint run` (0 issues)
 green.
+
+## CAPTURE C2 — trigram FTS companion index — DONE (2026-08-15)
+
+Per `build/CAPTURE-PLAN.md` C2. The word index tokenizes on boundaries
+(`unicode61 tokenchars '_-#@'`, rulings §6) and therefore cannot match
+INSIDE a token — which is precisely the query shape agents use: a partial
+UUID, a camelCase symbol inside a longer identifier, a fragment of an error
+string. Embeddings are weak on exact identifiers, so nothing in the shipped
+stack answered that class. The two tokenizers fail in opposite directions,
+so the pair is complementary rather than redundant.
+
+**Shipped**
+
+- `fts_revisions_trigram` (FTS5 `tokenize='trigram'`) in
+  `build/sql/projection.sql` + the embedded `internal/projection/schema.sql`
+  (kept byte-identical; the drift test enforces it). It shares `fts_map`'s
+  rowid — no second mapping table — so `indexRevision` feeds BOTH indexes
+  from ONE insert in ONE transaction. The two can never disagree about what
+  is indexed, and a reindex reproduces both or neither.
+- `Projection.TrigramMessageHits` + `FTSTrigramQuery` (quoted phrase per
+  term ⇒ substring match; terms shorter than the trigram width tokenize to
+  nothing and are dropped, and a query left with no usable term skips the
+  index rather than running a match that cannot hit).
+- `LexicalTopK` unions a third source, following the existing
+  derivative-hits pattern: word hits, then derivative hits, then trigram
+  hits, deduplicated and capped at k. Trigram goes LAST deliberately — as
+  the least precise source it only fills slots the exact indexes left empty,
+  so it can never displace a word hit or reorder what an agent already
+  receives. The dedup loop now marks appended ids seen (two append sources,
+  where there was one).
+- `ProjectionSchemaVersion` 6 → 7; `FTSTrigramTokenize` / `FTSTrigramMinTerm`
+  in `internal/config/constants.go`.
+
+**Not a tokenizer change.** Rulings v0.3.1 §6 pins the FTS5 tokenizer to
+`unicode61` + tokenchars; that index is untouched. C2 ADDS a companion, so
+the ruled tokenizer still governs the word index and the ranked order agents
+see. No event-schema impact; projection-only.
+
+**Tests**
+
+- `TestTrigramCompanionFindsSubstrings` (internal/projection): three
+  mid-token fragments — `eerAdd`, `7e5f-8901`, `CONNREFUSED` — each asserted
+  to return NOTHING from the word index (so the fixture keeps proving the
+  gap) and the right message from `LexicalTopK`. Also: a word hit keeps
+  first place, retraction gating is unchanged through the trigram path, and
+  a sub-width term matches nothing rather than everything.
+- `TestReindexByteIdentical` extended: the snapshot now covers `LexicalTopK`
+  and `TrigramMessageHits` over both the original queries and trigram-only
+  ones, so the new table is inside the byte-identical guarantee.
+- `TestSearchFindsIdentifierSubstring` (internal/daemon): the same fragments
+  end-to-end through `send` → `Search`. `LexicalTopK` is the only lexical
+  candidate source search and digest-interest have, so this covers both.
+- `TestProjectionSchemaDriftRebuilds` (internal/daemon): NEW — the schema
+  bump is only safe because the daemon discards and replays a drifted
+  projection. The path was never tested. Stamps an old version on disk,
+  restarts, and asserts the rebuild happened, said so (R45), replayed the
+  corpus, and repopulated the companion index.
+- `TestBudgetComplianceProperty` stays green.
+
+`make vet`, `make test`, `golangci-lint run` (0 issues) green.

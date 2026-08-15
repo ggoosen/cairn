@@ -26,7 +26,6 @@ Full milestones + acceptance criteria: **[build/CAPTURE-PLAN.md](build/CAPTURE-P
 
 | Item | Kind |
 |---|---|
-| C2 trigram FTS companion index (substring/identifier search) | [code] |
 | C3 session-transcript ingest — opt-in, redacted, eager-searchable/ephemeral, pull-only; privacy design gets a crossed review before code | [code] |
 | C4 memory-provider packaging for agent harnesses (Hermes plugin wrapper + directory listings) | [code] |
 

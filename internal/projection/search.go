@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/object"
 )
 
@@ -38,6 +40,23 @@ func FTSQuery(raw string) string {
 	quoted := make([]string, len(fields))
 	for i, f := range fields {
 		quoted[i] = `"` + strings.ReplaceAll(f, `"`, `""`) + `"`
+	}
+	return strings.Join(quoted, " ")
+}
+
+// FTSTrigramQuery is FTSQuery's counterpart for the C2 companion index. A
+// quoted term becomes a phrase of consecutive trigrams, which is what makes
+// the match a SUBSTRING match rather than a token match. Terms shorter than
+// the trigram width tokenize to nothing, so they are dropped rather than
+// silently widening the match; "" reports that the query has nothing this
+// index can answer, and the caller skips it.
+func FTSTrigramQuery(raw string) string {
+	var quoted []string
+	for _, f := range strings.Fields(raw) {
+		if utf8.RuneCountInString(f) < config.FTSTrigramMinTerm {
+			continue
+		}
+		quoted = append(quoted, `"`+strings.ReplaceAll(f, `"`, `""`)+`"`)
 	}
 	return strings.Join(quoted, " ")
 }

@@ -35,15 +35,23 @@ const (
 	msgA  = "0190a1b2-c3d4-7e5f-8901-0000000000a1"
 	msgB  = "0190a1b2-c3d4-7e5f-8901-0000000000a2"
 	msgC  = "0190a1b2-c3d4-7e5f-8901-0000000000a3"
+	msgD  = "0190a1b2-c3d4-7e5f-8901-0000000000a5"
 	revA1 = "0190a1b2-c3d4-7e5f-8901-0000000000b1"
 	revA2 = "0190a1b2-c3d4-7e5f-8901-0000000000b2"
 	revB1 = "0190a1b2-c3d4-7e5f-8901-0000000000b3"
 	revC1 = "0190a1b2-c3d4-7e5f-8901-0000000000b4"
+	revD1 = "0190a1b2-c3d4-7e5f-8901-0000000000b6"
 	topT  = "0190a1b2-c3d4-7e5f-8901-0000000000c1"
 	linkA = "0190a1b2-c3d4-7e5f-8901-0000000000d1"
 	linkB = "0190a1b2-c3d4-7e5f-8901-0000000000d2"
 	pinP  = "0190a1b2-c3d4-7e5f-8901-0000000000e1"
 )
+
+// identifierBody is the C2 fixture body: every interesting fragment in it is
+// mid-token under `unicode61 tokenchars '_-#@'` — "-" is a tokenchar, so the
+// whole run id is ONE token, and "=" is not, so err=ECONNREFUSED splits into
+// exactly two.
+const identifierBody = "the PeerAdd handler failed err=ECONNREFUSED on run 0190a1b2-c3d4-7e5f-8901-0000000000ff"
 
 func publish(t *testing.T, c *testutil.Chain, store *object.Store, lg *cairnlog.Log, msgID, revID, body, class string) {
 	t.Helper()
@@ -89,6 +97,9 @@ func buildCorpus(t *testing.T) (*fsx.MemFS, *testutil.Chain, *object.Store) {
 	publish(t, c, store, lg, msgA, revA1, "alpha document about zebra migrations", "canonical")
 	publish(t, c, store, lg, msgB, revB1, "beta note mentioning zebra crossings", "canonical")
 	publish(t, c, store, lg, msgC, revC1, "gamma scratchpad zebra draft", "ephemeral")
+	// C2 fixture: identifiers a word tokenizer can only match whole — the
+	// camelCase symbol, the run id, and the errno all sit INSIDE one token.
+	publish(t, c, store, lg, msgD, revD1, identifierBody, "canonical")
 
 	// revise A: new head
 	newBody := "alpha document REVISED, zebras gone"
@@ -216,6 +227,10 @@ func TestReindexByteIdentical(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "index.sqlite")
 
 	queries := []string{"zebra", "zebras", "gamma", "alpha OR beta", "wiki"}
+	// C2: the companion index is populated in the same transaction, so it is
+	// covered by the same guarantee — trigram-only queries (nothing here is a
+	// whole token) must come back identical across a full rebuild too.
+	triQueries := []string{"eerAdd", "7e5f-8901", "CONNREFUSED", "ebra", "zz"}
 	snapshot := func(p *projection.Projection) []byte {
 		var all [][]projection.SearchResult
 		for _, q := range queries {
@@ -227,11 +242,28 @@ func TestReindexByteIdentical(t *testing.T) {
 				all = append(all, res)
 			}
 		}
+		var lex, tri [][]string
+		for _, q := range append(append([]string{}, queries...), triQueries...) {
+			for _, inc := range []bool{false, true} {
+				ids, err := p.LexicalTopK(q, 25, inc)
+				if err != nil {
+					t.Fatal(err)
+				}
+				lex = append(lex, ids)
+				ids, err = p.TrigramMessageHits(q, 25, inc)
+				if err != nil {
+					t.Fatal(err)
+				}
+				tri = append(tri, ids)
+			}
+		}
 		links, _ := p.VisibleLinks(msgA)
 		blob, err := json.Marshal(struct {
 			Results [][]projection.SearchResult
+			Lexical [][]string
+			Trigram [][]string
 			Links   []string
-		}{all, links})
+		}{all, lex, tri, links})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -269,6 +301,70 @@ func TestReindexByteIdentical(t *testing.T) {
 
 	if string(before) != string(after) {
 		t.Fatalf("reindex not byte-identical:\n%s\nvs\n%s", before, after)
+	}
+}
+
+// CAPTURE C2 acceptance: substring/identifier queries the unicode61 word
+// index is structurally blind to are answered by the trigram companion, and
+// LexicalTopK — the one production lexical candidate path (search + digest
+// interest) — surfaces them.
+func TestTrigramCompanionFindsSubstrings(t *testing.T) {
+	m, _, store := buildCorpus(t)
+	p := openAndReplay(t, m, filepath.Join(t.TempDir(), "index.sqlite"), store)
+	defer p.Close()
+
+	// Each of these is a fragment INSIDE a token of identifierBody: the
+	// camelCase tail of a symbol, a slice across two UUID groups (the whole
+	// run id is one token because "-" is a tokenchar), and the errno without
+	// its leading E.
+	for _, q := range []string{"eerAdd", "7e5f-8901", "CONNREFUSED"} {
+		word, err := p.SearchLexical(q, 25, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(word) != 0 {
+			t.Fatalf("%q: word index unexpectedly matched %+v — the fixture no longer proves the gap", q, word)
+		}
+		ids, err := p.LexicalTopK(q, 25, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ids) != 1 || ids[0] != msgD {
+			t.Fatalf("%q: LexicalTopK = %v, want [%s]", q, ids, msgD)
+		}
+	}
+
+	// Word hits keep their positions: the trigram union only appends. "zebra"
+	// is a whole token in B (and a substring of A's "zebras"), so B must
+	// still come first, from the word index.
+	ids, err := p.LexicalTopK("zebra", 25, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) == 0 || ids[0] != msgB {
+		t.Fatalf("trigram union displaced the word hit: %v", ids)
+	}
+
+	// Retraction gating is the word index's, unchanged: C is retracted, and
+	// "amma" reaches it only through the trigram companion.
+	if ids, err = p.LexicalTopK("amma", 25, false); err != nil || len(ids) != 0 {
+		t.Fatalf("retracted message reachable via trigram: %v %v", ids, err)
+	}
+	if ids, err = p.LexicalTopK("amma", 25, true); err != nil || len(ids) != 1 || ids[0] != msgC {
+		t.Fatalf("include_retracted trigram: %v %v", ids, err)
+	}
+
+	// A term shorter than the trigram width tokenizes to nothing: it must
+	// match nothing rather than everything, and must not error.
+	if q := projection.FTSTrigramQuery("zz"); q != "" {
+		t.Fatalf("sub-width term survived into the trigram query: %q", q)
+	}
+	if ids, err = p.TrigramMessageHits("zz", 25, false); err != nil || len(ids) != 0 {
+		t.Fatalf("sub-width trigram query: %v %v", ids, err)
+	}
+	// Mixed-width queries keep only the usable terms.
+	if q := projection.FTSTrigramQuery("zz eerAdd"); q != `"eerAdd"` {
+		t.Fatalf("mixed-width trigram query = %q", q)
 	}
 }
 

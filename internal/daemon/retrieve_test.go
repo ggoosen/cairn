@@ -1,6 +1,7 @@
 package daemon_test
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/ggoosen/cairn/internal/bench"
 	"github.com/ggoosen/cairn/internal/daemon"
 	"github.com/ggoosen/cairn/internal/embed"
+	"github.com/ggoosen/cairn/internal/projection"
 	"github.com/ggoosen/cairn/internal/rank"
 )
 
@@ -423,4 +425,92 @@ func TestConcurrentSearchEnrichRace(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	close(stop)
 	wg.Wait()
+}
+
+// CAPTURE C2 end-to-end: a mid-token identifier fragment reaches the agent
+// through the real send → search path. The projection unit test proves the
+// index; this proves the wiring, because LexicalTopK is the ONLY lexical
+// candidate source search and digest-interest have.
+func TestSearchFindsIdentifierSubstring(t *testing.T) {
+	d := startDaemon(t, initCairn(t))
+
+	res, err := d.Publish(daemon.PublishRequest{
+		Actor: "operator",
+		Body:  "the PeerAdd handler failed err=ECONNREFUSED on run 0190a1b2-c3d4-7e5f-8901-0000000000ff",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Publish(daemon.PublishRequest{
+		Actor: "operator", Body: "unrelated note about scheduling and calendars",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, q := range []string{"eerAdd", "7e5f-8901", "CONNREFUSED"} {
+		out, err := d.Search(daemon.SearchOptions{Query: q, K: 10, BudgetChars: 4000})
+		if err != nil {
+			t.Fatalf("%q: %v", q, err)
+		}
+		found := false
+		for _, r := range out.Results {
+			if r.MessageID == res.MessageID {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%q: substring query returned %d results, none the identifier message", q, len(out.Results))
+		}
+	}
+}
+
+// A projection schema bump (C2 raised it to v7) is only safe because the
+// daemon rebuilds the DERIVED projection from the log on drift. Prove the
+// path, not just the constant: an on-disk projection stamped with an older
+// version must be discarded, replayed, and searchable again — with the
+// operator told it happened (R45: nothing rebuilds silently).
+func TestProjectionSchemaDriftRebuilds(t *testing.T) {
+	dir := initCairn(t)
+	d := startDaemon(t, dir)
+	res, err := d.Publish(daemon.PublishRequest{Actor: "operator", Body: "drift rebuild canary body"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbPath := projection.DBPath(dir)
+	d.Close()
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE meta SET value='1' WHERE key='schema_version'`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	var warn strings.Builder
+	d2, err := daemon.Start(daemon.Options{Dir: dir, Warn: &warn})
+	if err != nil {
+		t.Fatalf("daemon refused to start on schema drift: %v", err)
+	}
+	defer d2.Close()
+	if !strings.Contains(warn.String(), "rebuilding the derived projection") {
+		t.Fatalf("schema drift rebuilt silently; warnings were: %q", warn.String())
+	}
+	out, err := d2.Search(daemon.SearchOptions{Query: "canary", K: 10, BudgetChars: 4000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Results) != 1 || out.Results[0].MessageID != res.MessageID {
+		t.Fatalf("corpus not replayed after rebuild: %+v", out.Results)
+	}
+	// the rebuild also repopulates the C2 companion index: "anary" is not a
+	// token, so only the trigram side can answer it.
+	out, err = d2.Search(daemon.SearchOptions{Query: "anary", K: 10, BudgetChars: 4000})
+	if err != nil {
+		t.Fatalf("trigram companion missing after rebuild: %v", err)
+	}
+	if len(out.Results) != 1 || out.Results[0].MessageID != res.MessageID {
+		t.Fatalf("trigram companion not repopulated by the rebuild: %+v", out.Results)
+	}
 }
