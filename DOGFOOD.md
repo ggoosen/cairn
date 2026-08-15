@@ -105,6 +105,11 @@ Claude Code: `claude mcp add cairn -- cairn mcp --view claude-code --actor
 claude-code`. Use the absolute binary path (GUI apps don't inherit your
 shell PATH). One view per client keeps digests and telemetry attributable.
 
+Other harnesses (Hermes agent, OpenClaw-style — anything that launches a stdio
+MCP server) are wired the same way; see
+[`docs/memory-provider.md`](docs/memory-provider.md) for per-harness config and
+the capability profile.
+
 Every content-bearing result arrives in the untrusted-content envelope
 (`trust: "untrusted"` + full provenance); budgets default to 1500 chars
 (digest) / 2000 (search) and are tunable per call. There is no

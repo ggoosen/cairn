@@ -3784,3 +3784,49 @@ other platform's directory must NOT satisfy detection), `TestInstallLinuxXDGPath
 documents the Linux location.
 
 `make vet`, `make test`, `golangci-lint run` (0 issues) green.
+
+## CAPTURE C4 — memory-provider packaging for agent harnesses — DONE (2026-08-15)
+
+Per `build/CAPTURE-PLAN.md` C4. Strategic, not technical: harnesses now treat
+memory as a pluggable slot, and Cairn already speaks MCP — the missing piece
+was a doc that says how to fill that slot and what confinement it lands in.
+`docs/memory-provider.md`: the twelve tools, the three ruling-backed
+properties on every result (R18 untrusted envelope, R19 whole-payload budgets,
+provenance), install, per-harness wiring, and the capability profile.
+
+**Research, and what is verified vs not.** Both claims are marked in the doc as
+what they are, because a config format invented and presented as fact is worse
+than no doc:
+
+- **Hermes agent — VERIFIED** against the project's own docs source
+  (`website/docs/user-guide/features/mcp.md`, `reference/cli-commands.md` in
+  NousResearch/hermes-agent): stdio servers live in `~/.hermes/config.yaml`
+  under `mcp_servers` as `command`/`args`/`env`, and
+  `hermes mcp add <name> [--command CMD] [--args ...]` is the CLI form. Also
+  recorded: Hermes's `memory.provider` slot takes an in-process PYTHON plugin
+  (honcho/mem0/…), not an MCP server — so Cairn's real slot is MCP tools, and
+  the doc says so rather than implying a provider plugin exists.
+- **OpenClaw — NOT VERIFIED, and labelled so.** Its MCP config shape was still
+  moving (an `mcp.servers` block in `openclaw.json` proposed in
+  openclaw/openclaw#43509; community guides describe a top-level `mcpServers`).
+  The doc gives the MCP-standard stdio entry — command + args, which is all
+  Cairn needs — and states plainly that the OpenClaw-specific spelling is
+  unverified.
+
+**Capability posture documented, not just implemented.** R21 (never tier-1,
+`--profile full` refused at the flag), what `agent-standard` grants and the
+four things it does not (retract/structural/admin, topic auto-creation and
+force-class per R20, durable subscriptions per R55), session TTL/idle and the
+`cairn session revoke` kill switch, and R22's honest boundary — same-OS-user
+confinement prevents accidents, not malice.
+
+Cross-links: README "Wiring an agent" + the roadmap table (CAPTURE now
+🔨 partial — C1/C2/C4 shipped, C3 planned), DOGFOOD §3b.
+
+**Not done, deliberately:** no submissions to external directories
+(awesome-hermes-agent, the Hermes Atlas provider directory). CAPTURE-PLAN
+lists them under C4, but publishing Cairn into third-party listings is the
+operator's call, not a builder's. The doc they would point at now exists.
+
+Docs + research only; no code change. `make vet`, `make test`,
+`golangci-lint run` (0 issues) green.
