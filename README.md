@@ -64,9 +64,10 @@ Agents connect through whichever door they can reach: **plain files** (drop mark
 | Phase | Scope | Status |
 |---|---|---|
 | **P0** | Single-machine daemon: event log, search, ranked digests, outbox, exports, crash safety | ✅ complete |
-| **P1** | Multi-machine Tailscale mesh: signed membership, event + text + blob replication with durability classes, live fork detection, MCP server, capability enforcement, durable semantic subscriptions, deterministic attachment derivatives | ✅ complete (hardened + crossed audit passed) |
+| **P1** | Multi-machine Tailscale mesh: signed membership, event + text + blob replication with durability classes, live fork detection, MCP server, capability enforcement, durable semantic subscriptions, deterministic attachment derivatives | ✅ complete (hardened through three live two-node audit rounds) |
 | **P2** | Retrieval quality: behavioural salience, calibrated ranking, **agent-shaped relevance** (self-subscribe + a self-configuring onboarding record), local **structural** navigation maps (topic/thread rollups) | 🔨 built (opt-in) |
 | **P3** | Frictionless onboarding: **one-command `cairn setup`** (mesh + resident daemon service + MCP client wiring), iroh transport, one-time pairing invites, thin nodes for mobile | 🔨 single-machine deploy shipped · mesh offline scope built (live two-node checkout of pairing/thin-role is hardware-gated; iroh live wire deferred) |
+| **CAPTURE** | Zero-effort capture: session-transcript ingest as a low-trust searchable substrate (opt-in, redacted, never in digests), trigram substring search, end-of-session handoff convention, memory-provider packaging for agent harnesses | 📋 planned ([work order](build/CAPTURE-PLAN.md)) |
 | **P4** | Self-organising knowledge: automated filing, **embedding-clustered self-folding topic maps** (the semantic map — needs P2 usage/salience data to be good), salience propagation | planned |
 
 **On P1:** the full multi-machine mesh — replication of events, canonical text, and lazy blobs with explicit durability classes; capability enforcement; the MCP server and its untrusted-content envelope; live fork detection; and durable subscriptions — is built, passing its acceptance suites, and hardened through three live two-node audit rounds (each round's blockers fixed and re-verified). It's ready for the first tagged release.

@@ -3616,3 +3616,30 @@ Deliberately DEFERRED (with reasons, not silence):
   send-never-blocks; needs the author ruling recorded under WP-A before
   code (conservative shape proposed there: rung 7 rejects, rung 6 warns).
 - **G5 ONNX embedder:** excluded (fallback previously ruled acceptable).
+
+---
+
+## CAPTURE — zero-effort capture + ecosystem reach — PLANNED (2026-08-09)
+
+Work order at `build/CAPTURE-PLAN.md`, from the competitive review of
+Hermes agent's session-memory design. Conclusion of the review: Cairn is
+ahead on retrieval (shipped RRF hybrid + hard budgets + explainable
+ranking vs their open proposal, issue #44075) but behind on CAPTURE —
+knowledge nobody `cairn send`s dies in the session transcript. Milestones:
+
+- **C1** end-of-session handoff convention (docs only): one canonical
+  handoff note per session, published by the agent itself.
+- **C2** trigram FTS companion index: substring/identifier search
+  (projection-only; schema-version bump + auto-rebuild).
+- **C3** session-transcript ingest on the M9 path: transcripts become an
+  opt-in, redacted, `eager-searchable`/`ephemeral` PULL-ONLY substrate —
+  never canonical, never in digests. Drags G1 (sqlite-vec) and G3
+  (penalties) forward as the corpus grows. Privacy design gets a crossed
+  review before code (trust-surface change, same treatment as R56).
+- **C4** memory-provider packaging for agent harnesses (Hermes plugin
+  wrapper over `cairn mcp`, provider-directory listings).
+
+Explicit non-goals recorded in the plan: LLM reranking/summarization in
+the daemon (breaks R47/R51 explainability), query-expansion models
+(shipped hybrid already covers the failure they address), and transcripts
+as digest content (capture is a substrate, not an attention surface).
