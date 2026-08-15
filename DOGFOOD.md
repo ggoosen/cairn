@@ -86,7 +86,9 @@ With the daemon running, any MCP client gets the twelve tools — the nine
 why_ranked`), `cairn_thread` for thread expansion, and the two R55
 local-tier subscription tools (`cairn_subscribe/cairn_subscriptions`) —
 over stdio. Claude Desktop — add to
-`~/Library/Application Support/Claude/claude_desktop_config.json`:
+`~/Library/Application Support/Claude/claude_desktop_config.json` (on Linux:
+`$XDG_CONFIG_HOME/Claude/claude_desktop_config.json`, i.e. `~/.config/Claude/`
+by default — `cairn mcp-install` finds either):
 
 ```json
 {

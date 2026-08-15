@@ -726,3 +726,109 @@ func TestUninstallFilePreservesOthers(t *testing.T) {
 		t.Error("linkedin lost on uninstall")
 	}
 }
+
+// ---- Claude Desktop platform paths (ROADMAP §5) ----
+
+// TEST: the desktop config path resolves per platform. Before this, the only
+// path was the macOS one, so `mcp-install` on Linux reported Claude Desktop
+// "not installed" no matter what was on the machine, and --app claude-desktop
+// would have written a config under a ~/Library tree the app never reads.
+func TestClaudeDesktopPathPerPlatform(t *testing.T) {
+	base := Env{Home: "/home/op"}
+	cases := []struct {
+		name string
+		env  Env
+		want string
+	}{
+		{"darwin", Env{Home: base.Home, GOOS: "darwin"},
+			"/home/op/Library/Application Support/Claude/claude_desktop_config.json"},
+		{"linux", Env{Home: base.Home, GOOS: "linux"},
+			"/home/op/.config/Claude/claude_desktop_config.json"},
+		{"linux-xdg", Env{Home: base.Home, GOOS: "linux", XDGConfigHome: "/elsewhere/cfg"},
+			"/elsewhere/cfg/Claude/claude_desktop_config.json"},
+	}
+	app := desktopApp(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := app.ConfigPath(tc.env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("ConfigPath = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TEST: detection follows the same per-platform dir, on both the app-dir and
+// the config-file signal, and stays negative when neither exists.
+func TestClaudeDesktopDetectPerPlatform(t *testing.T) {
+	app := desktopApp(t)
+	for _, goos := range []string{"darwin", "linux"} {
+		t.Run(goos, func(t *testing.T) {
+			e := testEnv(t, false, nil)
+			e.GOOS = goos
+			if ok, _ := app.detect(e); ok {
+				t.Fatal("detected with an empty home")
+			}
+			path, _ := app.ConfigPath(e)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			ok, detail := app.detect(e)
+			if !ok || detail != "app dir present" {
+				t.Fatalf("app dir not detected: %v %q", ok, detail)
+			}
+		})
+	}
+	// The other platform's directory must NOT satisfy detection — otherwise a
+	// stray ~/Library tree on Linux (or vice versa) reads as an install.
+	e := testEnv(t, false, nil)
+	e.GOOS = "linux"
+	macPath, _ := app.ConfigPath(Env{Home: e.Home, GOOS: "darwin"})
+	writeJSON(t, macPath, map[string]any{"mcpServers": map[string]any{}})
+	if ok, _ := app.detect(e); ok {
+		t.Fatal("macOS config satisfied Linux detection")
+	}
+}
+
+// TEST: a Linux install round-trips through the XDG path with every R54
+// invariant intact — merge-only, backup-before-write, idempotent second run.
+func TestInstallLinuxXDGPath(t *testing.T) {
+	e := testEnv(t, false, nil)
+	e.GOOS = "linux"
+	e.XDGConfigHome = filepath.Join(e.Home, "xdg")
+	app := desktopApp(t)
+	path, _ := app.ConfigPath(e)
+	if want := filepath.Join(e.Home, "xdg", "Claude", "claude_desktop_config.json"); path != want {
+		t.Fatalf("path %q, want %q", path, want)
+	}
+
+	writeJSON(t, path, map[string]any{
+		"theme":      "dark",
+		"mcpServers": map[string]any{"other": map[string]any{"command": "node"}},
+	})
+	r, err := app.Install(e, "")
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if !r.Changed || r.Method != "file" || r.BackupPath == "" {
+		t.Fatalf("unexpected result: %+v", r)
+	}
+	cfg := readJSON(t, path)
+	if cfg["theme"] != "dark" {
+		t.Fatal("unrelated setting dropped")
+	}
+	servers, _ := cfg["mcpServers"].(map[string]any)
+	if _, ok := servers["other"]; !ok {
+		t.Fatal("other MCP server dropped")
+	}
+	if cmd, present := CairnCommand(cfg); !present || cmd != e.Self {
+		t.Fatalf("cairn entry: %q present=%v", cmd, present)
+	}
+	r2, err := app.Install(e, "")
+	if err != nil || r2.Changed {
+		t.Fatalf("second run not idempotent: %+v %v", r2, err)
+	}
+}

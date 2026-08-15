@@ -53,7 +53,6 @@ Full milestones + acceptance criteria: **[build/CAPTURE-PLAN.md](build/CAPTURE-P
 |---|---|---|
 | sqlite-vec integration (brute-force cosine is the only vector path; cliff ≈ `BruteForceMaxCandidates`; becomes urgent if CAPTURE C3 lands) | [code] | CLAUDE.md library table, PROGRESS WP-G1 |
 | Prebuilt signed binary + Homebrew tap (today: build-from-source only) | [code] | README Quickstart note |
-| Claude Desktop detection on Linux (`mcpinstall` detects via a macOS-only path) | [code] | `internal/mcpinstall/mcpinstall.go` |
 | Origin-liveness beacon: alarm when a device's last-seen (generation, seq) regresses — deferred in P0 "requires peers"; P1 has peers now | [code] | spec §13.2, rulings §2 |
 
 ## 6. Specified but never built (smaller gaps)

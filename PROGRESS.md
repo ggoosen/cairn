@@ -3742,3 +3742,45 @@ see. No event-schema impact; projection-only.
 - `TestBudgetComplianceProperty` stays green.
 
 `make vet`, `make test`, `golangci-lint run` (0 issues) green.
+
+## FIX-MCP3 — Claude Desktop detection on Linux — DONE (2026-08-15)
+
+ROADMAP §5. `internal/mcpinstall` resolved Claude Desktop through ONE
+hardcoded macOS path (`~/Library/Application Support/Claude`). On Linux that
+directory never exists, so `mcp-install`/`--status` reported Claude Desktop
+"not installed" regardless of what was on the machine, `--all` skipped it,
+and a forced `--app claude-desktop` would have written a config into a
+`~/Library` tree the app never reads — a silent no-op the operator had no
+way to see.
+
+- `Env` gains `GOOS` and `XDGConfigHome`; `DefaultEnv` fills both from the
+  process. An `Env` built by hand (every existing test, and callers that set
+  only `Home`) leaves `GOOS` empty and gets `runtime.GOOS`, so nothing had to
+  change at the call sites.
+- `claudeDesktopDir` resolves Electron's userData per platform: macOS keeps
+  `~/Library/Application Support/Claude`; everything else uses
+  `$XDG_CONFIG_HOME/Claude`, defaulting to `~/.config/Claude` — the path the
+  Linux builds actually read (verified against the Linux packaging docs, not
+  assumed). Honouring XDG matters: a relocated config dir would otherwise get
+  a file the app never loads. There is deliberately no `%APPDATA%` branch —
+  Windows is out of scope (CLAUDE.md platform rule), so non-darwin means
+  Linux.
+- Detection now derives from that same dir, so the app-dir and config-file
+  signals move together across platforms by construction.
+- New exported `App.ConfigPath(Env)`: callers ask the registry where a config
+  lives instead of hardcoding a path correct on one OS only. The CLI-surface
+  test in `cmd/cairn` did exactly that and now asks the registry (and pins
+  `XDG_CONFIG_HOME` so a developer's real one cannot break hermeticity).
+
+R54 is untouched: merge-only, backup-before-write, refuse-malformed,
+idempotent, and command = `os.Executable()` all still hold — this changes
+only WHERE the file is, never how it is written. The Linux round-trip test
+re-asserts all of them on the XDG path.
+
+Tests: `TestClaudeDesktopPathPerPlatform` (darwin / linux / XDG override),
+`TestClaudeDesktopDetectPerPlatform` (both signals per platform, and the
+other platform's directory must NOT satisfy detection), `TestInstallLinuxXDGPath`
+(full merge/backup/idempotency round-trip through the XDG path). DOGFOOD §3b
+documents the Linux location.
+
+`make vet`, `make test`, `golangci-lint run` (0 issues) green.
