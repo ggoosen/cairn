@@ -3830,3 +3830,33 @@ operator's call, not a builder's. The doc they would point at now exists.
 
 Docs + research only; no code change. `make vet`, `make test`,
 `golangci-lint run` (0 issues) green.
+
+## CAPTURE C3 — design note only (NOT built, 2026-08-15)
+
+C3 is explicitly out of scope until its privacy/redaction design gets a
+crossed adversarial review (CAPTURE-PLAN sequencing; same treatment R56 got).
+Wrote `build/CAPTURE-C3-DESIGN.md` as input to that review. **Zero
+implementation.**
+
+The one finding worth surfacing here, because it contradicts the work order:
+the plan offers "dedicated topic namespace + view hard filters" OR "an
+explicit source flag" for digest exclusion, preferring whichever keeps
+`DigestCandidates` SQL simple. Reading the code settles it — the namespace
+option does not work. `Projection.DigestCandidates(topicNames)` with an EMPTY
+filter (the default for every view) returns every non-retracted message, so a
+`transcript/*` namespace excludes transcripts only from views that opted into
+an explicit topic allow-list. Any default view would start receiving
+transcript chunks as digest candidates the moment ingest ran, breaking the
+plan's own "digest byte-unchanged before vs after ingest" criterion — and
+failing OPEN, invisibly. The source flag is both simpler (one predicate in two
+queries) and fails closed. The note also flags that the interest/subscription
+path is a SECOND route into a digest that must be gated in the same sweep
+(R46).
+
+Also recorded for the reviewers: redaction's honest limits (structured secrets
+only; redact before chunking so a boundary-straddling secret cannot evade),
+chunk determinism as the actual idempotency mechanism (including the
+append-to-an-existing-session case), and six things the review should try to
+break.
+
+Still needs the crossed review before any code. Not started.
