@@ -45,8 +45,7 @@ validates configuration, not capability.
 
 | Item | Kind |
 |---|---|
-| E1 claims register — **drafted at [eval/claims.yaml](eval/claims.yaml)**; residual: operator sign-off on 21 kill criteria (gates E2+) | [operator] |
-| E2 harness skeleton: `eval/` as its own Go module, black-box (CLI+MCP) access compiler-enforced | [code] |
+| E1 claims register — **drafted at [eval/claims.yaml](eval/claims.yaml)**; residual: operator sign-off on 21 kill criteria (gates MEASUREMENT, not apparatus) | [operator] |
 | E3 independent corpora with mined human relevance labels (duplicate-issue links, SO duplicates, doc cross-refs) | [code] |
 | E4 intrinsic quality: nDCG/MRR/Recall, component ablations, baselines incl. grep-over-transcripts | [code] |
 | E5 extrinsic agent-in-the-loop task battery — task success, **rediscovery rate**, budget survival, cross-model transfer | [code, large] |

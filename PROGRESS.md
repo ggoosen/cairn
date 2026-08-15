@@ -3983,3 +3983,130 @@ The graph is now: README (coarse phases) → ROADMAP.md (full inventory) →
 per-area work orders (CAPTURE-PLAN, EVAL-PLAN + eval/claims.yaml) →
 PROGRESS.md (what shipped). BUILD-PLAN and the spec/rulings remain the
 historical and normative layers respectively.
+
+### EVAL E2 — harness skeleton SHIPPED (2026-08-15)
+
+`eval/` is now its own Go module (`github.com/ggoosen/cairn/eval`) with a
+black-box driver, a uniform memory-backend interface, versioned result
+recording, and its own self-tests. **No measurement was run and no metric
+was computed** — see "Scope boundary observed" below, which is the point of
+the milestone as much as the code is.
+
+**Separate module, and why it is load-bearing.** EVAL-PLAN §3 asks for
+black-box access; a separate module is what makes that *compiler-enforced*
+rather than conventional. Go's `internal/` visibility rule means nothing in
+`eval/` can import `github.com/ggoosen/cairn/internal/...`, so the harness
+can only reach Cairn the way an agent does. `eval/internal/boundary` asserts
+both halves: `go list -deps` over the harness finds no daemon internal (the
+fast regression guard), and a probe module that tries to import
+`internal/daemon` must fail with `use of internal package … not allowed`.
+The probe runs offline — the visibility rule is applied during package
+loading, before any dependency is fetched — and skips rather than fails if
+the toolchain cannot resolve it for an unrelated reason.
+
+**The module has zero dependencies.** Deliberate: the T0 tier must stay
+offline, deterministic and free (EVAL-PLAN §4), and a stdlib-only harness
+cannot quietly stop being any of those. LLM clients arrive with E5. The CLI
+uses `flag`, not cobra, for the same reason.
+
+**Driver (`internal/cairnctl`).** Provisions a throwaway cairn (temp root,
+own `CAIRN_DEVICE_STATE_DIR`, `cairn init --allow-unencrypted --sync-listen
+off`), runs `cairn daemon` as a subprocess in its own process group, waits
+on `cairn status`, and tears the whole thing down. Decisions worth keeping:
+
+- `--sync-listen off` by default. An evaluation instance must not bind a
+  listener on the operator's tailnet, and every mesh experiment (E9 §9.4)
+  should wire its topology explicitly rather than inherit `auto`.
+- `CAIRN_DIR` and `CAIRN_SESSION` are *removed* from the child environment,
+  not overridden. An inherited session handle would silently confine every
+  verb to another agent's capability profile; an inherited `CAIRN_DIR` would
+  point a missing `--dir` at the operator's real mesh.
+- `--allow-unencrypted` rather than the `CAIRN_FAKE_VOLUME_STATUS` hook, so
+  provisioning does not require a testhooks build. The override is
+  device-local and dies with the instance.
+- Bodies go over **stdin**, never argv: corpus items exceed ARG_MAX and
+  contain shell-hostile bytes.
+- The response structs are hand-written duplicates of the CLI's JSON, not
+  shared types. They pin the shape of the PUBLIC surface; if the daemon
+  changes it the harness breaks, which is correct, because agents would too.
+- The MCP surface is driven too (`cairn mcp` over newline-delimited JSON-RPC
+  stdio: initialize / tools/list / tools/call). Agents reach Cairn through
+  MCP and its *tool descriptions* are part of what E6 will evaluate, so the
+  harness needed that surface, not only the CLI.
+
+**Backend interface (`internal/backend`).** One interface — Open / Write /
+Retrieve / Close, plus a declared `Capabilities` — for all six EVAL-PLAN
+§5-E4 conditions, so no baseline is a strawman by construction: same items,
+same order, same questions, same budget, same result shape. Implemented: B0
+(no-memory control), B1 (grep over transcripts), B2 (flat markdown notes),
+B5 (Cairn, black-box CLI). B3 (naive vector RAG) and B4 (full-context) are
+**declared stubs that fail loudly** with `ErrNotImplemented`.
+
+That last choice is deliberate and worth stating: an unimplemented baseline
+returning an empty result would become a zero in a table, in Cairn's favour,
+invisibly. Same reasoning behind `ErrUnsupportedSurface` — B1 has no digest
+surface, and it must *say so* rather than return nothing. A missing surface
+is a fact to record, not a zero to average in.
+
+B3 was left stubbed rather than built on Cairn's own embedder: that would
+make the "naive vector RAG" baseline a Cairn ablation wearing a baseline's
+name, and the rigging would be invisible in the numbers. It belongs in T1
+with its own model choice stated. B4 is only meaningful inside an agent loop
+with a real context window (E5).
+
+**Baselines are MODELS, and the model is an assumption.** B1 returns matches
+in file order because grep has no ranking; B2 reads newest-first because
+that is what a person does with their own notes; B2's digest is the tail of
+the file, not query-aware — which is precisely the deficiency Cairn's ranked
+digest claims to fix, so B2 having a digest surface at all is what makes
+that claim testable. Every such choice is recorded in
+`Capabilities().Notes` and travels into the run record beside any number it
+produced. They are revisable by the operator BEFORE E4 runs, not after
+seeing results.
+
+**Two surfaces, separated at the interface.** `SurfaceSearch` (the memory,
+not allowed to forget) and `SurfaceDigest` (the working set, allowed to
+forget by design). EVAL-PLAN §9.1 warns that conflating them produces a
+falsely damning result; making the distinction a parameter of every request
+means a later milestone cannot accidentally conflate them.
+
+**Result recording (`internal/result`) records observations, never
+verdicts.** There is no metric field anywhere in the schema — no nDCG, MRR,
+Recall, Success@k, pass/fail — and a test asserts their absence by scanning
+the marshalled JSON. Per-item outcomes (what was asked, what came back, what
+the corpus declares relevant, payload chars, latency, raw output) are data;
+scoring is E4's job, after signoff. A `Kind` field labels every record
+`plumbing-verification` or `measurement`, so a stray result file cannot be
+mistaken for evidence. Records carry schema version, run id derived from
+inputs, seed, corpus id/version/checksum/**label source**, cairn version and
+build tags, `retrieval_mode` (full vs lexical_only — they answer different
+claims), and the machine, because latency claims are machine-specific.
+
+**One asymmetry stated rather than hidden:** B5 is the only backend that is
+a daemon, so its `Elapsed` includes process start, IPC and fsync'd
+durability while B1/B2 measure an in-process scan. Cross-backend latency is
+therefore not comparable and must not be reported as if it were; retrieval
+QUALITY is what the interface exists to compare.
+
+**Scope boundary observed.** E1's pre-registration is only meaningful if
+criteria are fixed before results exist, and every `signoff:` in
+`eval/claims.yaml` is still `pending`. So: no E4/E5/E6/E9 measurement was
+run, no metric was computed over any corpus, no baseline was ranked against
+another, and nothing in this tree states a conclusion about Cairn's
+retrieval quality. `cairn-eval` has no measurement verbs at all; they arrive
+with E4, after signoff. The only thing that runs is a plumbing check over a
+three-document obviously-synthetic fixture whose records are labelled
+`plumbing-verification` and whose corpus `label_source` says SYNTHETIC in
+capitals.
+
+**Wiring.** `make eval` (= `eval-vet` + `eval-test`) and a separate
+`eval-harness` CI job. Deliberately NOT folded into `make test`/`verify`:
+the main suite gates every commit and its properties (offline,
+deterministic, free) must not be diluted by a harness that will eventually
+be networked and stochastic — and a harness failure should never be
+confusable with a daemon failure. CI lints `eval/` explicitly, since
+golangci-lint does not cross a module boundary either. Main module build,
+vet, test and lint are untouched: `./...` stops at the nested module.
+
+Green: main `make vet` + `golangci-lint run` (0 issues) unchanged; `make
+eval` green; eval `golangci-lint run` 0 issues.

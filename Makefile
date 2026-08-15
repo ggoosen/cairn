@@ -8,7 +8,7 @@ GOTAGS := -tags sqlite_fts5
 # told "this volume is encrypted" by its environment.
 GOTESTTAGS := -tags sqlite_fts5,cairn_testhooks
 
-.PHONY: build test test-short test-race vet verify all install deploy fuzz
+.PHONY: build test test-short test-race vet verify all install deploy fuzz eval eval-vet eval-test
 
 all: vet test build
 
@@ -81,3 +81,18 @@ fuzz:
 
 vet:
 	go vet $(GOTESTTAGS) ./...
+
+# The evaluation harness (build/EVAL-PLAN.md) is a SEPARATE module, so the
+# main targets above do not see it — `./...` does not cross a module
+# boundary. Its own targets live here, and are deliberately NOT wired into
+# `test`, `vet` or `verify`: the main suite gates every commit and its
+# properties (offline, deterministic, free) must not be diluted by a harness
+# that will eventually be networked and stochastic. `make eval` runs the
+# harness's self-tests, which today are all still offline and free.
+eval: eval-vet eval-test
+
+eval-vet:
+	cd eval && go vet ./...
+
+eval-test:
+	cd eval && go test ./...
