@@ -232,11 +232,27 @@ func Start(opts Options) (*Daemon, error) {
 	if opts.FS == nil {
 		opts.FS = fsx.OS{}
 	}
-	if opts.Now == nil {
-		opts.Now = time.Now
-	}
 	if opts.Warn == nil {
 		opts.Warn = io.Discard
+	}
+	if opts.Now == nil {
+		// EVAL-PLAN §9.2: under `cairn_testhooks` the clock may be offset
+		// from the environment so a black-box harness can replay months of
+		// mesh in minutes. In a release build simulatedClock is a no-op and
+		// this is the system clock, unconditionally (clock_notesthook.go).
+		// A malformed setting is FATAL: a silent fall back to real time
+		// would produce a run whose timestamps mean something other than
+		// what the harness believes, and it would look entirely normal.
+		now, note, err := simulatedClock()
+		if err != nil {
+			return nil, fmt.Errorf("simulated clock: %w", err)
+		}
+		if now != nil {
+			opts.Now = now
+			fmt.Fprintf(opts.Warn, "WARNING: daemon running on a SIMULATED CLOCK — %s. Timestamps are not real time.\n", note)
+		} else {
+			opts.Now = time.Now
+		}
 	}
 	if opts.DBPath == "" {
 		opts.DBPath = projection.DBPath(opts.Dir)

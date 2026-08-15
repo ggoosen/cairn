@@ -1,5 +1,16 @@
 # Cairn P0 — Build Plan (M0–M8)
 
+> **STATUS: COMPLETE.** Every milestone here (M0–M8, plus the post-P0 M9
+> ingest stub) is built and recorded in PROGRESS.md. This file is retained
+> for its acceptance criteria and decision trail, not as a work queue —
+> P1/P2/P3 and everything since were planned elsewhere.
+>
+> **For what is still to be built, read [`../ROADMAP.md`](../ROADMAP.md)** —
+> the single consolidated index. Active work orders it points to:
+> [`CAPTURE-PLAN.md`](CAPTURE-PLAN.md) (zero-effort capture) and
+> [`EVAL-PLAN.md`](EVAL-PLAN.md) (proving the claims, with pre-registered
+> falsification criteria in `../eval/claims.yaml`).
+
 Rules: one milestone at a time, in order. A milestone is done when ALL its
 acceptance criteria pass and PROGRESS.md is updated. Spec references are to
 docs/spec-v0.3.md (§) and docs/rulings-v0.3.1.md (R§).

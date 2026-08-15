@@ -17,7 +17,11 @@ review. Your job is implementation, not redesign.
 1. `build/ARCHITECTURE.md` — condensed implementation architecture (start here)
 2. `docs/rulings-v0.3.1.md` — **binding build rulings; where anything conflicts, this wins**
 3. `docs/spec-v0.3.md` — full specification (P0 scope is §12)
-4. `build/BUILD-PLAN.md` — milestones M0–M8 with acceptance criteria
+4. `ROADMAP.md` — **the index of everything still to be built** (start here for
+   current work); `build/BUILD-PLAN.md` is the COMPLETED P0 plan (M0–M8), kept
+   for its acceptance criteria and decision trail. Active work orders:
+   `build/CAPTURE-PLAN.md` (zero-effort capture), `build/EVAL-PLAN.md`
+   (proving the claims)
 5. `build/TESTING.md` — crash/fault matrix (the zero-loss gate depends on it)
 6. `build/schemas/p0-events.schema.json` — normative event payload schemas
 7. `build/sql/projection.sql` — SQLite projection DDL
@@ -74,8 +78,10 @@ review. Your job is implementation, not redesign.
 
 ## Workflow
 
-- Work **one milestone at a time** from BUILD-PLAN.md, in order. Do not start
-  M(n+1) until M(n) acceptance criteria pass.
+- Work **one milestone at a time**, in order, from the work order that owns it.
+  Do not start M(n+1) until M(n) acceptance criteria pass. BUILD-PLAN.md
+  (M0–M8) is complete; current work is indexed by `ROADMAP.md` and specified by
+  `build/CAPTURE-PLAN.md` and `build/EVAL-PLAN.md`.
 - Maintain `PROGRESS.md` at repo root: per milestone — status, deviations,
   rulings needed, test results.
 - TDD where it matters: the event log (M1) and outbox (M4) get their crash
@@ -123,6 +129,10 @@ provenance on fetched results; 100% budget compliance; P95 send-ack →
 lexical-digest-visible < 200 ms on the dev machine. `cairn doctor` reports
 clean on a corpus that has survived the fault matrix. The operator can then
 begin the 30-handoff product evaluation described in BUILD-PLAN M8.
+*(Since superseded in method, not in intent: `build/EVAL-PLAN.md` E7
+strengthens that evaluation with pre-registration and randomized
+withholding, because as originally specified it is n=1, self-reported and
+uncontrolled.)*
 
 ## Cairn — shared agent memory
 
@@ -132,6 +142,7 @@ HOW TO USE IT:
 - START OF SESSION: run `cairn digest --view cairn --budget 1500` and actually read it — it's what other sessions flagged as relevant to this project. Don't skip it; it may save you rediscovering something.
 - WHILE WORKING, WRITE when you produce something a future session (here or in another project) would benefit from: a decision and its reasoning, a non-obvious gotcha, a research finding, an interface/contract another component depends on. Use `cairn send --topic cairn/<area> "<concise summary>" --priority <0-3>` (priority: 3=critical, 2=important, 1=useful, 0=minor). Write summaries, not dumps — one clear paragraph another session can act on.
 - DON'T WRITE trivia, routine progress, or things obvious from the code itself. Signal, not noise.
+- END OF SESSION: before you finish, publish ONE handoff note — `cairn send --topic cairn/<area> "<handoff>" --priority 2` — covering the decisions you made and why, what is unfinished and where it stands, and anything that surprised you. This is the session's single mandatory write, not licence to dump: it is a summary the next session reads instead of re-deriving your reasoning, so it stays one note and it stays signal.
 - TO FIND PRIOR WORK: `cairn search "<query>"`, then `cairn fetch <id>` for full content. Search before assuming something hasn't been decided.
 - After a search, record whether it helped: `cairn found <interaction-id> --message <message-id>` or `cairn not-found <interaction-id>` (ids come from the search output). This tunes ranking over time — and the `--message` id is what lets the Success@5 gate credit the hit.
 - SHAPE WHAT YOU RECEIVE: your digest is only as relevant as the interest you declare. If you keep searching the same area, declare a local standing interest so future digests surface it automatically: `cairn subscribe "<what this project works on>" --view cairn` (over MCP: `cairn_subscribe`; `cairn_subscriptions` shows it). This is your OWN view only (R25 local tier) — no shared events, no capability escalation, cheap and reversible; re-run any time your focus shifts. Do NOT pass `--durable` (that's the replicated, operator-only tier).

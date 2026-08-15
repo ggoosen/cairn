@@ -14,8 +14,20 @@ import (
 	"github.com/ggoosen/cairn/internal/mcpinstall"
 )
 
+// desktopConfigPath asks the registry rather than hardcoding a path: Claude
+// Desktop's config lives under ~/Library/Application Support on macOS and
+// under $XDG_CONFIG_HOME (default ~/.config) on Linux, so a literal here would
+// only be right on one of the two supported platforms.
 func desktopConfigPath(home string) string {
-	return filepath.Join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json")
+	a, ok := mcpinstall.Lookup("claude-desktop")
+	if !ok {
+		panic("claude-desktop not registered")
+	}
+	p, err := a.ConfigPath(mcpinstall.Env{Home: home})
+	if err != nil {
+		panic(err)
+	}
+	return p
 }
 
 // A hermetic HOME with the Claude Desktop app dir present so claude-desktop is
@@ -26,7 +38,10 @@ func hermeticHome(t *testing.T) string {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("PATH", filepath.Join(home, "empty-bin")) // no `claude` binary
-	if err := os.MkdirAll(filepath.Join(home, "Library", "Application Support", "Claude"), 0o755); err != nil {
+	// An inherited XDG_CONFIG_HOME would point the Linux desktop path outside
+	// the temp home and break hermeticity.
+	t.Setenv("XDG_CONFIG_HOME", "")
+	if err := os.MkdirAll(filepath.Dir(desktopConfigPath(home)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return home

@@ -46,16 +46,56 @@ func (p *Projection) LexicalTopK(query string, k int, includeRetracted bool) ([]
 	if err != nil {
 		return nil, err
 	}
+	// C2: same union, one source further out — the trigram companion index
+	// answers the substring/identifier queries the word index is structurally
+	// blind to. It goes LAST because it is the least precise source: it only
+	// ever fills slots the exact indexes left empty, so adding it cannot
+	// displace a word hit or reorder what an agent already receives.
+	triHits, err := p.TrigramMessageHits(raw, k, includeRetracted)
+	if err != nil {
+		return nil, err
+	}
 	seen := map[string]bool{}
 	for _, id := range out {
 		seen[id] = true
 	}
-	for _, id := range derivHits {
-		if !seen[id] && len(out) < k {
+	appendUnseen := func(ids []string) {
+		for _, id := range ids {
+			if seen[id] || len(out) >= k {
+				continue
+			}
+			seen[id] = true
 			out = append(out, id)
 		}
 	}
+	appendUnseen(derivHits)
+	appendUnseen(triHits)
 	return out, nil
+}
+
+// TrigramMessageHits returns HEAD-revision message IDs from the C2 trigram
+// companion index in bm25 order (ties by message_id) — the substring matches
+// the unicode61 word index cannot see: a partial UUID, a camelCase symbol
+// inside a longer identifier, a fragment of an error string.
+func (p *Projection) TrigramMessageHits(query string, k int, includeRetracted bool) ([]string, error) {
+	q := FTSTrigramQuery(query)
+	if q == "" {
+		return nil, nil
+	}
+	rows, err := p.db.Query(`
+		SELECT m.message_id
+		FROM fts_revisions_trigram
+		JOIN fts_map map ON fts_revisions_trigram.rowid = map.rowid
+		JOIN revisions r ON r.revision_id = map.revision_id
+		JOIN messages m ON m.message_id = r.message_id AND m.head_revision_id = r.revision_id
+		WHERE fts_revisions_trigram MATCH ? AND (m.retracted = 0 OR ?)
+		ORDER BY bm25(fts_revisions_trigram), m.message_id
+		LIMIT ?`, q, boolInt(includeRetracted), k)
+	if err != nil {
+		return nil, fmt.Errorf("trigram candidates: %w", err)
+	}
+	defer rows.Close()
+	return scanIDs(rows)
 }
 
 // VecBlob encodes float32 little-endian (the DDL's vectors.vec format).

@@ -68,7 +68,11 @@ Per surface:
     `~/cairn/views/<view>/outbox/` (front-matter optional:
     `action/text_class/declared_priority/topic_ids`). To retrieve, run
     `cairn search "<query>" --budget 4000` and `cairn fetch <message-id>
-    --view <view>`; fetched bodies land in `views/<view>/fetched/`."*
+    --view <view>`; fetched bodies land in `views/<view>/fetched/`.
+    Before ending a session, publish ONE handoff note — decisions and
+    their reasons, unfinished work, surprises — with `cairn send --topic
+    <project> --priority 2`. That note is the session's single mandatory
+    write; everything else stays signal, not noise."*
 - **chat-agent copy/paste view**: run `cairn digest --view chat-scratch
   --budget 4000` and paste the output into the chat; paste the agent's
   conclusions back via `cairn send - --actor chat-scratch < notes.md`.
@@ -82,7 +86,9 @@ With the daemon running, any MCP client gets the twelve tools — the nine
 why_ranked`), `cairn_thread` for thread expansion, and the two R55
 local-tier subscription tools (`cairn_subscribe/cairn_subscriptions`) —
 over stdio. Claude Desktop — add to
-`~/Library/Application Support/Claude/claude_desktop_config.json`:
+`~/Library/Application Support/Claude/claude_desktop_config.json` (on Linux:
+`$XDG_CONFIG_HOME/Claude/claude_desktop_config.json`, i.e. `~/.config/Claude/`
+by default — `cairn mcp-install` finds either):
 
 ```json
 {
@@ -98,6 +104,11 @@ over stdio. Claude Desktop — add to
 Claude Code: `claude mcp add cairn -- cairn mcp --view claude-code --actor
 claude-code`. Use the absolute binary path (GUI apps don't inherit your
 shell PATH). One view per client keeps digests and telemetry attributable.
+
+Other harnesses (Hermes agent, OpenClaw-style — anything that launches a stdio
+MCP server) are wired the same way; see
+[`docs/memory-provider.md`](docs/memory-provider.md) for per-harness config and
+the capability profile.
 
 Every content-bearing result arrives in the untrusted-content envelope
 (`trust: "untrusted"` + full provenance); budgets default to 1500 chars

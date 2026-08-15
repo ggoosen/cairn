@@ -1,0 +1,6 @@
+{"id":"sq-001","query":"how many times does a failed batch get retried","relevant":["s-001"],"label_kind":"SYNTHETIC_authored_by_project","split":"dev"}
+{"id":"sq-002","query":"why are money amounts not floats","relevant":["s-002"],"label_kind":"SYNTHETIC_authored_by_project","split":"dev"}
+{"id":"sq-003","query":"do I need to drain the queue before restarting the scheduler","relevant":["s-003"],"label_kind":"SYNTHETIC_authored_by_project","split":"dev"}
+{"id":"sq-004","query":"what caused the duplicated midnight rows","relevant":["s-004"],"label_kind":"SYNTHETIC_authored_by_project","split":"dev"}
+{"id":"sq-005","query":"maximum number of database connections","relevant":["s-005"],"label_kind":"SYNTHETIC_authored_by_project","split":"dev"}
+{"id":"sq-006","query":"how long are logs kept","relevant":["s-006"],"label_kind":"SYNTHETIC_authored_by_project","split":"dev"}

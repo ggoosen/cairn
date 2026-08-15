@@ -251,10 +251,23 @@ const (
 // ---------------------------------------------------------------------------
 
 const (
-	ProjectionSchemaVersion = 6 // v6: parked_events.retryable (R49/FIX-J1); v5: attachment durability class (N7); v4: derivatives+summaries (N4); v3: subscriptions (N3); v2: parked_events
+	ProjectionSchemaVersion = 7 // v7: fts_revisions_trigram companion index (CAPTURE C2); v6: parked_events.retryable (R49/FIX-J1); v5: attachment durability class (N7); v4: derivatives+summaries (N4); v3: subscriptions (N3); v2: parked_events
 
 	// FTSTokenize: unicode61 with tokenchars `_ - # @` (rulings §6).
 	FTSTokenize = "unicode61 tokenchars '_-#@'"
+
+	// FTSTrigramTokenize is the CAPTURE C2 companion index's tokenizer. It
+	// takes no options: trigram tokenization is fixed-width and already
+	// case-folding, so there is nothing to tune here.
+	FTSTrigramTokenize = "trigram"
+
+	// FTSTrigramMinTerm is the trigram width, and therefore the shortest
+	// query term the companion index can answer at all: a shorter term
+	// produces ZERO tokens, so it matches nothing rather than everything.
+	// Such terms are dropped from the trigram query (the word index still
+	// answers them); a query left with no usable term skips the companion
+	// index entirely instead of running a match that cannot hit.
+	FTSTrigramMinTerm = 3
 )
 
 // ParkedRetryableGrace (RULINGS.md R49.3) is how long a RETRYABLE parked event

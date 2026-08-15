@@ -29,6 +29,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -37,12 +38,23 @@ import (
 // Env carries the (injectable, for tests) environment the registry resolves
 // paths and side effects against.
 type Env struct {
-	Home     string                                     // user home dir
-	Cwd      string                                     // working dir (project-local .mcp.json probing)
-	Self     string                                     // absolute path of the running cairn binary (os.Executable)
-	LookPath func(string) (string, error)               // exec.LookPath, overridable
-	Run      func(name string, args ...string) error    // run an external CLI, overridable
-	Now      func() int64                               // unix seconds, for backup filenames
+	Home          string                                  // user home dir
+	Cwd           string                                  // working dir (project-local .mcp.json probing)
+	Self          string                                  // absolute path of the running cairn binary (os.Executable)
+	GOOS          string                                  // platform override; "" means runtime.GOOS
+	XDGConfigHome string                                  // $XDG_CONFIG_HOME; "" means ~/.config
+	LookPath      func(string) (string, error)            // exec.LookPath, overridable
+	Run           func(name string, args ...string) error // run an external CLI, overridable
+	Now           func() int64                            // unix seconds, for backup filenames
+}
+
+// goos is the platform the registry resolves paths for. An Env built by hand
+// (tests, callers that only set Home) leaves it empty and gets the real one.
+func (e Env) goos() string {
+	if e.GOOS != "" {
+		return e.GOOS
+	}
+	return runtime.GOOS
 }
 
 // DefaultEnv builds an Env from the real process environment. self MUST be the
@@ -55,10 +67,12 @@ func DefaultEnv(self string) (Env, error) {
 	}
 	cwd, _ := os.Getwd()
 	return Env{
-		Home:     home,
-		Cwd:      cwd,
-		Self:     self,
-		LookPath: exec.LookPath,
+		Home:          home,
+		Cwd:           cwd,
+		Self:          self,
+		GOOS:          runtime.GOOS,
+		XDGConfigHome: os.Getenv("XDG_CONFIG_HOME"),
+		LookPath:      exec.LookPath,
 		Run: func(name string, args ...string) error {
 			cmd := exec.Command(name, args...)
 			out, err := cmd.CombinedOutput()
@@ -116,8 +130,7 @@ func Registry() []App {
 		{
 			Name: "claude-desktop",
 			detect: func(e Env) (bool, string) {
-				dir := filepath.Join(e.Home, "Library", "Application Support", "Claude")
-				if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+				if fi, err := os.Stat(claudeDesktopDir(e)); err == nil && fi.IsDir() {
 					return true, "app dir present"
 				}
 				if _, err := os.Stat(claudeDesktopPath(e)); err == nil {
@@ -182,8 +195,32 @@ func Registry() []App {
 	}
 }
 
+// claudeDesktopDir is Claude Desktop's Electron userData directory — the app
+// dir that holds claude_desktop_config.json, and the presence of which is what
+// "installed" means for a GUI app with no CLI to probe.
+//
+// macOS is `~/Library/Application Support/Claude`. On Linux, Electron's
+// userData resolves to `$XDG_CONFIG_HOME/<app>`, defaulting to `~/.config/<app>`
+// — so the Linux builds read `~/.config/Claude/claude_desktop_config.json`,
+// and honouring XDG_CONFIG_HOME is what makes a relocated config dir work
+// rather than silently writing a file the app never reads.
+//
+// Non-darwin falls through to the XDG shape deliberately: Linux is the only
+// other supported platform (CLAUDE.md — macOS primary, Linux best-effort, no
+// Windows), so there is no %APPDATA% branch to get subtly wrong.
+func claudeDesktopDir(e Env) string {
+	if e.goos() == "darwin" {
+		return filepath.Join(e.Home, "Library", "Application Support", "Claude")
+	}
+	base := e.XDGConfigHome
+	if base == "" {
+		base = filepath.Join(e.Home, ".config")
+	}
+	return filepath.Join(base, "Claude")
+}
+
 func claudeDesktopPath(e Env) string {
-	return filepath.Join(e.Home, "Library", "Application Support", "Claude", "claude_desktop_config.json")
+	return filepath.Join(claudeDesktopDir(e), "claude_desktop_config.json")
 }
 
 func claudeCodePath(e Env) string {
@@ -425,6 +462,11 @@ type Result struct {
 	Message    string
 	NextStep   string
 }
+
+// ConfigPath is the file this app reads its MCP servers from, resolved for
+// e's platform. Exported so callers (and tests) ask the registry where a
+// config lives instead of hardcoding a path that is only right on one OS.
+func (a App) ConfigPath(e Env) (string, error) { return a.configPath(e) }
 
 func (a App) viaCLI(e Env) bool {
 	if a.cliName == "" {

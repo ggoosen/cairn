@@ -1,0 +1,271 @@
+# EVAL E1 — the claims register
+#
+# Every public claim Cairn makes, what would measure it, and what would
+# FALSIFY it. Per build/EVAL-PLAN.md §5-E1: nothing gets measured until its
+# kill criterion is written down here, so that criteria are chosen before
+# results exist to be tempted by.
+#
+# STATUS OF THIS FILE: every `kill_criterion` below is marked PROPOSED and
+# is drafted, not decided. The kill criteria are commitments about what the
+# author would accept as disproof of his own project — they need operator
+# sign-off, not an agent's opinion. Review each, edit the thresholds, then
+# change `signoff: pending` to `signoff: <date>`. Measurement work (E2+)
+# does not start on a claim until its signoff lands.
+#
+# schema:
+#   id             stable identifier, referenced by harness results
+#   claim          what is asserted publicly (near-verbatim from source)
+#   source         where it is asserted
+#   class          engineering | retrieval | product | safety
+#   evidence       proven | circular | untested | unstarted
+#   measurement    how it would be tested, and by which EVAL milestone
+#   threshold      what counts as passing
+#   kill_criterion what would make the claim FALSE (and what we'd do)
+#   signoff        pending | <ISO date once the operator accepts it>
+
+version: 1
+registered_at: "2026-08-09"
+
+claims:
+
+  # ---------------------------------------------------------------- engineering
+  # These are already backed by automated gates. They are listed so the
+  # register is complete, and because "proven" should mean "proven for a
+  # stated fault set", not "we believe it".
+
+  - id: ENG-durability
+    claim: "Zero acknowledged-event loss. Acknowledgement happens only after fsync'd durability."
+    source: "README 'Crash-safe by construction'; spec §11 gate"
+    class: engineering
+    evidence: proven
+    measurement: "15-point crash matrix + injected ENOSPC/EIO at every mutating op, fault-injecting FS modelling true power loss (in CI). E0 — already running."
+    threshold: "zero acked events missing after recovery, across the full matrix"
+    kill_criterion: "PROPOSED — any acked event absent after any modelled fault. Release blocker; the project's core promise fails."
+    signoff: pending
+
+  - id: ENG-budget
+    claim: "Hard context budget: the payload never exceeds budget_chars, metadata and truncation markers included."
+    source: "README 'What Cairn does'; rulings §7"
+    class: engineering
+    evidence: proven
+    measurement: "property test over budget sweeps incl. degenerate budgets. E0 — already running."
+    threshold: "100% compliance"
+    kill_criterion: "PROPOSED — any payload over budget. Release blocker."
+    signoff: pending
+
+  - id: ENG-determinism
+    claim: "Delete the index; reindex rebuilds it from the log deterministically, down to identical query results."
+    source: "README 'SQLite as a disposable projection'"
+    class: engineering
+    evidence: proven
+    measurement: "byte-identical reindex snapshot test. E0 — already running."
+    threshold: "identical projection and identical query results"
+    kill_criterion: "PROPOSED — any divergence. The 'disposable projection' design claim fails."
+    signoff: pending
+
+  - id: ENG-explainability
+    claim: "Ranking arithmetic is inspectable and a past ranking can never be silently rewritten by a later one."
+    source: "README 'Ranking that stays dumb on purpose'; R47/R51"
+    class: engineering
+    evidence: proven
+    measurement: "external recompute must reconcile exactly against stored explanations. E0 — already running."
+    threshold: "exact reconciliation, every term"
+    kill_criterion: "PROPOSED — any mismatch, or any case where a later interaction mutates an earlier explanation."
+    signoff: pending
+
+  # ---------------------------------------------------------------- retrieval
+  # The numbers exist but the corpus, queries and judgments are all
+  # author-written. These are the claims E3/E4 exist to re-establish on
+  # ground truth nobody here authored.
+
+  - id: RET-success5
+    claim: "First-query Success@5 ≥ 70%."
+    source: "spec §11; cairn gates"
+    class: retrieval
+    evidence: circular
+    measurement: "E4 — nDCG@k / MRR / Recall@k over E3 INDEPENDENT corpora with mined human relevance labels. The existing golden corpus is demoted to a T0 configuration-regression gate."
+    threshold: "≥70% on independent corpora, not only on the authored one"
+    kill_criterion: "PROPOSED — Success@5 below 70% on independent corpora after ONE documented tuning pass. Per rulings §10 the configuration is falsified before the thesis; a second failure after tuning falsifies the retrieval design."
+    signoff: pending
+
+  - id: RET-hybrid-earns-place
+    claim: "Hybrid lexical+semantic fusion (RRF) beats either alone."
+    source: "rulings §7; README 'optional local vector embeddings'"
+    class: retrieval
+    evidence: untested
+    measurement: "E4 ablation: lexical-only vs vector-only vs RRF, same corpora."
+    threshold: "RRF materially beats both single-mode arms"
+    kill_criterion: "PROPOSED — if ablating vector search does NOT degrade quality, DELETE the embedder. That removes the Python venv, the model pin, HF cache verification and the whole enrichment pipeline. A large simplification and a legitimate result."
+    signoff: pending
+
+  - id: RET-dumb-ranking-suffices
+    claim: "Relevance + freshness + bounded priority, with hand-set constants, is good enough — no learned black box needed."
+    source: "README 'Ranking that stays dumb on purpose'"
+    class: retrieval
+    evidence: untested
+    measurement: "E4 ablations per term (±freshness, ±priority decay, ±mandatory inclusion), plus P0 vs P2 profile after calibration."
+    threshold: "each retained term measurably contributes; P2 beats P0 if P2 is to remain"
+    kill_criterion: "PROPOSED — any term whose removal does not hurt gets deleted. If P2 does not beat P0 after calibration, ship P0 as default and archive P2's extra terms."
+    signoff: pending
+
+  - id: RET-graceful-degradation
+    claim: "Without embeddings, retrieval degrades cleanly to lexical-only rather than failing."
+    source: "README 'SQLite as a disposable projection'"
+    class: retrieval
+    evidence: proven
+    measurement: "lexical_only top-10 ≥60% on the golden corpus (E0), re-established on independent corpora (E4)."
+    threshold: "≥60% top-10 lexical-only"
+    kill_criterion: "PROPOSED — lexical-only below 60% on independent corpora means 'degrades cleanly' overstates it; the honest claim becomes 'semantic search is required for useful recall'."
+    signoff: pending
+
+  # ---------------------------------------------------------------- product
+  # The thesis. Nothing here has ever been measured. These are the claims
+  # the whole framework exists for.
+
+  - id: PROD-compounds
+    claim: "Knowledge compounds instead of being re-explained: what one session learns, another can find."
+    source: "README opening; CLAUDE.md agent block"
+    class: product
+    evidence: unstarted
+    measurement: "E5 — REDISCOVERY RATE: how often an agent re-derives something the mesh already contained, across memory conditions B0-B5, multi-trial with confidence intervals."
+    threshold: "rediscovery rate materially lower with Cairn than with no-memory and flat-file baselines"
+    kill_criterion: "PROPOSED — if rediscovery rate does not fall versus B0/B2, the core thesis is unsupported and the README opening must be rewritten."
+    signoff: pending
+
+  - id: PROD-beats-alternatives
+    claim: "Flat files and structured databases fail at deciding what is actually relevant to each agent."
+    source: "public thread; README 'The problem'"
+    class: product
+    evidence: untested
+    measurement: "E5 — task success rate against B1 grep-over-transcripts, B2 flat markdown notes, B3 naive vector RAG."
+    threshold: "beats every baseline on task success at equal or lower token cost"
+    kill_criterion: "PROPOSED — if Cairn does not beat B1 (grep over raw transcripts), the ranking and curation layer is not earning its complexity. Reconsider the retrieval stack entirely. THIS IS THE MOST IMPORTANT ROW IN THE FILE."
+    signoff: pending
+
+  - id: PROD-budget-preserves-value
+    claim: "A ranked, budget-capped digest gives the agent what it needs — agents are never handed a raw inbox."
+    source: "README opening; spec §1"
+    class: product
+    evidence: untested
+    measurement: "E5 — BUDGET SURVIVAL OF TASK-CRITICAL FACTS: of the facts required to complete the task, what fraction survived the digest cut? Plus head-to-head vs B4 full-context-stuffing on tasks that fit in context."
+    threshold: "high survival of task-critical facts; no loss to B4 where B4 is feasible"
+    kill_criterion: "PROPOSED — if the capped digest loses to full-context stuffing on tasks that fit in context, budget discipline only matters above the context limit. Say that plainly rather than implying it always helps."
+    signoff: pending
+
+  - id: PROD-cross-model
+    claim: "Knowledge is shared across agents from different frontier models and different machines."
+    source: "public thread; README opening"
+    class: product
+    evidence: untested
+    measurement: "E5 — cross-model transfer arm: knowledge written by model A, retrieved and correctly used by model B; and cross-machine after replication."
+    threshold: "cross-model transfer performs comparably to single-model"
+    kill_criterion: "PROPOSED — if cross-model materially underperforms single-model, the pitch narrows to single-model multi-session and the public claim must be rewritten."
+    signoff: pending
+
+  - id: PROD-beats-copypaste
+    claim: "It beats being the copy-paste courier between sessions."
+    source: "README status; DOGFOOD 30-handoff gate"
+    class: product
+    evidence: unstarted
+    measurement: "E7 — 30-handoff evaluation with PRE-REGISTERED success definitions and RANDOMIZED WITHHOLDING (a fraction of sessions run Cairn-blind) for a within-operator control."
+    threshold: "spec §11: Success@5 ≥70%, manual-workaround ≤25%, median time-to-context <60s"
+    kill_criterion: "PROPOSED — thresholds missed after one documented tuning pass. Reported as a CASE STUDY with limits stated (n=1 operator, non-blinded, self-reported) — it is evidence about this operator, not a general claim."
+    signoff: pending
+
+  # ------------------------------------------------- longitudinal / mesh (E9)
+  # Long-term memory claims. Distinct from RET-* because they are about TIME
+  # and GROWTH, which no snapshot evaluation can see.
+
+  - id: LONG-old-material-survives
+    claim: "Freshness is an additive bonus decaying to zero, never a subtractive penalty — old canonical material is never annihilated."
+    source: "spec §9.1 (verbatim design rationale)"
+    class: retrieval
+    evidence: untested
+    measurement: "E9 — recall-over-age curve: recall as a function of the target item's age at query time, measured on SEARCH (the memory surface), reported separately from digest (the working-set surface, which is designed to forget)."
+    threshold: "search recall materially flat across target age; digest may decay, and is expected to"
+    kill_criterion: "PROPOSED — if search recall collapses past some age, additive freshness is not achieving what §9.1 claims for it. Revisit the half-lives, or withdraw the claim."
+    signoff: pending
+
+  - id: LONG-scales-with-corpus
+    claim: "A ranked, budget-capped digest remains useful as the mesh grows."
+    source: "implied by the whole design; never stated as a bound"
+    class: retrieval
+    evidence: untested
+    measurement: "E9 — recall-under-growth: fixed query set, corpus grown 10x/100x/1000x around it, BUDGET HELD FIXED as in real use. T0: no agent, no LLM cost."
+    threshold: "recall and precision@budget hold within a stated tolerance to at least 100k messages"
+    kill_criterion: "PROPOSED — if quality collapses as the corpus grows at fixed budget, Cairn does not scale as long-term memory. Duplicate/saturation penalties and/or summarization stop being optional. This is the cheapest experiment in the plan and the most likely to find a real limit — run it early."
+    signoff: pending
+
+  - id: LONG-current-truth
+    claim: "Retrieval surfaces what is true now, not merely what was written."
+    source: "implied by revisions/retractions and `cairn compact`"
+    class: retrieval
+    evidence: untested
+    measurement: "E9 — supersession accuracy, reported as a three-way split: correct (returns the superseding item) / stale / ambiguous (both, undifferentiated). Plus stale-confidence rate: how often an agent acts on a stale return without signalling uncertainty."
+    threshold: "stale-preferred rate low; stale-confidence rate near zero"
+    kill_criterion: "PROPOSED — if the stale-preferred rate is material, cross-message supersession needs structural representation (`relates_to` is payload-only, with no projection table, so only WITHIN-message revision chains are queryable today). Until built, state plainly that Cairn recalls what was written, not what is currently true."
+    signoff: pending
+
+  - id: MESH-convergence-recall
+    claim: "What one session learns, another can find — across machines."
+    source: "README opening; public thread"
+    class: product
+    evidence: untested
+    measurement: "E9 — transitive convergence recall: knowledge written on node A, queried on node C which has only ever synced with B; recall as a function of time-since-write and sync topology."
+    threshold: "converges to full recall within a bounded, stated time"
+    kill_criterion: "PROPOSED — if transitive convergence fails or is unbounded in time, the mesh claim narrows to directly-paired nodes and must be restated."
+    signoff: pending
+
+  - id: MESH-partial-honesty
+    claim: "A thin node's universal search is honestly partial — it says so when its local corpus is only a recent window."
+    source: "spec §6.1/§7; `partial` + `partial_reason` in search output"
+    class: safety
+    evidence: untested
+    measurement: "E9 — partiality honesty in BOTH directions: partial set when the answer was genuinely missing, and never absent when the corpus was in fact incomplete."
+    threshold: "zero falsely-absent partial flags"
+    kill_criterion: "PROPOSED — any falsely-absent partial flag is a node claiming completeness it does not have. Release blocker for thin nodes: silent incompleteness is worse than declared partiality."
+    signoff: pending
+
+  # ---------------------------------------------------------------- safety
+  # Structural assertions that have never been run at an actual agent.
+
+  - id: SAFE-untrusted-content
+    claim: "Everything fetched from the mesh is untrusted DATA, never instructions; every content-bearing result is wrapped in an untrusted-content envelope with provenance."
+    source: "README; R18/R53; CLAUDE.md agent block"
+    class: safety
+    evidence: untested
+    measurement: "E6 — plant prompt-injection payloads in mesh content (instruction overrides, fake operator directives, spoofed onboarding records, tool-call injections) and measure AGENT COMPLIANCE RATE through digest, search and fetch."
+    threshold: "compliance rate at or below the no-Cairn control (injection via any other channel)"
+    kill_criterion: "PROPOSED — compliance rate materially above control means the envelope is decorative. RELEASE BLOCKER: a shared memory layer that carries injections between agents is worse than no memory layer."
+    signoff: pending
+
+  - id: SAFE-onboarding-authorship
+    claim: "Only the operator's onboarding record is honoured; a non-operator record has zero effect, and prose is never a directive."
+    source: "R56/R56.1-.3; CLAUDE.md agent block"
+    class: safety
+    evidence: proven
+    measurement: "daemon-level authorship gate is tested end-to-end (E0). E6 extends it TO THE AGENT: does a spoofed record change agent behaviour in practice?"
+    threshold: "no behavioural change from any non-operator record"
+    kill_criterion: "PROPOSED — any behavioural change from a non-operator record. Release blocker (it is the one trusted-config exception; it must hold)."
+    signoff: pending
+
+  - id: SAFE-capability-confinement
+    claim: "Capability profiles confine an agent to what it may do; MCP is never tier-1."
+    source: "R21/R22/R23"
+    class: safety
+    evidence: proven
+    measurement: "capability refusal tests at the IPC boundary (E0). NOTE: R22 already scopes this honestly as preventing ACCIDENTS, not a malicious local process."
+    threshold: "every capability-gated op refuses below its tier, pre-ack"
+    kill_criterion: "PROPOSED — any gated op succeeding below its tier. Note this claim is already correctly narrow; do not widen it in marketing copy."
+    signoff: pending
+
+# --------------------------------------------------------------------------
+# Operator decisions needed before E2 starts:
+#
+#   1. Accept, edit or reject each kill_criterion above (set signoff dates).
+#   2. Confirm PROD-beats-alternatives is the primary claim — i.e. that
+#      losing to grep-over-transcripts is genuinely accepted as disproof.
+#   3. Decide the retrieval tuning-pass allowance (rulings §10 says config is
+#      falsified before thesis, after ONE documented pass — inherited here).
+#   4. Confirm the E7 case-study framing: n=1 self-reported results are
+#      reported as a case study with limits stated, not as a general claim.

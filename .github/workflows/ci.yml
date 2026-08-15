@@ -39,6 +39,22 @@ jobs:
           go-version-file: go.mod
       - run: make fuzz FUZZTIME=30s
 
+  # The evaluation harness (build/EVAL-PLAN.md) is a separate module, so the
+  # jobs above never see it — `./...` stops at the module boundary. It gets
+  # its own job rather than being folded into `verify`, so that a harness
+  # failure can never be confused with a daemon failure, and so the main
+  # suite keeps gating commits on its own terms. The harness's self-tests are
+  # T0: offline, deterministic and free. They build a real cairn binary (CGO),
+  # which the hosted runners can do.
+  eval-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make eval
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -53,3 +69,9 @@ jobs:
           # used to build golangci-lint is lower than the targeted Go
           # version (1.25)". Bump this whenever the go.mod floor rises.
           version: v2.12.2
+      # eval/ is a separate module and golangci-lint does not cross module
+      # boundaries; lint it explicitly or it silently goes unlinted.
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.12.2
+          working-directory: eval

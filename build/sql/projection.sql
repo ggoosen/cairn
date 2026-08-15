@@ -145,6 +145,18 @@ CREATE TABLE fts_map (
   rowid INTEGER PRIMARY KEY,
   revision_id TEXT NOT NULL UNIQUE
 );
+-- CAPTURE C2 companion index over the SAME body text, sharing fts_map's
+-- rowid so ONE insert feeds both indexes in one transaction. unicode61
+-- splits on word boundaries and can never match INSIDE a token, which is
+-- exactly what agents search for: a partial UUID, a camelCase symbol, an
+-- error-message fragment. The two tokenizers fail in opposite directions
+-- (trigram is blind to stemming/relevance, word FTS to substrings), so the
+-- pair is complementary; word hits still rank first (LexicalTopK).
+CREATE VIRTUAL TABLE fts_revisions_trigram USING fts5(
+  body,
+  content='',
+  tokenize='trigram'
+);
 
 -- Vectors: one row per (revision, model). Never compare across models.
 -- If sqlite-vec is available this becomes a vec0 virtual table; otherwise

@@ -93,12 +93,19 @@ The five commands above are the daily loop. The rest of what's built:
 
 ## Roadmap
 
+This table is the coarse phase-level view. The complete, consolidated
+inventory of everything still to be built — including the smaller gaps,
+deferred debt, and open design rulings scattered across the docs — lives
+in **[ROADMAP.md](ROADMAP.md)**.
+
 | Phase | Scope | Status |
 |---|---|---|
 | **P0** | Single-machine daemon: event log, search, ranked digests, outbox, exports, crash safety | ✅ complete — engineering gates green; field evaluation pending |
 | **P1** | Multi-machine Tailscale mesh: signed membership, event + text + blob replication with durability classes, live fork detection, MCP server, capability-scoped sessions, durable subscriptions, deterministic attachment derivatives | ✅ code-complete · passed a live two-node audit in July 2026 |
 | **P2** | Retrieval quality: behavioural salience, an additive ranking profile + calibration harness, **agent-shaped relevance** (self-subscribe + a self-configuring onboarding record), local **structural** navigation maps (topic/thread rollups), saved searches, compaction views, opt-in OCR derivatives | 🔨 built (opt-in, not yet calibrated) |
 | **P3** | Frictionless onboarding: **one-command `cairn setup`** (mesh + resident daemon service + MCP client wiring), iroh transport, one-time pairing invites, thin nodes for mobile | 🔨 single-machine deploy shipped · mesh scope built + audited single-host (two-machine pass and iroh live wire both deferred) |
+| **CAPTURE** | Zero-effort capture: session-transcript ingest as a low-trust searchable substrate (opt-in, redacted, never in digests), trigram substring search, end-of-session handoff convention, memory-provider packaging for agent harnesses | 🔨 partial — trigram search, handoff convention and [memory-provider packaging](docs/memory-provider.md) shipped; transcript ingest still planned ([work order](build/CAPTURE-PLAN.md)) |
+| **EVAL** | Proving the claims rather than making them: an independent black-box harness, corpora with **mined human relevance labels** (not author-written), component ablations, baselines including grep-over-transcripts, an agent-in-the-loop task battery, adversarial injection testing, and long-horizon/mesh recall — with **falsification criteria registered before measurement** | 📋 planned ([work order](build/EVAL-PLAN.md) · [claims register](eval/claims.yaml)) |
 | **P4** | Self-organising knowledge: automated filing, **embedding-clustered self-folding topic maps** (the semantic map — needs P2 usage/salience data to be good), salience propagation | planned |
 
 **On P1:** the full multi-machine mesh — replication of events, canonical text and attachment blobs with explicit durability classes; capability-scoped sessions; the MCP server and its untrusted-content envelope; live fork detection; and durable subscriptions — is built and passing its acceptance suites. In July 2026 it went through six rounds of live two-node audit on real hardware over a real tailnet (macOS + Linux), by two independent AI auditors working from separate adversarial briefs, ending with zero blockers — one of which found a genuine ephemeral-backfill leak that was fixed and re-verified live. Two caveats worth stating plainly: those auditors were AI agents, not human security reviewers; and the audit certifies a July commit — the pairing, trust and sync code has been extended since and has not been re-audited live. Treat it as thoroughly exercised, not independently certified.
@@ -238,9 +245,11 @@ also need it to match anything. See [`DOGFOOD.md`](DOGFOOD.md) §2.
 
 One line in its instructions file (`CLAUDE.md`, `AGENTS.md`, …):
 
-> *At session start, run `cairn digest --view <name> --budget 1500`. Share decisions and findings via `cairn send`. To tune what your digest surfaces, declare a local standing interest with `cairn subscribe "<what you work on>" --view <name>` (your own view only; no `--durable`).*
+> *At session start, run `cairn digest --view <name> --budget 1500`. Share decisions and findings via `cairn send`. Before ending the session, publish one handoff note — decisions and why, unfinished work, surprises — with `cairn send --topic <project> --priority 2`. To tune what your digest surfaces, declare a local standing interest with `cairn subscribe "<what you work on>" --view <name>` (your own view only; no `--durable`).*
 
 Or publish it once and let sessions configure themselves: `cairn onboarding publish --view <name> --interest "…"`.
+
+Wiring a harness that treats memory as a pluggable provider (Hermes agent, OpenClaw-style, anything that launches a stdio MCP server)? See [`docs/memory-provider.md`](docs/memory-provider.md) — config snippets, what the harness gets, and the capability profile it runs under.
 
 Then read [`DOGFOOD.md`](DOGFOOD.md) for the full setup: the three agent surfaces (files, CLI, MCP), the multi-machine enrolment ceremony, blob durability, fork repair, and the 30-handoff evaluation protocol.
 

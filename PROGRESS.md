@@ -3616,3 +3616,654 @@ Deliberately DEFERRED (with reasons, not silence):
   send-never-blocks; needs the author ruling recorded under WP-A before
   code (conservative shape proposed there: rung 7 rejects, rung 6 warns).
 - **G5 ONNX embedder:** excluded (fallback previously ruled acceptable).
+
+---
+
+## CAPTURE — zero-effort capture + ecosystem reach — PLANNED (2026-08-09)
+
+Work order at `build/CAPTURE-PLAN.md`, from the competitive review of
+Hermes agent's session-memory design. Conclusion of the review: Cairn is
+ahead on retrieval (shipped RRF hybrid + hard budgets + explainable
+ranking vs their open proposal, issue #44075) but behind on CAPTURE —
+knowledge nobody `cairn send`s dies in the session transcript. Milestones:
+
+- **C1** end-of-session handoff convention (docs only): one canonical
+  handoff note per session, published by the agent itself.
+- **C2** trigram FTS companion index: substring/identifier search
+  (projection-only; schema-version bump + auto-rebuild).
+- **C3** session-transcript ingest on the M9 path: transcripts become an
+  opt-in, redacted, `eager-searchable`/`ephemeral` PULL-ONLY substrate —
+  never canonical, never in digests. Drags G1 (sqlite-vec) and G3
+  (penalties) forward as the corpus grows. Privacy design gets a crossed
+  review before code (trust-surface change, same treatment as R56).
+- **C4** memory-provider packaging for agent harnesses (Hermes plugin
+  wrapper over `cairn mcp`, provider-directory listings).
+
+Explicit non-goals recorded in the plan: LLM reranking/summarization in
+the daemon (breaks R47/R51 explainability), query-expansion models
+(shipped hybrid already covers the failure they address), and transcripts
+as digest content (capture is a substrate, not an attention surface).
+
+## ROADMAP.md — consolidated to-build inventory (bookkeeping 2026-08-09)
+
+Outstanding work was scattered across the README roadmap table, the
+CAPTURE work order, PROGRESS deferred/owed notes, RULINGS, and spec
+§12/§13. `ROADMAP.md` (repo root) is now the ONE index: release blockers,
+CAPTURE, P2/P3 completion criteria, scaling/distribution debt, small
+specified-but-unbuilt gaps, P4, and the open author rulings — each row
+linking to its authoritative source. Maintenance rule recorded in the
+file: planned work gets a row; shipped work moves to PROGRESS and the row
+is deleted. The README table stays the coarse view and links there.
+
+---
+
+## CAPTURE C1 — end-of-session handoff convention — DONE (2026-08-15)
+
+Docs only, per `build/CAPTURE-PLAN.md` C1. The capture gap has a quality
+layer above any automatic ingest: the agent is the best summarizer of its
+own session and it is present at session end — but nothing ever told it to
+write one. Sessions ended with their reasoning still in the transcript.
+
+All three agent-instruction surfaces now carry the same instruction: before
+ending a session, publish ONE handoff note (decisions and their reasons,
+unfinished work, surprises) via `cairn send … --priority 2`.
+
+- `CLAUDE.md` agent block: new END OF SESSION bullet, immediately after the
+  "signal, not noise" bullet it qualifies.
+- `README.md` "Wiring an agent" one-liner: handoff sentence added between
+  the send and subscribe clauses.
+- `DOGFOOD.md` §3 Claude Code agent-instruction snippet: same, in the
+  snippet's own voice.
+
+Wording deliberately bounds the instruction in every surface — "the
+session's single mandatory write, not licence to dump" — so the handoff
+does not read as permission to dump the transcript into the mesh. The
+existing "signal, not noise" guidance is unchanged.
+
+No code change; `make vet`, `make test`, `golangci-lint run` (0 issues)
+green.
+
+## CAPTURE C2 — trigram FTS companion index — DONE (2026-08-15)
+
+Per `build/CAPTURE-PLAN.md` C2. The word index tokenizes on boundaries
+(`unicode61 tokenchars '_-#@'`, rulings §6) and therefore cannot match
+INSIDE a token — which is precisely the query shape agents use: a partial
+UUID, a camelCase symbol inside a longer identifier, a fragment of an error
+string. Embeddings are weak on exact identifiers, so nothing in the shipped
+stack answered that class. The two tokenizers fail in opposite directions,
+so the pair is complementary rather than redundant.
+
+**Shipped**
+
+- `fts_revisions_trigram` (FTS5 `tokenize='trigram'`) in
+  `build/sql/projection.sql` + the embedded `internal/projection/schema.sql`
+  (kept byte-identical; the drift test enforces it). It shares `fts_map`'s
+  rowid — no second mapping table — so `indexRevision` feeds BOTH indexes
+  from ONE insert in ONE transaction. The two can never disagree about what
+  is indexed, and a reindex reproduces both or neither.
+- `Projection.TrigramMessageHits` + `FTSTrigramQuery` (quoted phrase per
+  term ⇒ substring match; terms shorter than the trigram width tokenize to
+  nothing and are dropped, and a query left with no usable term skips the
+  index rather than running a match that cannot hit).
+- `LexicalTopK` unions a third source, following the existing
+  derivative-hits pattern: word hits, then derivative hits, then trigram
+  hits, deduplicated and capped at k. Trigram goes LAST deliberately — as
+  the least precise source it only fills slots the exact indexes left empty,
+  so it can never displace a word hit or reorder what an agent already
+  receives. The dedup loop now marks appended ids seen (two append sources,
+  where there was one).
+- `ProjectionSchemaVersion` 6 → 7; `FTSTrigramTokenize` / `FTSTrigramMinTerm`
+  in `internal/config/constants.go`.
+
+**Not a tokenizer change.** Rulings v0.3.1 §6 pins the FTS5 tokenizer to
+`unicode61` + tokenchars; that index is untouched. C2 ADDS a companion, so
+the ruled tokenizer still governs the word index and the ranked order agents
+see. No event-schema impact; projection-only.
+
+**Tests**
+
+- `TestTrigramCompanionFindsSubstrings` (internal/projection): three
+  mid-token fragments — `eerAdd`, `7e5f-8901`, `CONNREFUSED` — each asserted
+  to return NOTHING from the word index (so the fixture keeps proving the
+  gap) and the right message from `LexicalTopK`. Also: a word hit keeps
+  first place, retraction gating is unchanged through the trigram path, and
+  a sub-width term matches nothing rather than everything.
+- `TestReindexByteIdentical` extended: the snapshot now covers `LexicalTopK`
+  and `TrigramMessageHits` over both the original queries and trigram-only
+  ones, so the new table is inside the byte-identical guarantee.
+- `TestSearchFindsIdentifierSubstring` (internal/daemon): the same fragments
+  end-to-end through `send` → `Search`. `LexicalTopK` is the only lexical
+  candidate source search and digest-interest have, so this covers both.
+- `TestProjectionSchemaDriftRebuilds` (internal/daemon): NEW — the schema
+  bump is only safe because the daemon discards and replays a drifted
+  projection. The path was never tested. Stamps an old version on disk,
+  restarts, and asserts the rebuild happened, said so (R45), replayed the
+  corpus, and repopulated the companion index.
+- `TestBudgetComplianceProperty` stays green.
+
+`make vet`, `make test`, `golangci-lint run` (0 issues) green.
+
+## FIX-MCP3 — Claude Desktop detection on Linux — DONE (2026-08-15)
+
+ROADMAP §5. `internal/mcpinstall` resolved Claude Desktop through ONE
+hardcoded macOS path (`~/Library/Application Support/Claude`). On Linux that
+directory never exists, so `mcp-install`/`--status` reported Claude Desktop
+"not installed" regardless of what was on the machine, `--all` skipped it,
+and a forced `--app claude-desktop` would have written a config into a
+`~/Library` tree the app never reads — a silent no-op the operator had no
+way to see.
+
+- `Env` gains `GOOS` and `XDGConfigHome`; `DefaultEnv` fills both from the
+  process. An `Env` built by hand (every existing test, and callers that set
+  only `Home`) leaves `GOOS` empty and gets `runtime.GOOS`, so nothing had to
+  change at the call sites.
+- `claudeDesktopDir` resolves Electron's userData per platform: macOS keeps
+  `~/Library/Application Support/Claude`; everything else uses
+  `$XDG_CONFIG_HOME/Claude`, defaulting to `~/.config/Claude` — the path the
+  Linux builds actually read (verified against the Linux packaging docs, not
+  assumed). Honouring XDG matters: a relocated config dir would otherwise get
+  a file the app never loads. There is deliberately no `%APPDATA%` branch —
+  Windows is out of scope (CLAUDE.md platform rule), so non-darwin means
+  Linux.
+- Detection now derives from that same dir, so the app-dir and config-file
+  signals move together across platforms by construction.
+- New exported `App.ConfigPath(Env)`: callers ask the registry where a config
+  lives instead of hardcoding a path correct on one OS only. The CLI-surface
+  test in `cmd/cairn` did exactly that and now asks the registry (and pins
+  `XDG_CONFIG_HOME` so a developer's real one cannot break hermeticity).
+
+R54 is untouched: merge-only, backup-before-write, refuse-malformed,
+idempotent, and command = `os.Executable()` all still hold — this changes
+only WHERE the file is, never how it is written. The Linux round-trip test
+re-asserts all of them on the XDG path.
+
+Tests: `TestClaudeDesktopPathPerPlatform` (darwin / linux / XDG override),
+`TestClaudeDesktopDetectPerPlatform` (both signals per platform, and the
+other platform's directory must NOT satisfy detection), `TestInstallLinuxXDGPath`
+(full merge/backup/idempotency round-trip through the XDG path). DOGFOOD §3b
+documents the Linux location.
+
+`make vet`, `make test`, `golangci-lint run` (0 issues) green.
+
+## CAPTURE C4 — memory-provider packaging for agent harnesses — DONE (2026-08-15)
+
+Per `build/CAPTURE-PLAN.md` C4. Strategic, not technical: harnesses now treat
+memory as a pluggable slot, and Cairn already speaks MCP — the missing piece
+was a doc that says how to fill that slot and what confinement it lands in.
+`docs/memory-provider.md`: the twelve tools, the three ruling-backed
+properties on every result (R18 untrusted envelope, R19 whole-payload budgets,
+provenance), install, per-harness wiring, and the capability profile.
+
+**Research, and what is verified vs not.** Both claims are marked in the doc as
+what they are, because a config format invented and presented as fact is worse
+than no doc:
+
+- **Hermes agent — VERIFIED** against the project's own docs source
+  (`website/docs/user-guide/features/mcp.md`, `reference/cli-commands.md` in
+  NousResearch/hermes-agent): stdio servers live in `~/.hermes/config.yaml`
+  under `mcp_servers` as `command`/`args`/`env`, and
+  `hermes mcp add <name> [--command CMD] [--args ...]` is the CLI form. Also
+  recorded: Hermes's `memory.provider` slot takes an in-process PYTHON plugin
+  (honcho/mem0/…), not an MCP server — so Cairn's real slot is MCP tools, and
+  the doc says so rather than implying a provider plugin exists.
+- **OpenClaw — NOT VERIFIED, and labelled so.** Its MCP config shape was still
+  moving (an `mcp.servers` block in `openclaw.json` proposed in
+  openclaw/openclaw#43509; community guides describe a top-level `mcpServers`).
+  The doc gives the MCP-standard stdio entry — command + args, which is all
+  Cairn needs — and states plainly that the OpenClaw-specific spelling is
+  unverified.
+
+**Capability posture documented, not just implemented.** R21 (never tier-1,
+`--profile full` refused at the flag), what `agent-standard` grants and the
+four things it does not (retract/structural/admin, topic auto-creation and
+force-class per R20, durable subscriptions per R55), session TTL/idle and the
+`cairn session revoke` kill switch, and R22's honest boundary — same-OS-user
+confinement prevents accidents, not malice.
+
+Cross-links: README "Wiring an agent" + the roadmap table (CAPTURE now
+🔨 partial — C1/C2/C4 shipped, C3 planned), DOGFOOD §3b.
+
+**Not done, deliberately:** no submissions to external directories
+(awesome-hermes-agent, the Hermes Atlas provider directory). CAPTURE-PLAN
+lists them under C4, but publishing Cairn into third-party listings is the
+operator's call, not a builder's. The doc they would point at now exists.
+
+Docs + research only; no code change. `make vet`, `make test`,
+`golangci-lint run` (0 issues) green.
+
+## CAPTURE C3 — design note only (NOT built, 2026-08-15)
+
+C3 is explicitly out of scope until its privacy/redaction design gets a
+crossed adversarial review (CAPTURE-PLAN sequencing; same treatment R56 got).
+Wrote `build/CAPTURE-C3-DESIGN.md` as input to that review. **Zero
+implementation.**
+
+The one finding worth surfacing here, because it contradicts the work order:
+the plan offers "dedicated topic namespace + view hard filters" OR "an
+explicit source flag" for digest exclusion, preferring whichever keeps
+`DigestCandidates` SQL simple. Reading the code settles it — the namespace
+option does not work. `Projection.DigestCandidates(topicNames)` with an EMPTY
+filter (the default for every view) returns every non-retracted message, so a
+`transcript/*` namespace excludes transcripts only from views that opted into
+an explicit topic allow-list. Any default view would start receiving
+transcript chunks as digest candidates the moment ingest ran, breaking the
+plan's own "digest byte-unchanged before vs after ingest" criterion — and
+failing OPEN, invisibly. The source flag is both simpler (one predicate in two
+queries) and fails closed. The note also flags that the interest/subscription
+path is a SECOND route into a digest that must be gated in the same sweep
+(R46).
+
+Also recorded for the reviewers: redaction's honest limits (structured secrets
+only; redact before chunking so a boundary-straddling secret cannot evade),
+chunk determinism as the actual idempotency mechanism (including the
+append-to-an-existing-session case), and six things the review should try to
+break.
+
+Still needs the crossed review before any code. Not started.
+
+## EVAL — proving the thesis — PLANNED (2026-08-09)
+
+Work order at `build/EVAL-PLAN.md`. Motivation, stated plainly: Cairn's
+engineering claims are proven (crash matrix, budget compliance, provenance,
+latency, explainable ranking) but its PRODUCT claims are not, and the two
+have been sitting in the same README paragraph as if they were the same
+kind of statement.
+
+The structural gap: every measurement to date is INTRINSIC (does retrieval
+return the right document?) while the thesis — "knowledge compounds instead
+of being re-explained" — is EXTRINSIC (does the agent do better work?). No
+amount of the former establishes the latter. Compounding that, the golden
+corpus is author-written, author-queried and author-judged; it validates
+configuration, not capability (as rulings §10 already says of it), and it
+is now labelled that way rather than cited as evidence.
+
+Design decisions worth recording:
+
+- **`eval/` becomes its own Go module, in-repo.** Go's `internal/`
+  visibility rule then MECHANICALLY prevents the harness from importing
+  daemon internals — black-box access is compiler-enforced, not a
+  convention. It also keeps LLM-client and statistics dependencies out of
+  the daemon's deliberately small offline dependency tree, and keeps the
+  main suite's properties (offline, deterministic, free, gates every
+  commit) uncontaminated by evaluation that is networked, stochastic and
+  costly. In-repo rather than a separate repository so it cannot rot out
+  of sync with the surface it tests.
+- **Independent ground truth is mined, not authored.** GitHub
+  duplicate-issue links, Stack Overflow duplicate markers and documentation
+  cross-references are human relevance judgments made at scale by people
+  with no stake in Cairn — the cheapest available break in the
+  self-authorship circularity.
+- **Kill criteria are pre-registered (EVAL §7).** Including the two that
+  would hurt most: if Cairn cannot beat grep-over-transcripts on task
+  success, the ranking layer is not earning its complexity; if ablating
+  vector search does not degrade quality, the embedder (and with it the
+  venv, the model pin and the enrichment pipeline) should be deleted.
+- **The untrusted-content claim is treated as a testable safety claim**
+  (E6): plant injection payloads in mesh content and measure agent
+  compliance rate through digest/search/fetch. It has never been tested at
+  an agent, only asserted structurally.
+- **The 30-handoff evaluation is strengthened, not replaced** (E7):
+  pre-registered success definitions plus randomized withholding for a
+  within-operator control; reported as a case study with its limits stated
+  (n=1, non-blinded, self-reported).
+
+### EVAL E1 — claims register DRAFTED, awaiting operator sign-off (2026-08-09)
+
+`eval/claims.yaml`: 16 public claims extracted from README/spec/CLAUDE.md,
+each with class, current evidence status, proposed measurement (mapped to
+an EVAL milestone), threshold and kill criterion. Composition — 4
+engineering, 4 retrieval, 5 product, 3 safety; by evidence: 7 proven, 1
+circular, 6 untested, 2 unstarted.
+
+**Every kill criterion is marked PROPOSED and every `signoff: pending`.**
+Deliberately: the kill criteria are commitments about what the author
+accepts as disproof of his own project, so they are the operator's to set,
+not an agent's. Measurement work on a claim does not begin until its
+signoff lands. Four operator decisions are listed at the foot of the file;
+the load-bearing one is whether losing to grep-over-transcripts (B1) is
+genuinely accepted as disproof of the curation layer.
+
+### EVAL E9 — longitudinal + mesh recall added to the plan (2026-08-09)
+
+E4/E5 as drafted are SNAPSHOT evaluations (fixed corpus, run queries,
+measure). Long-term memory is a claim about time and growth, and a mesh
+adds partiality — four failure modes no snapshot can see. Added as E9,
+with five new claims registered (LONG-*, MESH-*) taking the register to 21.
+
+Design points worth keeping:
+
+- **Surface distinction, stated before measuring.** The digest has a 72h
+  freshness half-life, search has 90d — deliberately. The digest is the
+  working set and is ALLOWED to forget; search is the memory and is not.
+  Measuring long-horizon recall through the digest would falsely condemn
+  the design; measuring it only through search would let the digest off a
+  hook it should be on. E9 measures both with different expectations.
+- **Time control is the enabling prerequisite.** `Options.Now` is
+  injectable but Go-API-only, which the black-box harness cannot reach by
+  design. The sanctioned answer is a clock hook behind the
+  `cairn_testhooks` build tag — the same mechanism that already keeps the
+  volume-status hook out of release builds. Fallback: controlled system
+  clock in a container.
+- **Recall-under-growth is the cheapest experiment in the whole plan and
+  the most likely to find a real limit** — fixed query set, corpus grown
+  10x/100x/1000x around it, budget held fixed as in real use, no agent and
+  no LLM cost. Sequenced to land with E4 rather than late.
+- **A structural gap this will quantify:** `relates_to` is payload-only
+  with no projection table, so supersession ACROSS messages is not
+  queryable — only within a message's revision chain. Cairn therefore
+  recalls what was written, not necessarily what is currently true. E9's
+  supersession-accuracy split measures what that costs before deciding
+  whether to build structural supersession edges.
+- **Mesh-specific:** transitive convergence recall (written on A, needed on
+  C which only synced with B), partiality honesty in BOTH directions (a
+  falsely-absent `partial` flag is proposed as a thin-node release
+  blocker), recall across fork repair, and revoked-device knowledge policy.
+- E9's highest-fidelity variant replays real session history
+  chronologically — which makes it mutually reinforcing with CAPTURE C3.
+
+### Planning-document graph reconciled (bookkeeping 2026-08-09)
+
+Audit found three gaps that would have misled anyone reading cold:
+
+1. **README roadmap had a CAPTURE row but no EVAL row** — zero mentions of
+   the evaluation work anywhere in the README. Added.
+2. **`build/BUILD-PLAN.md` was orphaned.** It is the COMPLETED P0 plan
+   (M0–M8) with zero references to anything since, so a reader would take
+   it for the current work queue. It now opens with a STATUS: COMPLETE
+   banner pointing at ROADMAP.md and the active work orders; ROADMAP says
+   why it is deliberately not indexed.
+3. **CLAUDE.md still routed work through BUILD-PLAN.md** ("work one
+   milestone at a time from BUILD-PLAN.md") — stale since P0 closed. Read
+   order and workflow now point at ROADMAP.md as the index, with
+   CAPTURE-PLAN and EVAL-PLAN as the active work orders. The P0
+   definition-of-done note now records that EVAL E7 supersedes the
+   30-handoff evaluation in METHOD, not in intent.
+
+The graph is now: README (coarse phases) → ROADMAP.md (full inventory) →
+per-area work orders (CAPTURE-PLAN, EVAL-PLAN + eval/claims.yaml) →
+PROGRESS.md (what shipped). BUILD-PLAN and the spec/rulings remain the
+historical and normative layers respectively.
+
+### EVAL E2 — harness skeleton SHIPPED (2026-08-15)
+
+`eval/` is now its own Go module (`github.com/ggoosen/cairn/eval`) with a
+black-box driver, a uniform memory-backend interface, versioned result
+recording, and its own self-tests. **No measurement was run and no metric
+was computed** — see "Scope boundary observed" below, which is the point of
+the milestone as much as the code is.
+
+**Separate module, and why it is load-bearing.** EVAL-PLAN §3 asks for
+black-box access; a separate module is what makes that *compiler-enforced*
+rather than conventional. Go's `internal/` visibility rule means nothing in
+`eval/` can import `github.com/ggoosen/cairn/internal/...`, so the harness
+can only reach Cairn the way an agent does. `eval/internal/boundary` asserts
+both halves: `go list -deps` over the harness finds no daemon internal (the
+fast regression guard), and a probe module that tries to import
+`internal/daemon` must fail with `use of internal package … not allowed`.
+The probe runs offline — the visibility rule is applied during package
+loading, before any dependency is fetched — and skips rather than fails if
+the toolchain cannot resolve it for an unrelated reason.
+
+**The module has zero dependencies.** Deliberate: the T0 tier must stay
+offline, deterministic and free (EVAL-PLAN §4), and a stdlib-only harness
+cannot quietly stop being any of those. LLM clients arrive with E5. The CLI
+uses `flag`, not cobra, for the same reason.
+
+**Driver (`internal/cairnctl`).** Provisions a throwaway cairn (temp root,
+own `CAIRN_DEVICE_STATE_DIR`, `cairn init --allow-unencrypted --sync-listen
+off`), runs `cairn daemon` as a subprocess in its own process group, waits
+on `cairn status`, and tears the whole thing down. Decisions worth keeping:
+
+- `--sync-listen off` by default. An evaluation instance must not bind a
+  listener on the operator's tailnet, and every mesh experiment (E9 §9.4)
+  should wire its topology explicitly rather than inherit `auto`.
+- `CAIRN_DIR` and `CAIRN_SESSION` are *removed* from the child environment,
+  not overridden. An inherited session handle would silently confine every
+  verb to another agent's capability profile; an inherited `CAIRN_DIR` would
+  point a missing `--dir` at the operator's real mesh.
+- `--allow-unencrypted` rather than the `CAIRN_FAKE_VOLUME_STATUS` hook, so
+  provisioning does not require a testhooks build. The override is
+  device-local and dies with the instance.
+- Bodies go over **stdin**, never argv: corpus items exceed ARG_MAX and
+  contain shell-hostile bytes.
+- The response structs are hand-written duplicates of the CLI's JSON, not
+  shared types. They pin the shape of the PUBLIC surface; if the daemon
+  changes it the harness breaks, which is correct, because agents would too.
+- The MCP surface is driven too (`cairn mcp` over newline-delimited JSON-RPC
+  stdio: initialize / tools/list / tools/call). Agents reach Cairn through
+  MCP and its *tool descriptions* are part of what E6 will evaluate, so the
+  harness needed that surface, not only the CLI.
+
+**Backend interface (`internal/backend`).** One interface — Open / Write /
+Retrieve / Close, plus a declared `Capabilities` — for all six EVAL-PLAN
+§5-E4 conditions, so no baseline is a strawman by construction: same items,
+same order, same questions, same budget, same result shape. Implemented: B0
+(no-memory control), B1 (grep over transcripts), B2 (flat markdown notes),
+B5 (Cairn, black-box CLI). B3 (naive vector RAG) and B4 (full-context) are
+**declared stubs that fail loudly** with `ErrNotImplemented`.
+
+That last choice is deliberate and worth stating: an unimplemented baseline
+returning an empty result would become a zero in a table, in Cairn's favour,
+invisibly. Same reasoning behind `ErrUnsupportedSurface` — B1 has no digest
+surface, and it must *say so* rather than return nothing. A missing surface
+is a fact to record, not a zero to average in.
+
+B3 was left stubbed rather than built on Cairn's own embedder: that would
+make the "naive vector RAG" baseline a Cairn ablation wearing a baseline's
+name, and the rigging would be invisible in the numbers. It belongs in T1
+with its own model choice stated. B4 is only meaningful inside an agent loop
+with a real context window (E5).
+
+**Baselines are MODELS, and the model is an assumption.** B1 returns matches
+in file order because grep has no ranking; B2 reads newest-first because
+that is what a person does with their own notes; B2's digest is the tail of
+the file, not query-aware — which is precisely the deficiency Cairn's ranked
+digest claims to fix, so B2 having a digest surface at all is what makes
+that claim testable. Every such choice is recorded in
+`Capabilities().Notes` and travels into the run record beside any number it
+produced. They are revisable by the operator BEFORE E4 runs, not after
+seeing results.
+
+**Two surfaces, separated at the interface.** `SurfaceSearch` (the memory,
+not allowed to forget) and `SurfaceDigest` (the working set, allowed to
+forget by design). EVAL-PLAN §9.1 warns that conflating them produces a
+falsely damning result; making the distinction a parameter of every request
+means a later milestone cannot accidentally conflate them.
+
+**Result recording (`internal/result`) records observations, never
+verdicts.** There is no metric field anywhere in the schema — no nDCG, MRR,
+Recall, Success@k, pass/fail — and a test asserts their absence by scanning
+the marshalled JSON. Per-item outcomes (what was asked, what came back, what
+the corpus declares relevant, payload chars, latency, raw output) are data;
+scoring is E4's job, after signoff. A `Kind` field labels every record
+`plumbing-verification` or `measurement`, so a stray result file cannot be
+mistaken for evidence. Records carry schema version, run id derived from
+inputs, seed, corpus id/version/checksum/**label source**, cairn version and
+build tags, `retrieval_mode` (full vs lexical_only — they answer different
+claims), and the machine, because latency claims are machine-specific.
+
+**One asymmetry stated rather than hidden:** B5 is the only backend that is
+a daemon, so its `Elapsed` includes process start, IPC and fsync'd
+durability while B1/B2 measure an in-process scan. Cross-backend latency is
+therefore not comparable and must not be reported as if it were; retrieval
+QUALITY is what the interface exists to compare.
+
+**Scope boundary observed.** E1's pre-registration is only meaningful if
+criteria are fixed before results exist, and every `signoff:` in
+`eval/claims.yaml` is still `pending`. So: no E4/E5/E6/E9 measurement was
+run, no metric was computed over any corpus, no baseline was ranked against
+another, and nothing in this tree states a conclusion about Cairn's
+retrieval quality. `cairn-eval` has no measurement verbs at all; they arrive
+with E4, after signoff. The only thing that runs is a plumbing check over a
+three-document obviously-synthetic fixture whose records are labelled
+`plumbing-verification` and whose corpus `label_source` says SYNTHETIC in
+capitals.
+
+**Wiring.** `make eval` (= `eval-vet` + `eval-test`) and a separate
+`eval-harness` CI job. Deliberately NOT folded into `make test`/`verify`:
+the main suite gates every commit and its properties (offline,
+deterministic, free) must not be diluted by a harness that will eventually
+be networked and stochastic — and a harness failure should never be
+confusable with a daemon failure. CI lints `eval/` explicitly, since
+golangci-lint does not cross a module boundary either. Main module build,
+vet, test and lint are untouched: `./...` stops at the nested module.
+
+Green: main `make vet` + `golangci-lint run` (0 issues) unchanged; `make
+eval` green; eval `golangci-lint run` 0 issues.
+
+### EVAL E9.2 — time-control hook SHIPPED (prerequisite only, 2026-08-15)
+
+E9's recall-over-age and recall-under-growth curves need to replay months of
+mesh in minutes. `daemon.Options.Now` is injectable but Go-API-only, and the
+harness is a separate module driving cairn as a black box on purpose — so
+the daemon now takes a simulated clock from the ENVIRONMENT, behind the
+`cairn_testhooks` build tag, exactly mirroring the volume-status hook
+(`clock_testhook.go` / `clock_notesthook.go`, the same tagged pair shape).
+
+**Only the hook was built. No E9 measurement was run** — the curves need E3
+corpora and operator signoff on the LONG-*/MESH-* kill criteria.
+
+Mechanism, and the reasoning behind each choice:
+
+- `CAIRN_FAKE_CLOCK_OFFSET` (Go duration) or `CAIRN_FAKE_CLOCK` (RFC 3339
+  instant). Both at once is REFUSED rather than resolved by precedence:
+  their meanings differ and guessing is worse than failing.
+- **Offset, never frozen.** The clock advances at the real rate; only its
+  origin moves. A frozen clock stalls everything that waits for time to pass
+  (TTLs, leases, debounces, housekeeping) and a hung harness looks
+  disturbingly like a result. It also keeps the clock monotonic, which every
+  duration measurement in the daemon assumes.
+- **An epoch is a daemon lifetime.** The offset resolves once at `Start`, so
+  simulated time never jumps under a running daemon mid-transaction; the
+  harness restarts the daemon to advance an epoch. That restart also
+  exercises recovery between epochs, which a long-horizon experiment should
+  be doing anyway.
+- **A malformed value is fatal.** A silent fall back to real time would give
+  a run whose timestamps mean something other than what the harness believes
+  — and the run would look entirely normal.
+- **The daemon announces it** (`WARNING: … SIMULATED CLOCK …` on the warn
+  stream), so the harness confirms the hook took effect rather than assuming
+  an env var was honoured. The eval driver asserts on that line.
+- **Explicit `Options.Now` still wins.** The environment hook is the fallback
+  for callers that cannot reach the Go API, never an override of one that
+  can; existing main-suite tests that inject clocks are unaffected.
+
+**Release absence is asserted two ways** (`cmd/cairn/clock_hook_release_test.go`,
+following the FIX-F4 precedent that a property of a build the suite never
+uses must be checked by building it): an untagged (`sqlite_fts5` only)
+binary is compiled, and (1) the env var NAMES must be absent from its bytes
+— the constants live only in the tagged file, so their presence would mean
+the hook shipped — and (2) running it with both variables set must still
+produce real timestamps. Either check alone is defeatable (a rename beats
+the first; a malformed value passes the second), so both run. Consistent
+with R22, the threat model is accidents and packaging mistakes, not a
+malicious local process with code execution.
+
+**Scope limit, recorded rather than papered over:** `cairn init` runs the
+identity ceremonies on the real clock. Safe, because `wall_time` is NEVER
+used for ordering (event.Envelope says so explicitly) and device certs carry
+no validity window — but ceremonies that DO have wall-clock TTLs (pairing
+invitations, enrolment requests) will correctly expire if a simulated clock
+crosses their window. That is the hook being honest.
+
+Harness side: `cairnctl.Clock{Offset|Anchor}` sets it from outside the
+process, with a driver test that drives the whole path (harness → env →
+daemon hook → an event's `created_at` read back through the CLI). The env
+var names are duplicated in the harness because it cannot import the
+daemon's internals; that duplication is the deliberate cost of the module
+split, and the driver test fails if the two ever drift apart.
+
+`build/EVAL-PLAN.md` §9.2 now records the built mechanism where it is more
+specific than the original sketch.
+
+Green: `make verify` (untagged guard + tagged vet/test), `golangci-lint run`
+0 issues in both modules, `make eval` green.
+
+### EVAL E3 — corpus tooling SHIPPED; corpora NOT acquired (2026-08-15)
+
+E3 exists to break the circularity in EVAL-PLAN §2.2: the golden corpus is
+author-written, author-queried and author-judged, so it validates
+configuration rather than capability. The fix is to MINE relevance judgments
+that already exist — a maintainer marking issue #B a duplicate of #A judged
+relevance about their own project with nothing at stake in Cairn.
+
+**Built:** the versioned, checksummed corpus format
+(`eval/corpora/FORMAT.md`), three normalizers (GitHub duplicate issues,
+Stack Overflow duplicates, documentation cross-references), the loader the
+E2 harness consumes, deterministic dev/holdout splitting, `cairn-eval corpus
+verify|info|mine`, and a checked-in sample corpus.
+
+**NOT built: the corpora themselves.** Bulk acquisition is blocked in this
+environment — the egress proxy 403s `api.stackexchange.com` at the tunnel
+and serves `api.github.com` only for session-scoped repositories. Recorded
+as an operator step with exact commands in `eval/corpora/ACQUISITION.md`,
+and as a ROADMAP row that gates E4/E5/E9. A fabricated corpus would have
+been worse than an honest gap: independence is the entire point of E3.
+
+**Deviation from the work order, with reasons: there is NO fetch path in the
+harness at all.** The plan says "fetch/normalize tooling"; what shipped is
+normalize-only, with downloading documented as `gh api --paginate` / `curl`.
+Three reasons pointing the same way:
+
+1. *It could not be verified here.* Untested HTTP paging would have been the
+   least trustworthy component in the pipeline and would have stood between
+   the real world and every number downstream.
+2. *It keeps the eval module network-free* — with no HTTP client anywhere in
+   `eval/`, the T0 tier's offline property becomes structural rather than a
+   habit. (It also removed a concrete hazard: `net/http` under Go 1.26 made
+   the pinned golangci-lint panic — `file requires newer Go version go1.26`
+   — which would have broken CI lint. The main module imports no `net/http`,
+   so nothing else in the repo hits it.)
+3. *`gh` is better at it* — auth, pagination, rate limits and retries are
+   solved; re-solving them badly inside an evaluation harness adds a failure
+   mode indistinguishable from a corpus problem.
+
+Design decisions worth keeping:
+
+- **Provenance is a required field, not a comment.** Every corpus declares
+  `labels.provenance` (who judged, and how it was mined) and
+  `labels.independent`. Every QUERY additionally declares its `label_kind`
+  and `label_url`, so a sceptic can follow a single judgment and disagree
+  with it, and so signals of different strength are never silently mixed: a
+  duplicate marker asserts best-answer, a documentation link asserts only
+  relevance.
+- **The loader refuses rather than degrades.** Unknown schema version,
+  checksum mismatch, duplicate ids, a judgment with no stated provenance, or
+  a judgment pointing at an absent item — all hard errors. That last one
+  matters most: a dangling judgment reads exactly like a retrieval failure
+  and would blame the system for the corpus's mistake.
+- **Splits are deterministic and unrollable.** dev/holdout comes from
+  hashing the query id with a FIXED salt (30% holdout). Anyone can recompute
+  the partition from the ids alone; a split that could be re-rolled is a
+  split that can be re-rolled until the holdout flatters the system.
+  Changing the salt invalidates every prior result and the constant says so.
+- **Duplicates are queries, not documents.** In both duplicate miners the
+  duplicate issue/question is excluded from the item set: if it were also a
+  document, a search for its own title would return itself — trivially
+  correct, measuring nothing. Chains and judgments pointing outside the
+  downloaded set are dropped and COUNTED in the manifest notes.
+- **One unverified assumption, flagged in the tool and the docs:** GitHub's
+  `marked_as_duplicate` timeline event has been documented with the canonical
+  issue under both `source.issue` and `issue`. The miner reads both and
+  reports how many events it could not resolve, so a wrong guess shows up as
+  a large "did not name a resolvable canonical issue" note rather than as a
+  quietly halved corpus. ACQUISITION.md tells the operator to check that
+  number on the first real download; the raw responses are kept for exactly
+  this.
+- **The sample corpus is generated by its own test** — `CAIRN_EVAL_REGEN_SAMPLE=1`
+  regenerates, and the test asserts the committed bytes still match the
+  generator. It declares `independent: false` and its label kind is literally
+  `SYNTHETIC_authored_by_project`.
+- **The harness refuses to run an independent corpus.** `cairn-eval smoke
+  -corpus` accepts the non-independent sample and hard-fails on anything
+  claiming independent labels: pushing mined ground truth through the
+  backends and recording per-query outcomes is the first half of a
+  measurement, and measurement waits for signoff. The guard is code, not a
+  comment, because a flag that quietly did the thing would be used.
+
+**Still no measurement.** No metric was computed, no corpus was scored, no
+baseline was compared. The only runs are plumbing verification over the
+synthetic sample.
+
+Green: `make verify`, `make eval`, `golangci-lint run` 0 issues in both
+modules.
