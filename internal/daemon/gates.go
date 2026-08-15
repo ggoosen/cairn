@@ -294,7 +294,7 @@ func (d *Daemon) GatesReport(w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	zeroLoss := "PASS (deep doctor clean: log+projection+objects+trust; crash matrix in CI)"
+	zeroLoss := "PASS (deep doctor clean: log+projection+objects+trust; crash matrix in `make verify`)"
 	if len(deepProblems) > 0 {
 		zeroLoss = fmt.Sprintf("FAIL (deep doctor: %d problem(s), run `cairn doctor`)", len(deepProblems))
 	}

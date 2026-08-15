@@ -21,3 +21,10 @@ RIG-STATUS.md
 /CAIRN-AFFORDANCE-PLAN.md
 docs/cairn-*workorder*.md
 docs/cairn-rig-*.md
+# Internal build/verification working docs. These are agent work-orders and
+# punchlists, not specification — and some name real hosts on the operator's
+# tailnet. The public docs/ set is: spec, rulings, historical design brief.
+docs/cairn-pre-n9-verification.md
+docs/cairn-f8-punchlist.md
+docs/cairn-p1-buildpack-*.md
+docs/cairn-p3-*.md

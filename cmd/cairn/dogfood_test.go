@@ -12,7 +12,12 @@ import (
 func buildBinary(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "cairn")
-	cmd := exec.Command("go", "build", "-tags", "sqlite_fts5", "-o", bin, ".")
+	// cairn_testhooks matters here: this builds a REAL binary that the backup
+	// and restore-drill scripts then run as a subprocess. Without the tag the
+	// subprocess ignores CAIRN_FAKE_VOLUME_STATUS and performs the true
+	// at-rest encryption check — which passes on a FileVault-on dev Mac and
+	// fails on every CI runner. Build it the way `make test` builds the suite.
+	cmd := exec.Command("go", "build", "-tags", "sqlite_fts5,cairn_testhooks", "-o", bin, ".")
 	cmd.Env = os.Environ()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("building binary: %v\n%s", err, out)

@@ -133,10 +133,26 @@ func TestViewNameTraversalRejected(t *testing.T) {
 	})
 }
 
+// shortTempDir is t.TempDir() for tests that BIND the unix socket. macOS
+// caps sun_path at ~104 bytes and t.TempDir() sits under $TMPDIR
+// (/var/folders/<2>/<32>/T/<TestName>/001 — already ~90 bytes), so the
+// socket path overflows and bind fails with no visible error. Production is
+// unaffected: XDG_RUNTIME_DIR is unset on macOS, so SocketDir() takes the
+// short os.TempDir() fallback by design.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "cairn-sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
 // FIX-A7: the socket lives in a per-user 0700 dir; the daemon refuses to
 // serve into a symlinked socket dir (MkdirAll follows symlinks silently).
 func TestSocketDirHardened(t *testing.T) {
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("XDG_RUNTIME_DIR", shortTempDir(t))
 	_, deviceDir := serveDaemon(t)
 
 	sockBytes, err := os.ReadFile(filepath.Join(deviceDir, "daemon.sock.path"))

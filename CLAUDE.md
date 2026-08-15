@@ -1,5 +1,13 @@
 # CLAUDE.md — Cairn P0 Build Instructions
 
+> **Historical note (kept deliberately).** This is the original build brief that
+> produced P0, preserved as written so the decision trail stays honest. P0–P3
+> are now built, so parts of it are superseded: the Embeddings row below records
+> a pinned choice that was *not* what shipped (see its note), and the read-order
+> documents describe P0 scope only. For what Cairn actually does today, read
+> [README.md](README.md); for what remains binding, read
+> [RULINGS.md](RULINGS.md).
+
 You are building **Cairn P0**: a local-first, crash-safe message and knowledge
 daemon for AI agent sessions. The design has survived five rounds of adversarial
 review. Your job is implementation, not redesign.
@@ -19,6 +27,8 @@ review. Your job is implementation, not redesign.
 ## Hard rules (non-negotiable, from the rulings)
 
 - **Language: Go 1.23+.** Single binary `cairn` (daemon + CLI subcommands).
+  *(Superseded: the dependency set now requires Go 1.25+ to build — Cairn's own
+  code still compiles at 1.23. See the Quickstart in README.md.)*
 - **Precedence:** rulings-v0.3.1 > spec-v0.3 > this file > your judgment.
   If you find a genuine contradiction or gap, STOP, record it in
   `PROGRESS.md` under "Author rulings needed", pick the most conservative
@@ -57,7 +67,7 @@ review. Your job is implementation, not redesign.
 | UUIDv7 | `github.com/google/uuid` (V7) |
 | Canonical JSON | RFC 8785 implementation (e.g. `github.com/gowebpki/jcs`); verify against test vectors |
 | CRC32C | stdlib `hash/crc32` (Castagnoli table) |
-| Embeddings | ONNX Runtime via `github.com/yalue/onnxruntime_go` + bundled `all-MiniLM-L6-v2` ONNX model + its tokenizer (pin model artifact hash in config). If the ONNX binding proves unworkable on macOS arm64 within one working session, fall back to shelling out to a bundled Python venv (sentence-transformers) behind the same Go interface, record the deviation in PROGRESS.md, and keep the interface identical. |
+| Embeddings | **NOT what shipped.** Pinned intent was ONNX Runtime via `github.com/yalue/onnxruntime_go` + bundled `all-MiniLM-L6-v2`; the sanctioned fallback fired, because the binding needs a runtime `onnxruntime` dylib that can't be bundled cleanly. What ships is that fallback: a `sentence-transformers` subprocess against the same pinned model, in an operator-provisioned venv (`scripts/cairn-embed-bootstrap.sh`), behind an identical Go interface — so semantic search is **opt-in**, and without it retrieval is lexical-only. See `internal/embed/embed.go`. |
 | YAML front-matter | `gopkg.in/yaml.v3` with strict field whitelist |
 | diff3 merge | shell out to `git merge-file` (pinned semantics); pure-Go fallback acceptable if behavior-matched by tests |
 | CLI | `spf13/cobra` |

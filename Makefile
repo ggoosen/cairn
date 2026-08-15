@@ -2,6 +2,11 @@
 # mattn/go-sqlite3 (see CLAUDE.md library table). ALWAYS build/test via
 # these targets or pass -tags sqlite_fts5 manually.
 GOTAGS := -tags sqlite_fts5
+# Tests additionally enable `cairn_testhooks`, which compiles in the
+# volume-status fault injector used by the TESTING.md encryption rows.
+# `build` deliberately omits it: a RELEASE binary must have no way to be
+# told "this volume is encrypted" by its environment.
+GOTESTTAGS := -tags sqlite_fts5,cairn_testhooks
 
 .PHONY: build test test-short test-race vet verify all install deploy fuzz
 
@@ -57,22 +62,22 @@ build:
 	go build $(GOTAGS) -o bin/cairn ./cmd/cairn
 
 test:
-	go test $(GOTAGS) ./...
+	go test $(GOTESTTAGS) ./...
 
 test-short:
-	go test $(GOTAGS) -short ./...
+	go test $(GOTESTTAGS) -short ./...
 
 # The embedder, enricher goroutine, IPC connections and sync sweeps share a
 # daemon: the race detector is part of the green bar, not an extra.
 test-race:
-	go test $(GOTAGS) -race ./...
+	go test $(GOTESTTAGS) -race ./...
 
 # Short smoke of each fuzz target (CI runs this; leave -fuzztime higher for
 # a real session: FUZZTIME=10m make fuzz).
 FUZZTIME ?= 30s
 fuzz:
-	go test $(GOTAGS) -run '^$$' -fuzz FuzzCanonicalRoundTrip -fuzztime $(FUZZTIME) ./internal/event/
-	go test $(GOTAGS) -run '^$$' -fuzz FuzzDecodeFrame -fuzztime $(FUZZTIME) ./internal/log/
+	go test $(GOTESTTAGS) -run '^$$' -fuzz FuzzCanonicalRoundTrip -fuzztime $(FUZZTIME) ./internal/event/
+	go test $(GOTESTTAGS) -run '^$$' -fuzz FuzzDecodeFrame -fuzztime $(FUZZTIME) ./internal/log/
 
 vet:
-	go vet $(GOTAGS) ./...
+	go vet $(GOTESTTAGS) ./...

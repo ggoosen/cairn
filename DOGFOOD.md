@@ -10,7 +10,8 @@ copy-paste baseline), manual-workaround rate ≤ 25%.
 
 ```sh
 git clone https://github.com/ggoosen/cairn && cd cairn
-make build                      # builds bin/cairn (needs Go 1.23+, CGO, git)
+make build                      # builds bin/cairn (needs Go 1.25+ — or 1.21+ with
+                                # GOTOOLCHAIN=auto — plus CGO and git)
 sudo make install               # -> /usr/local/bin (stops nothing; restart hint if a daemon runs)
 # NO ROOT? (e.g. an automated audit agent with no passwordless sudo):
 #   make install PREFIX=$HOME/.local   # -> ~/.local/bin  (add it to PATH)
@@ -76,8 +77,10 @@ Regenerate digests any time: `cairn digest --view <name> --budget 4000`.
 
 ### 3b. MCP surface (P1 N1): Claude Desktop / Claude Code
 
-With the daemon running, any MCP client gets the twelve tools (the nine §5.5 tools, thread expansion, and the two R55 local-tier subscription tools)
-(`cairn_digest/search/peek/fetch/send/reply/signal/outcome/why_ranked`)
+With the daemon running, any MCP client gets the twelve tools — the nine
+§5.5 tools (`cairn_digest/search/peek/fetch/send/reply/signal/outcome/
+why_ranked`), `cairn_thread` for thread expansion, and the two R55
+local-tier subscription tools (`cairn_subscribe/cairn_subscriptions`) —
 over stdio. Claude Desktop — add to
 `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
