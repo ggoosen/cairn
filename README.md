@@ -96,7 +96,16 @@ The five commands above are the daily loop. The rest of what's built:
 This table is the coarse phase-level view. The complete, consolidated
 inventory of everything still to be built — including the smaller gaps,
 deferred debt, and open design rulings scattered across the docs — lives
-in **[ROADMAP.md](ROADMAP.md)**.
+in **[ROADMAP.md](ROADMAP.md)**, which also carries the execution order and
+says what each blocked item is blocked *on*.
+
+Worth knowing when reading the table: some outstanding work maps to **no
+phase row at all** — deferred scaling debt (vector search beyond the
+brute-force cliff, prebuilt binaries, the origin-liveness beacon) and
+surfaces the spec describes but no milestone built (capability resource
+selectors, token budgets, mutes). Those have their own work order,
+[build/DEBT-PLAN.md](build/DEBT-PLAN.md). A green phase row is not a claim
+that nothing is owed underneath it.
 
 | Phase | Scope | Status |
 |---|---|---|

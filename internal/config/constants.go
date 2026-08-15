@@ -220,11 +220,18 @@ const (
 // ---------------------------------------------------------------------------
 
 const (
-	// EmbeddingModelID pins the model; EmbeddingModelHash pins the exact
-	// ONNX artifact (BLAKE3 hex). Vectors from different models are never
-	// compared; migration = invalidate + reindex --semantic.
+	// EmbeddingModelID pins the model. Vectors from different models are
+	// never compared; migration = invalidate + reindex --semantic.
+	//
+	// EmbeddingModelHash is a VESTIGE of the ONNX path that never shipped:
+	// it was to hold the BLAKE3 of a vendored ONNX artifact. The sanctioned
+	// fallback (a sentence-transformers subprocess in an operator-provisioned
+	// venv) shipped instead, and artifact pinning with it — but per-venv,
+	// as <venv>/model.hash written at provision time and re-verified before
+	// each worker start (internal/embed/modelpin.go, P4-G2). Nothing reads
+	// this constant. Kept, empty, only so the name is not silently reused.
 	EmbeddingModelID   = "all-MiniLM-L6-v2"
-	EmbeddingModelHash = "" // pinned in M6 when the ONNX artifact is vendored (deliberately empty until then)
+	EmbeddingModelHash = ""
 
 	EmbeddingDim = 384
 

@@ -72,23 +72,22 @@ validates configuration, not capability.
 | Automatic metered/battery sensing (manual `metered` flag exists; sensing is platform work) | [code] | spec §7, config `Metered` |
 | Mutual pairing authentication (handshake currently authenticates dialer→responder only) | [code] | PROGRESS P3-2b/2c |
 
-## 5. Scaling & distribution debt
+## 5 & 6. Deferred debt and unbuilt spec surfaces (planned work order)
+
+These are the items that map to **no phase row in the README** — deferred
+scaling debt and surfaces the spec describes but no milestone built. Full
+milestones + acceptance criteria: **[build/DEBT-PLAN.md](build/DEBT-PLAN.md)**
 
 | Item | Kind | Source |
 |---|---|---|
-| sqlite-vec integration (brute-force cosine is the only vector path; cliff ≈ `BruteForceMaxCandidates`; becomes urgent if CAPTURE C3 lands) | [code] | CLAUDE.md library table, PROGRESS WP-G1 |
-| Prebuilt signed binary + Homebrew tap (today: build-from-source only) | [code] | README Quickstart note |
-| Origin-liveness beacon: alarm when a device's last-seen (generation, seq) regresses — deferred in P0 "requires peers"; P1 has peers now | [code] | spec §13.2, rulings §2 |
-
-## 6. Specified but never built (smaller gaps)
-
-| Item | Kind | Source |
-|---|---|---|
-| Mutes (`mute(...)` listed in spec §7.1/§4.5; no event, op, or verb exists) — needs a ruling on whether it survives the "positive grants only" stance | [ruling] | spec §4.5, §7.1 vs §7.2 |
-| Capability `resource_selectors` (`topic="project/x/*"`, per-session budget caps) — P0/P1 shipped coarse action tiers only | [code] | spec §7.2 |
-| Third ranking profile for `explore()`-style traversal (open question; no explore surface exists yet) | [ruling] | spec §13.4 |
-| `cairn adopt-standalone` (merge an ad-hoc standalone mesh into the primary) — R34 permits a documented script instead; neither exists | [code] | RULINGS R34, PROGRESS N9 |
-| `budget_tokens` (P0 ruled `budget_chars` only; tokenizer budgets post-P0) | [code] | rulings §7 |
+| D1 sqlite-vec integration (brute-force cosine is the only vector path; cliff ≈ `BruteForceMaxCandidates`; becomes urgent if CAPTURE C3 lands) | [code, large] | CLAUDE.md library table, PROGRESS WP-G1 |
+| D2 Origin-liveness beacon: alarm when a device's last-seen (generation, seq) regresses — deferred in P0 "requires peers"; P1 has peers now | [code] | spec §13.2, rulings §2 |
+| D3 Capability `resource_selectors` (`topic="project/x/*"`, per-session budget caps) — P0/P1 shipped coarse action tiers only | [code] | spec §7.2 |
+| D4 `budget_tokens` (P0 ruled `budget_chars` only; tokenizer budgets post-P0) | [code] | rulings §7 |
+| D5 `cairn adopt-standalone` (merge an ad-hoc standalone mesh into the primary) — R34 permits a documented script instead; neither exists | [code] | RULINGS R34, PROGRESS N9 |
+| D6 Prebuilt signed binary + Homebrew tap (today: build-from-source only; notarization half is [operator]) | [code] + [operator] | README Quickstart note |
+| D7 Mutes (`mute(...)` listed in spec §7.1/§4.5; no event, op, or verb exists) — needs a ruling on whether it survives the "positive grants only" stance | [ruling] | spec §4.5, §7.1 vs §7.2 |
+| D8 Third ranking profile for `explore()`-style traversal (open question; no explore surface exists yet) | [ruling] | spec §13.4 |
 
 ## 7. P4 — self-organising knowledge (evidence-gated, needs P2 usage data)
 
@@ -111,6 +110,47 @@ are greppable via `RULING-NEEDED`.
 | R40/R41 backfill confirmation (fork-repair revoke bundling) | nothing (confirmation) |
 | §8.2 reserved-slice vs send-never-blocks | item 3: ladder rungs 6–7 |
 | Mutes vs "positive grants only" | item 6: mutes |
+
+---
+
+## 9. Execution order — what to pick up next
+
+The sections above are the inventory; this is the order to work them, and
+the honest reason each blocked item is blocked. **Nothing in the first group
+needs anything from the operator**, so an agent can start there immediately.
+
+**Buildable now, in this order:**
+
+1. **D2 origin-liveness beacon** and **D3 capability `resource_selectors`** —
+   independent of everything else, each closes a spec gap that exists today,
+   each has a two-daemon or dispatch-boundary test that proves it. Best
+   starting point: self-contained, no gate, real user-visible value.
+2. **EVAL E4** (intrinsic quality: nDCG/MRR/Recall, ablations, baselines) —
+   the apparatus can be built and exercised against the sample corpus now;
+   it stays *dark* (no reported numbers) until corpora land and the kill
+   criteria are signed. Building it early is safe; reporting from it is not.
+3. **EVAL E6** (adversarial/safety: prompt-injection compliance through
+   digest/search/fetch) — needs no external corpus, only adversarial inputs
+   the harness can author, so it is unblocked in a way E4/E5 are not.
+4. **D4 `budget_tokens`** and **D5 `adopt-standalone`** — small, well-scoped.
+5. **D1 sqlite-vec** — least urgent alone, but a hard prerequisite if C3 is
+   coming, because transcript ingest walks straight off the brute-force cliff.
+
+**Blocked, and by what:**
+
+| Blocked on | Items |
+|---|---|
+| **Operator sign-off** | EVAL E1's 21 kill criteria — these are commitments about what would count as disproof; an agent must not set them |
+| **Operator activity** | corpus acquisition (E3 residual → gates E4/E5/E9), the three release blockers in §1, C4 directory listings |
+| **An author ruling** | ladder rungs 6–7 (§8.2 reserved-slice vs send-never-blocks), D7 mutes, D8 explore profile |
+| **A crossed review** | CAPTURE C3 — the privacy/redaction model is the expensive thing to get wrong, so the design note lands before the code |
+| **Real hardware** | P3 two-machine pass, live re-audit of code changed since the July commit |
+| **Usage data** | P2 weight calibration — calibrating on synthetic episodes would fit noise |
+
+**A standing rule for anything in EVAL:** apparatus may be built ahead of
+sign-off, but no measurement is reported before its kill criterion is signed.
+An unfalsifiable number is worse than no number, because it looks like
+evidence.
 
 ---
 
