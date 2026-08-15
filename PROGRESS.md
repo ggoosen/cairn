@@ -3906,3 +3906,19 @@ Design decisions worth recording:
   pre-registered success definitions plus randomized withholding for a
   within-operator control; reported as a case study with its limits stated
   (n=1, non-blinded, self-reported).
+
+### EVAL E1 — claims register DRAFTED, awaiting operator sign-off (2026-08-09)
+
+`eval/claims.yaml`: 16 public claims extracted from README/spec/CLAUDE.md,
+each with class, current evidence status, proposed measurement (mapped to
+an EVAL milestone), threshold and kill criterion. Composition — 4
+engineering, 4 retrieval, 5 product, 3 safety; by evidence: 7 proven, 1
+circular, 6 untested, 2 unstarted.
+
+**Every kill criterion is marked PROPOSED and every `signoff: pending`.**
+Deliberately: the kill criteria are commitments about what the author
+accepts as disproof of his own project, so they are the operator's to set,
+not an agent's. Measurement work on a claim does not begin until its
+signoff lands. Four operator decisions are listed at the foot of the file;
+the load-bearing one is whether losing to grep-over-transcripts (B1) is
+genuinely accepted as disproof of the curation layer.

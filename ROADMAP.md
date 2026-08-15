@@ -41,7 +41,7 @@ validates configuration, not capability.
 
 | Item | Kind |
 |---|---|
-| E1 claims register + pre-registered kill criteria (gates everything else) | [code] |
+| E1 claims register — **drafted at [eval/claims.yaml](eval/claims.yaml)**; residual: operator sign-off on 16 kill criteria (gates E2+) | [operator] |
 | E2 harness skeleton: `eval/` as its own Go module, black-box (CLI+MCP) access compiler-enforced | [code] |
 | E3 independent corpora with mined human relevance labels (duplicate-issue links, SO duplicates, doc cross-refs) | [code] |
 | E4 intrinsic quality: nDCG/MRR/Recall, component ablations, baselines incl. grep-over-transcripts | [code] |
