@@ -5526,7 +5526,21 @@ signed `.pkg`, which is a packaging change and not a signing one.
 - The publish job's collect/render/lint steps executed locally against three
   staged artifacts (one real Linux tarball, two stand-ins) — checksums verified,
   formula rendered, `formula-lint OK`.
-- The `ci.yml` packaging job's script executed verbatim locally — green.
+- The `ci.yml` packaging job's script executed verbatim locally — green — and
+  then **on a hosted GitHub runner** on the D6 commit: `SMOKE PASS …
+  (p1-220bcb704b1d)`, `FTS5: OK`, `sqlite-vec: OK`, `formula-lint OK`. That run
+  also exposed a hole worth recording: the `brew style` step produced NO output,
+  because Homebrew is not on that runner's PATH. A silently skipped check reads
+  exactly like a passing one, so both workflows now print a loud SKIPPED note
+  naming `formula-lint` as the only formula check that ran. With brew located at
+  the Linuxbrew path, **`brew style` then ran the real rendered formula through
+  rubocop**: 3 offences, all file-header conventions (Sorbet sigil,
+  `frozen_string_literal`), **none about the formula's substance** — no
+  complaint about the licence string, the platform blocks, the urls or the test
+  block. Two of the three are now carried in the template header, matching what
+  homebrew-core's own formulas do; `typed: strict` is left unsatisfied
+  deliberately, since a sigil claiming strict typing on a file nothing
+  type-checks would be a decoration.
 - `actionlint` clean on both workflows; the release-notes step executed
   locally to prove the heredoc renders.
 - `make verify` and `make vet` green.
