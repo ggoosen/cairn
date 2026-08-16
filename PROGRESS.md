@@ -6104,6 +6104,17 @@ through), a hopeless `TMPDIR` (floor at `/tmp`), and the refusal message.
 - The shortened leaf is a BLAKE3 prefix, not a truncated UUID, so the
   construction does not assume the cairn id is a UUIDv7.
 
+### Observed on a hosted runner, not inferred
+
+The acceptance for this item was explicitly "observed, not inferred", because
+a green Linux run had been standing in for a green build all day. CI run
+**31968088680** (commit 493b8bb), job `verify (macos-latest)` on
+`macos-latest`/arm64: **conclusion `success`**, `make verify` step 19:36:59 →
+19:39:06. Both halves ran green on the runner — the tagged suite
+(`ok github.com/ggoosen/cairn/cmd/cairn 21.184s`, previously the sole failure)
+and `test-novec`. `verify (ubuntu-latest)`, `race`, `fuzz-smoke`,
+`eval-harness` and `packaging` were `success` in the same run.
+
 ### Not fixed — out of lane
 
 The `lint` job was ALSO red at 9bca52a, on `internal/rank/rank_test.go:174`
@@ -6148,6 +6159,13 @@ is simply absent:
 - `release.yml` asserts the artifact's version string begins with the tag
   being released, alongside the existing `-dirty`/`-dev` refusals. The release
   notes now quote the real string instead of explaining why it is wrong.
+
+**Observed on a hosted runner.** Same run 31968088680, `packaging` job, step
+"Assert the release build stamps its tag": `version: v0.0.0-ci
+(p1-493b8bb56504)` / `unstamped version: p1-493b8bb56504`. The stamp also
+survives packaging — `release-smoke.sh` on the UNPACKED tarball printed
+`SMOKE PASS: …/dist/unpacked/cairn (v0.0.0-ci (p1-493b8bb56504))`, so what a
+user downloads is what names the tag.
 
 **Judgment call.** A stamped build of a dirty tree still prints the tag, with
 `-dirty` beside it, rather than suppressing the tag. Suppression would make
