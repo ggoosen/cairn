@@ -5674,3 +5674,91 @@ disconnected metered device counting → the parse test fails.
 paragraph still lists "automatic metered/battery sensing" as deferred. README is
 being edited by a parallel sprint right now, so it is left to the reconciliation
 pass rather than edited from two sides at once.
+
+## P3-4c — iroh transport: investigated, NOT shipped (2026-08-16) [S9]
+
+**Outcome up front: no iroh transport was built, and nothing that looks like one
+was committed.** What exists is a researched recommendation and a recorded
+ruling request. The S9 exit criterion "two nodes pair and reconcile over iroh"
+is NOT met, and no code in this repo claims otherwise — `transport = "iroh"`
+still refuses, now with an accurate reason.
+
+**The problem.** iroh is Rust. spec §12 names "iroh 1.x" as the P3 transport;
+CLAUDE.md's library table does not pre-authorize any iroh dependency. So the
+first question is not "how do we write the adapter" (the P3-1 seam already
+answers that — `Transport` is `Listen`/`Dial`/`ValidateAddr`/`LocalAddr`, and a
+second implementation is already exercised in the suite) but "what do we depend
+on". Three answers, all real, none free:
+
+**Option A — n0's own FFI, through cgo.** `n0-computer/iroh-ffi` v1.0.0 exists
+and tracks iroh 1.0's stabilized surface, but ships bindings for Swift, Kotlin,
+Python and JavaScript only — there is no `iroh-go` in the module (checked
+v0.26.0 and v1.0.0 trees; pkg.go.dev's `iroh-ffi/iroh-go` entry is from a long-
+dead 0.x layout). Go would come from `NordSecurity/uniffi-bindgen-go`, whose
+current release (v0.7.1+v0.31.0) targets uniffi-rs 0.31.0 against iroh-ffi's
+0.31.1 — a plausible match, with async and callback/trait support present per
+its changelog, and proc-macro (non-UDL) support NOT documented, which is the
+risk since uniffi 0.31 code is typically proc-macro-first.
+  There is also `n0-computer/iroh-c-ffi` (iroh 1.0.0, safer-ffi, a hand-written
+C header) which is far friendlier to cgo than uniffi's RustBuffer ABI, and is
+n0's own repo.
+  **Cost:** cgo, a Rust toolchain in the build, and a per-platform static
+library. "Single binary `cairn`" survives, but `make build` stops being `go
+build`, and S7's signing/Homebrew work inherits a native artifact per platform.
+
+**Option B — a pure-Go iroh.** `github.com/tmc/go-iroh` is a clean-room Go port
+(MIT, explicitly "not affiliated with the n0 team") targeting wire compatibility
+with Rust iroh: QUIC endpoints keyed by ed25519 public keys, direct paths, relay
+fallback, QUIC Retry, multipath, QAD/QNT NAT traversal, plus `relayserver` and
+`dnsserver` — i.e. exactly the "relay self-hosting + diagnostics, NAT-traversing
+dial-by-key" the plan asks for. Its API lands on cairn's seam almost verbatim:
+`Endpoint.ListenStreams() (*StreamListener /* net.Listener */, error)` and
+`Endpoint.Dial(ctx, addr, alpn) (net.Conn, error)`.
+  **It works.** Exercised in this sandbox: two endpoints bound on loopback with
+relays disabled, dial by endpoint id, full round trip (`A received "ping"` /
+`B received "pong"`). No cgo, no Rust.
+  **Cost, and why it was not adopted anyway:** the module is `v0.0.0-2026...` —
+untagged, no releases, first published two days ago, single author. It vendors a
+fork of quic-go and a patched crypto/tls (RFC 7250 raw public keys), which is a
+large, network-facing, unaudited parsing surface in the daemon's address space —
+even opt-in. And it declares `go 1.26`, which would raise cairn's floor from the
+1.25.0 that R52 requires to be an honest statement of the dependency set. Its
+claim of wire compatibility with Rust iroh is a claim: unverified here.
+
+**Option C — neither.** Keep the tailnet transport and remove iroh from the
+spec. The transport seam stays valuable regardless; nothing about the mesh
+design depends on which wire carries bytes, because R27 membership is proved
+above the transport in both directions (and P3-5 now closes the pairing side).
+
+**Judgment.** The honest reading of the house rules is that this is not mine to
+decide: it changes the dependency set, the build toolchain or the language
+floor, and the spec text — one ruling, three consequences. Shipping Option B
+unilaterally would also mean adding a two-day-old TLS/QUIC fork to a
+security-sensitive daemon on my own authority, which is precisely the kind of
+decision the "STOP and record it" rule exists for. So: refused, recorded, and
+the code says why.
+
+**Changed here:** `peer.TransportByName`'s iroh refusal now states the real
+reason (no official Go binding; the choice is an open ruling) instead of
+"hardware-gated", carries the `RULING-NEEDED` marker with the three options, and
+its test asserts the refusal names both the cause and where the decision lives.
+
+### Author rulings needed — P3-4c iroh binding
+
+**Question:** which iroh does Cairn mean, and what may it cost?
+
+1. **Rust FFI via cgo** (n0's `iroh-ffi` + `uniffi-bindgen-go`, or the plainer
+   `iroh-c-ffi` C API) — upstream code, at the price of cgo, a Rust toolchain in
+   the build, and a native artifact per platform for the signing/Homebrew path.
+2. **Pure-Go `tmc/go-iroh`** — no cgo, drops straight into the P3-1 seam, proven
+   to carry bytes in this sandbox; but an untagged v0.0.0 unaffiliated port with
+   a vendored quic-go/crypto-tls fork, and it raises the Go floor to 1.26 (R52).
+3. **Drop iroh from spec §12** and keep the tailnet transport as the only wire.
+
+An answer of 1 or 2 also needs a call on the **relay** half: self-hosting is a
+patching duty the design brief already flags, and Option 2 bundles a relay
+server while Option 1 would need one deployed separately.
+
+Until this is ruled on, `transport = "iroh"` refuses and the mesh runs on the
+audited tailnet transport. **No stub, no half-wire, and no dependency was added
+on the strength of a sandbox experiment.**

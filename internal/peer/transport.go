@@ -47,16 +47,38 @@ var DefaultTransport Transport = tcpTransport{}
 
 // TransportByName resolves a configured transport name (P3-4). The empty name
 // and TransportTCPTailnet select the P1 default. TransportIroh is the P3 target
-// but its live wire is hardware-gated (no mature Go binding; needs real relays),
-// so it refuses INSTRUCTIVELY here rather than pretending — the P2-7 deferral
-// pattern. The P3-1 Transport interface is the seam it drops into with no caller
-// change once the binding lands.
+// and still refuses INSTRUCTIVELY here rather than pretending — the P2-7
+// deferral pattern. The P3-1 Transport interface is the seam it drops into with
+// no caller change once a binding is CHOSEN.
+//
+// RULING-NEEDED (P3-4c, recorded 2026-08-16 — PROGRESS.md "Author rulings
+// needed — P3-4c iroh binding"): spec §12 names "iroh 1.x" as the P3 transport,
+// but iroh is Rust and there is no official Go binding. The three ways to get
+// one are NOT equivalent choices for this project, and each trades away
+// something the rulings currently protect:
+//
+//   - Rust FFI (n0's own iroh-ffi via uniffi-bindgen-go, or the hand-written C
+//     API in n0-computer/iroh-c-ffi): the upstream, n0-maintained code — at the
+//     cost of cgo plus a Rust toolchain and a per-platform static library in
+//     every build, which is not what "single binary `cairn`" has meant so far.
+//   - A pure-Go reimplementation (github.com/tmc/go-iroh — clean-room, MIT,
+//     unaffiliated with n0): no cgo, satisfies this interface directly, and it
+//     WORKS — a two-endpoint round trip was exercised during the P3-4c
+//     investigation. But it is an untagged v0.0.0 module by a single author
+//     that vendors a quic-go fork and a patched crypto/tls, and it raises
+//     cairn's Go floor to 1.26 (R52 governs that line).
+//   - Neither: keep the tailnet transport and drop iroh from the spec.
+//
+// Deciding that is a dependency-and-spec call for the author, not an
+// implementation detail, so this stays refused until it is ruled on. The
+// conservative reading is the one in force: refuse, and keep the mesh on the
+// audited tailnet transport.
 func TransportByName(name string) (Transport, error) {
 	switch name {
 	case "", config.TransportTCPTailnet:
 		return DefaultTransport, nil
 	case config.TransportIroh:
-		return nil, fmt.Errorf("transport %q is not available in this build: the iroh 1.x wire is deferred (hardware-gated — needs real relays/NAT traversal and a Go binding; see P3-PLAN.md). Use %q (the default) for the tailnet mesh",
+		return nil, fmt.Errorf("transport %q is not available in this build: iroh is a Rust project with no official Go binding, and choosing between a cgo/Rust FFI build, an unaffiliated pure-Go reimplementation, or dropping iroh is an open author ruling (PROGRESS.md P3-4c). Use %q (the default) for the tailnet mesh",
 			config.TransportIroh, config.TransportTCPTailnet)
 	default:
 		return nil, fmt.Errorf("unknown transport %q (want %q or %q)", name, config.TransportTCPTailnet, config.TransportIroh)

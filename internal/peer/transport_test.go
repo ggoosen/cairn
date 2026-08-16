@@ -179,7 +179,11 @@ func TestP34TransportByName(t *testing.T) {
 		}
 	}
 	_, err := TransportByName(config.TransportIroh)
-	if err == nil || !strings.Contains(err.Error(), "iroh") || !strings.Contains(err.Error(), "deferred") {
+	// P3-4c: the refusal must name WHY (no official Go binding) and where the
+	// decision lives (the open author ruling), not just say "later".
+	if err == nil || !strings.Contains(err.Error(), "iroh") ||
+		!strings.Contains(err.Error(), "no official Go binding") ||
+		!strings.Contains(err.Error(), "ruling") {
 		t.Fatalf("iroh not refused instructively: %v", err)
 	}
 	if _, err := TransportByName("bogus"); err == nil {
