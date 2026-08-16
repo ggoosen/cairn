@@ -93,11 +93,17 @@ jobs:
           packaging/mkformula.sh --tag v0.0.0-ci --repo "${{ github.repository }}" \
             --checksums dist/ci-checksums.txt -o dist/cairn.rb
           ruby packaging/formula-lint.rb dist/cairn.rb
-          # Homebrew is preinstalled on the hosted Linux runner. `brew style`
-          # is advisory here: this formula lives in a custom tap, and PolyForm
-          # Noncommercial is not a licence homebrew-core would accept anyway.
-          if command -v brew >/dev/null 2>&1; then
-            brew style dist/cairn.rb || echo "NOTE: brew style reported issues (advisory)"
+          # `brew style` if this runner happens to carry Homebrew, and a LOUD
+          # note if it does not — a silently skipped check reads exactly like a
+          # passing one in a log. It is advisory either way: the formula lives
+          # in a custom tap, and PolyForm Noncommercial is not a licence
+          # homebrew-core would accept.
+          BREW="$(command -v brew || true)"
+          [ -n "$BREW" ] || [ ! -x /home/linuxbrew/.linuxbrew/bin/brew ] || BREW=/home/linuxbrew/.linuxbrew/bin/brew
+          if [ -n "$BREW" ]; then
+            "$BREW" style dist/cairn.rb || echo "NOTE: brew style reported issues (advisory)"
+          else
+            echo "NOTE: no Homebrew on this runner — brew style SKIPPED. formula-lint above is the only formula check that ran."
           fi
 
   lint:

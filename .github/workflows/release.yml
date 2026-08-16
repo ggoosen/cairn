@@ -279,12 +279,17 @@ jobs:
           packaging/mkformula.sh --tag "${{ steps.collect.outputs.tag }}" \
             --repo "${{ github.repository }}" --checksums dist/checksums.txt \
             $SIGNED_FLAG -o dist/cairn.rb
-          # Homebrew is preinstalled on the hosted Linux runner, so the formula
-          # gets a real `brew style` in addition to the no-Homebrew lint that
-          # developers can run anywhere.
+          # formula-lint needs no Homebrew and is the check that always runs.
+          # `brew style` runs on top of it IF this runner carries Homebrew, and
+          # says so loudly when it does not — a silently skipped check reads
+          # exactly like a passing one.
           ruby packaging/formula-lint.rb dist/cairn.rb
-          if command -v brew >/dev/null 2>&1; then
-            brew style dist/cairn.rb || echo "NOTE: brew style reported issues (not fatal — this formula lives in a custom tap, and PolyForm Noncommercial is not an SPDX identifier brew-core recognises)"
+          BREW="$(command -v brew || true)"
+          [ -n "$BREW" ] || [ ! -x /home/linuxbrew/.linuxbrew/bin/brew ] || BREW=/home/linuxbrew/.linuxbrew/bin/brew
+          if [ -n "$BREW" ]; then
+            "$BREW" style dist/cairn.rb || echo "NOTE: brew style reported issues (not fatal — this formula lives in a custom tap, and PolyForm Noncommercial is not an SPDX identifier brew-core recognises)"
+          else
+            echo "NOTE: no Homebrew on this runner — brew style SKIPPED."
           fi
           cat dist/cairn.rb
 
