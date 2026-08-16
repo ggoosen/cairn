@@ -40,6 +40,13 @@ type SearchOptions struct {
 	// Principal hierarchy (N2). Set by dispatch from the capability gate —
 	// any client-supplied value is overwritten there.
 	Principal string `json:"principal,omitempty"`
+
+	// Confine (D3) is the session's resolved topic grant, set ONLY by the
+	// dispatch capability gate — `json:"-"` so a client cannot supply it. nil
+	// means unconfined; an EMPTY non-nil slice means the grant matches no
+	// existing topic, which admits nothing (an absent filter would admit
+	// everything, which is the bug this distinction exists to prevent).
+	Confine []string `json:"-"`
 }
 
 // SearchOutput carries the ranked results plus the budget-compliant payload.
@@ -128,6 +135,14 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 	if err != nil {
 		return nil, fmt.Errorf("rejected before ack: %w", err)
 	}
+	// D3: the capability grant is an additional HARD filter, intersected with
+	// whatever the caller asked for. It runs through the same resolver, so
+	// there is one notion of "in this topic" in the system.
+	confined, err := d.confineScope(opts.Confine)
+	if err != nil {
+		return nil, fmt.Errorf("rejected before ack: %w", err)
+	}
+	scope = intersectScope(scope, confined)
 	lexIDs, err := d.proj.LexicalTopK(opts.Query, config.FusionCandidatesFTS, opts.IncludeRetracted)
 	if err != nil {
 		return nil, err
@@ -506,6 +521,12 @@ type DigestOptions struct {
 	BudgetChars int    `json:"budget_chars"`
 	TaskID      string `json:"task_id,omitempty"`
 	Principal   string `json:"principal,omitempty"` // dispatch-resolved (N2)
+	// Confine (D3) is the session's resolved topic grant — dispatch-set only
+	// (`json:"-"`). Unlike the view's own hard topic filters it also binds the
+	// MANDATORY items: an explicit recipient or a pin outside the grant would
+	// otherwise walk straight past the confinement, since mandatory items are
+	// deliberately exempt from the view's filters.
+	Confine []string `json:"-"`
 }
 
 // DigestOutput is the generated digest.
@@ -579,6 +600,24 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 			candIDs = append(candIDs, id)
 			inSet[id] = true
 		}
+	}
+
+	// D3: the capability grant binds LAST, after mandatory items and
+	// subscription matches have been added — precisely because those three
+	// paths are exempt from the view's own hard filters, and a grant that
+	// anything can walk around is not a grant.
+	if confined, cerr := d.confineScope(opts.Confine); cerr != nil {
+		return nil, cerr
+	} else if confined != nil {
+		kept := candIDs[:0]
+		for _, id := range candIDs {
+			if confined[id] {
+				kept = append(kept, id)
+				continue
+			}
+			delete(mandatory, id)
+		}
+		candIDs = kept
 	}
 
 	// relevance: hybrid vs the interest query; none ⇒ R=1.0 uniformly
@@ -915,12 +954,15 @@ type ThreadOutput struct {
 	Included      int    `json:"included"`
 	Omitted       int    `json:"omitted,omitempty"`
 	Payload       string `json:"payload"` // ≤ budget_chars, metadata included
+	// Withheld (D3) counts messages dropped because they lie outside the
+	// session's topic grant — distinct from Omitted, which is budget.
+	Withheld int `json:"withheld_out_of_scope,omitempty"`
 }
 
 // Thread renders a whole conversation. Until this existed an agent handed
 // a reply could see that a thread existed (peek exposes thread_id) but had
 // no way to read it. Bodies are quoted per line (untrusted content).
-func (d *Daemon) Thread(threadID string, budget int, principal string) (*ThreadOutput, error) {
+func (d *Daemon) Thread(threadID string, budget int, principal string, confine []string) (*ThreadOutput, error) {
 	if threadID == "" {
 		return nil, fmt.Errorf("thread_id is required")
 	}
@@ -930,6 +972,28 @@ func (d *Daemon) Thread(threadID string, budget int, principal string) (*ThreadO
 	}
 	if len(msgs) == 0 {
 		return nil, fmt.Errorf("thread %s not found (or has no live messages)", threadID)
+	}
+	// D3: a thread crosses topics by construction — a reply is linked to its
+	// own topics, not its parent's — so the grant is applied per MESSAGE here,
+	// not per thread. The caller (dispatch) turns "everything withheld" into a
+	// typed refusal; a partially-in-scope thread renders its in-scope part and
+	// reports the count it withheld.
+	withheld := 0
+	if confined, cerr := d.confineScope(confine); cerr != nil {
+		return nil, cerr
+	} else if confined != nil {
+		kept := msgs[:0]
+		for _, m := range msgs {
+			if confined[m.MessageID] {
+				kept = append(kept, m)
+			} else {
+				withheld++
+			}
+		}
+		msgs = kept
+	}
+	if len(msgs) == 0 {
+		return &ThreadOutput{ThreadID: threadID, Withheld: withheld}, nil
 	}
 	interactionID := d.newUUID()
 	header := fmt.Sprintf("# thread %s — %d message(s)\ninteraction: %s\n\n", threadID, len(msgs), interactionID)
@@ -957,6 +1021,7 @@ func (d *Daemon) Thread(threadID string, budget int, principal string) (*ThreadO
 	out := &ThreadOutput{
 		InteractionID: interactionID, ThreadID: threadID,
 		Included: included, Omitted: len(msgs) - included, Payload: payload,
+		Withheld: withheld,
 	}
 	so := &SearchOutput{Payload: payload, RetrievalMode: "thread"}
 	for i := 0; i < included; i++ {

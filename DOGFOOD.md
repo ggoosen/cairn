@@ -146,6 +146,28 @@ Custom profiles: `profiles.toml` next to the device key (capabilities from
 `read, send, signal, outcome, admin`). `cairn mcp` is never tier-1 (R21):
 it uses the handle it was launched under or mints one from `--profile`.
 
+**Resource selectors (D3, spec §7.2)** narrow a handle to a *subtree* as
+well as a tier — the grant an operator actually wants for a narrow agent:
+
+```sh
+cairn run --profile agent-standard --name narrow \
+  --topic 'project/x/*' --max-budget-chars 1500 -- claude
+```
+
+Grants are **positive only** (there is no "everything except"; mutes are a
+separate, still-open question). `*` spans `/`, so `project/x/*` is the whole
+subtree — and it does *not* include the bare parent topic `project/x`; pass
+both if you mean both. Inside the grant everything works normally; outside
+it every op is a **typed refusal** carrying `out_of_scope`, never an empty
+result, so an agent can tell "nothing matched" from "you may not ask". That
+includes `thread`, which crosses topics by construction: out-of-scope
+messages are withheld and counted, and a wholly out-of-scope thread is
+refused. Whole-mesh renderings (`cairn map`, `cairn compact`) are refused
+outright under a topic grant. `--max-budget-chars` clamps every retrieval and
+the clamp is reported in the response — never applied silently. `cairn
+session list` shows each handle's grant, so an audit distinguishes
+"read-only" from "read-only inside project/x".
+
 **Isolation honesty (R22):** everything runs as your OS user. Profiles
 prevent *accidents* — a confined agent structurally cannot retract or
 restructure the mesh — they do not defend against a malicious local

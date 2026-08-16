@@ -79,6 +79,27 @@ func printJSON(cmd *cobra.Command, v any) error {
 	return nil
 }
 
+// reportCapability (D3) prints what the session's resource selectors did to a
+// request. A clamp or a scope applied silently is a lie by omission: the agent
+// reading this output must know it saw a confined view, not the whole mesh.
+func reportCapability(cmd *cobra.Command, resp *daemon.Response) {
+	if resp == nil || resp.Capability == nil {
+		return
+	}
+	c := resp.Capability
+	if len(c.TopicGrant) > 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "capability: scoped to topic grant %v (%d matching topic(s))\n",
+			c.TopicGrant, len(c.ScopedTopics))
+	}
+	if c.BudgetClamped {
+		fmt.Fprintf(cmd.ErrOrStderr(), "capability: budget_chars %d → %d (session cap)\n",
+			c.BudgetRequested, c.BudgetGranted)
+	}
+	if c.Withheld > 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "capability: %d item(s) withheld as out of scope\n", c.Withheld)
+	}
+}
+
 // groupGuard (FIX-F5 ruling 3): a parent command invoked with an unknown
 // subcommand — or bare — exits NONZERO instead of printing help with exit 0.
 func groupGuard(cmd *cobra.Command) {
@@ -336,6 +357,7 @@ func newThreadCmd(dirFlag *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			reportCapability(cmd, resp)
 			fmt.Fprint(cmd.OutOrStdout(), resp.Thread.Payload)
 			if resp.Thread.Omitted > 0 {
 				fmt.Fprintf(cmd.ErrOrStderr(), "omitted: %d (raise --budget to see more)\n", resp.Thread.Omitted)
@@ -473,6 +495,7 @@ func newSearchCmd(dirFlag *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			reportCapability(cmd, resp)
 			return printJSON(cmd, resp.Search)
 		},
 	}
@@ -497,6 +520,7 @@ func newDigestCmd(dirFlag *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			reportCapability(cmd, resp)
 			fmt.Fprint(cmd.OutOrStdout(), resp.Digest.Payload)
 			if resp.Digest.OmittedMandatory > 0 {
 				fmt.Fprintf(cmd.ErrOrStderr(), "omitted_mandatory_count: %d\n", resp.Digest.OmittedMandatory)

@@ -48,7 +48,7 @@ var opCapability = map[string]string{
 	"thread": capRead, "topic-list": capRead, // RETR-D4/D5
 	// P4-G6: the query log names principals and queries — operator-tier
 	"interaction-list": capAdmin,
-	"saved-list": capRead, "saved-run": capRead, // P2-4
+	"saved-list":       capRead, "saved-run": capRead, // P2-4
 	"saved-add": capAdmin, "saved-remove": capAdmin,
 	"rank-stats": capAdmin, // P2-3b calibration (analysis, operator-tier)
 	"map":        capRead,  // P2-5 local navigation view
@@ -186,6 +186,11 @@ type Session struct {
 	// trusted at all: such a record is reaped on expiry only.
 	BoundDevice string `json:"bound_device,omitempty"`
 	BoundProc   string `json:"bound_proc,omitempty"` // opaque incarnation token (see procIdentity)
+
+	// D3 (spec §7.2): optional POSITIVE resource selectors. Absent = the
+	// profile's action tier is the only confinement, which is P0/P1 behaviour
+	// unchanged. Enforced at the IPC dispatch boundary (confine.go).
+	Selectors Selectors `json:"selectors,omitempty"`
 
 	lastUsed time.Time // in-memory idle tracking; resets on daemon restart
 }
@@ -404,7 +409,7 @@ func (s *sessions) prune(now time.Time) (map[string]int, int, error) {
 	return removed, len(s.byToken), s.compactLocked()
 }
 
-func (s *sessions) create(name, profile, parent string, pid int, now time.Time) (*Session, error) {
+func (s *sessions) create(name, profile, parent string, pid int, sel Selectors, now time.Time) (*Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.profiles[profile]; !ok {
@@ -412,6 +417,11 @@ func (s *sessions) create(name, profile, parent string, pid int, now time.Time) 
 	}
 	if name == "" || strings.ContainsAny(name, "/\\>") || strings.Contains(name, "..") {
 		return nil, fmt.Errorf("invalid session name %q", name)
+	}
+	// D3: a malformed grant is refused where the operator writes it, not
+	// reinterpreted on every request that runs under it.
+	if err := sel.Validate(); err != nil {
+		return nil, err
 	}
 	// D9: sweep on create, so the table cannot grow without bound while
 	// clients respawn. Cheap: it is a walk of the live set, and the create
@@ -429,6 +439,7 @@ func (s *sessions) create(name, profile, parent string, pid int, now time.Time) 
 		CreatedAt: now.UTC().Format(config.WallTimeFormat),
 		ExpiresAt: now.Add(config.SessionTTLDefault).UTC().Format(config.WallTimeFormat),
 		BoundPID:  pid,
+		Selectors: sel,
 		lastUsed:  now,
 	}
 	if pid > 0 {
@@ -491,7 +502,7 @@ func (s *sessions) list(now time.Time) []map[string]any {
 	}
 	out := make([]map[string]any, 0, len(s.byToken))
 	for _, sess := range s.byToken {
-		out = append(out, map[string]any{
+		row := map[string]any{
 			"token_prefix": sess.Token[:8],
 			"name":         sess.Name,
 			"profile":      sess.Profile,
@@ -499,7 +510,17 @@ func (s *sessions) list(now time.Time) []map[string]any {
 			"created_at":   sess.CreatedAt,
 			"expires_at":   sess.ExpiresAt,
 			"bound_pid":    sess.BoundPID,
-		})
+		}
+		// D3: an operator auditing handles must see the SCOPE, not just the
+		// tier — "read-only" and "read-only inside project/x" are different
+		// grants and used to print identically.
+		if len(sess.Selectors.Topics) > 0 {
+			row["topic_grant"] = sess.Selectors.Topics
+		}
+		if sess.Selectors.MaxBudgetChars > 0 {
+			row["max_budget_chars"] = sess.Selectors.MaxBudgetChars
+		}
+		out = append(out, row)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i]["created_at"].(string) < out[j]["created_at"].(string) })
 	return out

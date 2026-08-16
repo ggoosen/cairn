@@ -107,6 +107,12 @@ type Envelope struct {
 	BodyLen        int64      `json:"body_len,omitempty"`
 	Topics         []string   `json:"topics,omitempty"`  // RETR-D1: mesh content, untrusted
 	Snippet        string     `json:"snippet,omitempty"` // RETR-D1: body excerpt, untrusted
+
+	// D3: what this session's resource selectors did to the request. MCP is
+	// the surface that actually runs confined (R21 — never tier-1), so a
+	// silently scoped or silently clamped result would mislead exactly the
+	// caller least able to notice.
+	Capability *daemon.CapabilityNotice `json:"capability,omitempty"`
 }
 
 // --- tool registry (spec §5.5 nine + the two R55 local-tier tools) ----------
@@ -256,6 +262,7 @@ func (s *Server) digest(raw json.RawMessage) (any, error) {
 		PartialReason: d.PartialReason,
 		Included:      d.Included,
 		Omitted:       d.OmittedMandatory,
+		Capability:    resp.Capability,
 	}, nil
 }
 
@@ -288,6 +295,7 @@ func (s *Server) thread(raw json.RawMessage) (any, error) {
 		ThreadID:      t.ThreadID,
 		Included:      t.Included,
 		Omitted:       t.Omitted,
+		Capability:    resp.Capability,
 	}, nil
 }
 
@@ -344,6 +352,7 @@ func (s *Server) search(raw json.RawMessage) (any, error) {
 		RemoteSource:  out.RemoteSource,
 		Results:       results,
 		Omitted:       out.Omitted,
+		Capability:    resp.Capability,
 	}, nil
 }
 

@@ -164,7 +164,7 @@ func TestBudgetComplianceProperty(t *testing.T) {
 	}
 	for _, b := range budgets {
 		// the thread id IS the root message's id
-		tout, terr := d.Thread(root.MessageID, b, "")
+		tout, terr := d.Thread(root.MessageID, b, "", nil)
 		if terr != nil {
 			t.Fatal(terr)
 		}

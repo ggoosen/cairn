@@ -60,6 +60,7 @@ The five commands above are the daily loop. The rest of what's built:
 
 **Confine your agents**
 - `cairn run --profile read-only -- <your agent>` — run any agent inside a capability-confined session: it gets a short-lived handle (`CAIRN_SESSION`), auto-revoked on exit or idle, that cannot retract, restructure topics, or touch admin. Profiles are `full` / `agent-standard` / `read-only`, or your own in `profiles.toml`. `cairn session list`, `cairn session prune` and `cairn session revoke` are the kill switch.
+- `cairn run --profile agent-standard --topic 'project/x/*' --max-budget-chars 1500 -- <your agent>` — confine it to a *subtree* as well as a tier. The grant is positive-only, `*` spans `/` (so `project/x/*` is the whole subtree), and anything outside it is a **typed refusal**, never a quietly empty result — including via `thread`, which crosses topics. A budget cap is clamped and the clamp is reported in the response.
 
 **Shape what each agent receives**
 - `cairn subscribe "<what this view works on>" --view <name>` — declare a standing interest so digests surface it. Local by default (no events); `--durable` replicates it across the mesh.

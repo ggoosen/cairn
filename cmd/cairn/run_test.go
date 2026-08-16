@@ -138,3 +138,66 @@ func TestN2MCPNeverTier1(t *testing.T) {
 		t.Fatalf("read-only mcp send not capability-refused:\n%s", out)
 	}
 }
+
+// D3: `cairn run --topic` mints a CONFINED handle, and every CLI verb inside
+// that process tree inherits the confinement — including `cairn send`, which is
+// how a narrow agent is actually launched. Exercised through the real launcher
+// against a real daemon, because the confinement lives at the IPC boundary and
+// a direct call would prove nothing about it.
+func TestD3RunConfinesTheChildToATopicSubtree(t *testing.T) {
+	dir := setupEnv(t)
+	if out, err := runCLI(t, "init", "--dir", dir); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	startTestDaemon(t, dir)
+
+	// seed one message inside the grant and one outside it (operator tier)
+	for _, s := range []struct{ body, topic string }{
+		{"inside note about sprockets", "a/b"},
+		{"outside note about sprockets", "z"},
+	} {
+		if out, err := runCLI(t, "send", "--dir", dir, s.body, "--topic", s.topic); err != nil {
+			t.Fatalf("seed send: %v\n%s", err, out)
+		}
+	}
+
+	bin := buildBinary(t)
+	// inside the grant: search finds the in-scope note and not the other
+	out, err := runCLI(t, "run", "--dir", dir, "--profile", "agent-standard", "--name", "narrow",
+		"--topic", "a/*", "--max-budget-chars", "1200",
+		"--", bin, "search", "--dir", dir, "sprockets")
+	if err != nil {
+		t.Fatalf("confined search via `cairn run`: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "inside note") {
+		t.Fatalf("the confined child could not see its own subtree:\n%s", out)
+	}
+	if strings.Contains(out, "outside note") {
+		t.Fatalf("the confined child saw a message outside its grant:\n%s", out)
+	}
+	if !strings.Contains(out, "capability: scoped to topic grant") {
+		t.Fatalf("the confinement was not reported to the child:\n%s", out)
+	}
+	if !strings.Contains(out, "budget_chars") {
+		t.Fatalf("the budget clamp was not reported to the child:\n%s", out)
+	}
+
+	// outside the grant: a TYPED refusal, and a nonzero exit — not empty output
+	out, _ = runCLI(t, "run", "--dir", dir, "--profile", "agent-standard", "--name", "narrow",
+		"--topic", "a/*", "--", bin, "search", "--dir", dir, "sprockets", "--topic", "z")
+	if !strings.Contains(out, "out_of_scope") {
+		t.Fatalf("an out-of-scope search did not produce a typed refusal:\n%s", out)
+	}
+
+	// a send outside the grant is refused; inside it is allowed
+	out, _ = runCLI(t, "run", "--dir", dir, "--profile", "agent-standard", "--name", "narrow",
+		"--topic", "a/*", "--", bin, "send", "--dir", dir, "sneaky", "--topic", "z")
+	if !strings.Contains(out, "out_of_scope") {
+		t.Fatalf("an out-of-scope send was not refused:\n%s", out)
+	}
+	out, err = runCLI(t, "run", "--dir", dir, "--profile", "agent-standard", "--name", "narrow",
+		"--topic", "a/*", "--", bin, "send", "--dir", dir, "legitimate", "--topic", "a/b")
+	if err != nil {
+		t.Fatalf("an in-scope send was refused: %v\n%s", err, out)
+	}
+}

@@ -4565,3 +4565,112 @@ socket and every CLI call reaches whichever bound it last. Isolating
 misleading until that was done.
 
 Green: `make verify`, `make test-race`.
+
+## D3 — capability `resource_selectors` (2026-08-16) — DONE
+
+Sprint S2, second of two, in its own commit because it touches the capability
+model (R21/R22/R23) and must be reviewable in isolation. Spec §7.2 always
+described per-capability resource scoping; P0/P1 shipped the coarse action
+tiers only, so a session could be denied *writing* but not confined to a
+*subtree* — which is the grant an operator actually wants for a narrow agent.
+
+**The record.** A handle gains optional `Selectors{Topics []glob,
+MaxBudgetChars int}`. Absent selectors = P1 behaviour, byte for byte; they are
+opt-in and a session without them is a control case in the tests. The grant is
+validated at MINT time (`session-create`), so a malformed one is refused where
+the operator writes it rather than reinterpreted on every request under it.
+
+**Enforcement is singular**, per the sprint's instruction: `capabilityGate`
+runs the action-tier check and then `applyConfinement`, and nothing downstream
+consults the session. Dispatch was split into `capabilityGate` +
+`dispatchOp` to make that literally true — handlers receive an
+already-scoped request and a `reqContext`, never a `*Session`.
+
+**Unclassified ops are REFUSED.** `opConfinement` classifies each op as
+scoped / resource / open / publish, and its zero value is *refuse* — the same
+conservative default `capabilityFor` uses for unknown ops. A new op is
+unreachable from a confined session until somebody decides what confinement
+means for it. A test asserts every non-admin op has an explicit entry, which
+already caught three (`map`, `compact`, `source-ref`) that were being refused
+by omission rather than by decision; they are now listed with the reason.
+
+**Topic globs resolve through the existing topic table.** A selector is
+matched against `TopicList()` and the resulting NAMES are handed to
+`ScopeMessageIDs` — the same path `cairn search --topic` uses. No second
+resolver, no second notion of what a topic is, and resolution is redone per
+request so a topic created after the handle was minted falls inside the grant
+without re-minting.
+
+**`*` spans `/`.** `project/x/*` is the subtree, which is what §7.2's example
+means; `path.Match` semantics would stop at the separator and silently exclude
+`project/x/api/v1` — most of the subtree the grant names. The bare parent is
+NOT matched, and the operator who wants it writes both: widening a written
+grant is not the daemon's decision.
+
+**The three places a grant could have been walked around**, all closed and all
+tested:
+
+- **digest mandatory items.** Explicit recipients, pins and subscription
+  matches are deliberately exempt from the view's hard filters, so the
+  confinement binds LAST, after they are added. The test addresses an
+  out-of-scope message *to the confined view* so this is proved, not assumed.
+- **`thread`.** A thread is assembled by thread_id and a reply carries its own
+  topics, so it crosses topics by construction — the surface the sprint
+  singled out. The grant is applied per MESSAGE; out-of-scope messages are
+  withheld and counted, and a wholly out-of-scope thread is a typed refusal
+  rather than an empty rendering.
+- **an empty grant.** A grant matching no existing topic must admit NOTHING.
+  Because "no topics" and "no filter" are the same empty slice in the existing
+  scope API, `Scope()` returns a non-nil empty slice and `confineScope` maps
+  that to an empty (not nil) id set. Mutating that one distinction makes the
+  test return all five seeded messages — it is the worst and least visible
+  failure mode available here.
+
+**Refusals are typed.** `Response.Refused{code:"out_of_scope", op, detail,
+topic_grant}` plus an error string that leads with the same stable code, since
+the MCP and CLI paths surface the string. An out-of-scope search returning
+zero rows would be a bug; the tests assert the typed refusal, not just an
+error.
+
+**Clamps are reported.** `Response.Capability` carries the grant, the
+resolved topics, `budget_chars_requested → budget_chars_granted`, and any
+withheld count; the CLI prints it to stderr for search/digest/thread, MCP
+carries it in the envelope (R21 — MCP is the surface that actually runs
+confined), and `cairn session list` shows each handle's grant so an audit can
+tell "read-only" from "read-only inside project/x". A budget of 0 means
+"unbudgeted" for search, so it is clamped too — otherwise the cap is bypassed
+by omitting the field.
+
+**Writes are confined as well as reads.** A confined publish must name at
+least one topic inside the grant (an untopiced message would land outside the
+session's own scope), and replying to or signalling an out-of-scope message is
+refused. Structural ops stay operator work.
+
+**Grants remain positive-only.** There is no syntax for negation — the
+selector charset is the topic-name charset plus `*`, so `!a/*` and `-a/*` are
+refused at mint, and a test says why: mutes are D7's open ruling and this must
+not pre-empt it.
+
+**Live verification**, two rounds against a real daemon and the real `cairn
+run` launcher (unit tests were not enough in S1): a session granted
+`project/x/*` searched and saw exactly its two in-grant topics with
+`capability: scoped to topic grant [project/x/*] (2 matching topic(s))` and
+`budget_chars 0 → 1500`; `--topic secrets/hr` returned `capability:
+out_of_scope: topic "secrets/hr" is outside this session's grant`; a
+cross-topic thread rendered one message and reported `1 item(s) withheld`; an
+out-of-scope send and fetch were refused; `cairn map` was refused; `cairn topic
+list` showed only the two in-grant topics; `cairn session list` showed
+`topic_grant` and `max_budget_chars`; the unconfined operator still saw all
+three matching messages. Four mutations (confinement inert, empty grant read
+as no filter, digest confinement removed, tier check bypassed) each fail the
+suite.
+
+Deliberately NOT done, and why: `map`/`compact` are refused rather than
+confined, because confining them means rewriting both renderers rather than
+filtering a list, and a typed refusal is the honest answer until that is worth
+doing. Sender/thread/mime selectors and the other §7.2 constraints
+(`rate_limit`, `durability_ceiling`, `max_blob_bytes`) are not built — the
+plan named topic globs and budget caps, and inventing the rest without a
+caller would be guessing.
+
+Green: `make verify`, `make test-race`.

@@ -25,8 +25,10 @@ import (
 
 func newRunCmd(dirFlag *string) *cobra.Command {
 	var profile, name string
+	var topics []string
+	var maxBudget int
 	cmd := &cobra.Command{
-		Use:   "run --profile <name> -- <command> [args...]",
+		Use:   "run --profile <name> [--topic <glob>] -- <command> [args...]",
 		Short: "Run a command under a capability-confined session (CAIRN_SESSION exported; auto-revoked on exit/idle)",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -37,16 +39,28 @@ func newRunCmd(dirFlag *string) *cobra.Command {
 			if sessName == "" {
 				sessName = profile
 			}
-			resp, err := call(dirFlag, daemon.Request{
+			req := daemon.Request{
 				Op: "session-create", SessionProfile: profile,
 				SessionName: sessName, SessionPID: os.Getpid(),
-			})
+			}
+			// D3 (spec §7.2): optional resource selectors. Absent = the action
+			// tier is the only confinement, exactly as before.
+			if len(topics) > 0 || maxBudget > 0 {
+				req.SessionSelectors = &daemon.Selectors{Topics: topics, MaxBudgetChars: maxBudget}
+			}
+			resp, err := call(dirFlag, req)
 			if err != nil {
 				return err
 			}
 			token := resp.Status["session"].(string)
 			fmt.Fprintf(cmd.ErrOrStderr(), "cairn run: session %s… (%s as %q, expires %s)\n",
 				token[:8], profile, resp.Status["principal"], resp.Status["expires_at"])
+			if len(topics) > 0 {
+				fmt.Fprintf(cmd.ErrOrStderr(), "cairn run: confined to topic grant %v — everything outside it is REFUSED, not silently empty\n", topics)
+			}
+			if maxBudget > 0 {
+				fmt.Fprintf(cmd.ErrOrStderr(), "cairn run: budget_chars capped at %d per retrieval (the clamp is reported in each response)\n", maxBudget)
+			}
 
 			child := exec.Command(args[0], args[1:]...)
 			child.Stdin = cmd.InOrStdin()
@@ -63,6 +77,10 @@ func newRunCmd(dirFlag *string) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&profile, "profile", "agent-standard", "capability profile: full | agent-standard | read-only | a profiles.toml entry")
 	cmd.Flags().StringVar(&name, "name", "", "leaf principal the session acts as (default: the profile name)")
+	cmd.Flags().StringSliceVar(&topics, "topic", nil,
+		"D3 resource selector: confine the session to these topic globs (`*` spans `/`, so \"a/*\" is the subtree; repeatable; positive grants only)")
+	cmd.Flags().IntVar(&maxBudget, "max-budget-chars", 0,
+		"D3 constraint: cap budget_chars on every retrieval this session makes (0 = uncapped); the clamp is reported in the response")
 	return cmd
 }
 
