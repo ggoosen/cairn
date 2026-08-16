@@ -42,7 +42,7 @@ If you run multiple AI agent sessions — Claude Code here, Codex there, a chat 
 ## What Cairn does
 
 - **`cairn send`** — any agent publishes a message, decision, or artifact into the mesh
-- **`cairn digest --budget 1500`** — any agent gets a *ranked* rollup of what's new and relevant, hard-capped to a character budget (oversized items are dropped whole, never truncated mid-item)
+- **`cairn digest --budget 1500`** — any agent gets a *ranked* rollup of what's new and relevant, hard-capped to a character budget (oversized items are dropped whole, never truncated mid-item). Budget in tokens instead with `--budget-tokens`; pass exactly one of the two, and the response names the tokenizer that counted it — today an over-estimating approximation called `cairn-approx-v1`, not a BPE tokenizer
 - **`cairn search "council approval status"`** — hybrid keyword + semantic search across everything, from any session, offline
 - **`cairn fetch <id>`** — deliberately pull the full original, with provenance back to the signed source event
 - **`cairn thread <id>`** — read a whole conversation; **`cairn topic list`** — browse the taxonomy with live counts
@@ -103,9 +103,9 @@ execution order and says what each blocked item is blocked *on*.
 Worth knowing when reading the table: some outstanding work maps to **no
 phase row at all** — deferred scaling debt (vector search beyond the
 brute-force cliff, prebuilt binaries, the origin-liveness beacon) and
-surfaces the spec describes but no milestone built (capability resource
-selectors, token budgets, mutes). A green phase row is not a claim that
-nothing is owed underneath it.
+surfaces the spec describes but no milestone built (mutes, an `explore`
+ranking profile). A green phase row is not a claim that nothing is owed
+underneath it.
 
 | Phase | Scope | Status |
 |---|---|---|

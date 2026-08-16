@@ -140,24 +140,159 @@ func TestBudgetCharsUnicode(t *testing.T) {
 	}
 }
 
+// D4: the hard-budget property holds in BOTH modes. Parameterised over the
+// spec constructor rather than over raw ints, so the mode under test is the
+// one a caller can actually ask for.
 func TestTakeWithinBudgetNeverExceeds(t *testing.T) {
 	items := []string{"aaaa\n", "bbbb\n", "cccc\n", "dddd\n"}
 	render := func(i int) string { return items[i] }
 	br := BudgetRender{Header: "HDR\n", Marker: "…\n"}
-	for budget := 0; budget <= 30; budget++ {
-		n, payload := TakeWithinBudget(len(items), budget, br, render)
-		if got := BudgetChars(payload); got > budget {
-			t.Fatalf("budget %d exceeded: %d chars (n=%d)", budget, got, n)
-		}
-		if n < len(items) && n > 0 &&
-			BudgetChars(payload)+BudgetChars(br.Marker) <= budget && !contains(payload, "…") {
-			t.Fatalf("budget %d: truncated without marker despite room", budget)
+
+	for _, mode := range []string{BudgetModeChars, BudgetModeTokens} {
+		for budget := 1; budget <= 30; budget++ {
+			var spec Spec
+			var err error
+			if mode == BudgetModeChars {
+				spec, err = NewSpec(budget, 0)
+			} else {
+				spec, err = NewSpec(0, budget)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			limits := spec.Limits()
+			n, payload := TakeWithinBudget(len(items), limits, br, render)
+			if cerr := limits.Complies(payload); cerr != nil {
+				t.Fatalf("%s budget %d: %v (n=%d)", mode, budget, cerr, n)
+			}
+			// no item is ever cut in half: the payload is the header plus a
+			// PREFIX of the rendered items, possibly plus the marker
+			want := br.Header
+			for i := 0; i < n; i++ {
+				want += items[i]
+			}
+			if payload != want && payload != want+br.Marker && !(n == 0 && payload == "") {
+				t.Fatalf("%s budget %d: payload is not header+prefix[+marker]: %q", mode, budget, payload)
+			}
+			if n < len(items) && n > 0 && !contains(payload, "…") {
+				if Limits(limits).Complies(payload+br.Marker) == nil {
+					t.Fatalf("%s budget %d: truncated without marker despite room", mode, budget)
+				}
+			}
+			// the report is self-consistent with the payload it describes
+			rep := spec.Report(payload)
+			if rep.Mode != mode || rep.Limit != budget || rep.Tokenizer == "" || rep.Used > rep.Limit {
+				t.Fatalf("%s budget %d: bad report %+v", mode, budget, rep)
+			}
 		}
 	}
-	// unbudgeted-fit case: everything included, no marker
-	n, payload := TakeWithinBudget(len(items), 1000, br, render)
+
+	// full-fit case: everything included, no marker
+	spec, _ := NewSpec(1000, 0)
+	n, payload := TakeWithinBudget(len(items), spec.Limits(), br, render)
 	if n != len(items) || contains(payload, "…") {
 		t.Fatalf("full fit wrong: n=%d", n)
+	}
+	// unbudgeted: no limits at all means everything, still no marker
+	n, payload = TakeWithinBudget(len(items), Spec{}.Limits(), br, render)
+	if n != len(items) || contains(payload, "…") {
+		t.Fatalf("unbudgeted wrong: n=%d payload=%q", n, payload)
+	}
+}
+
+// D4: exactly one budget. Both is a REFUSAL, not a precedence rule.
+func TestSpecRefusesBothBudgets(t *testing.T) {
+	if _, err := NewSpec(100, 50); err == nil {
+		t.Fatal("budget_chars + budget_tokens together must be refused")
+	}
+	if _, err := NewSpec(-1, 0); err == nil {
+		t.Fatal("negative budget must be refused")
+	}
+	for _, c := range []struct {
+		chars, tokens int
+		mode          string
+	}{{100, 0, BudgetModeChars}, {0, 100, BudgetModeTokens}, {0, 0, BudgetModeUnbudgeted}} {
+		spec, err := NewSpec(c.chars, c.tokens)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if spec.Mode() != c.mode {
+			t.Fatalf("NewSpec(%d,%d) mode = %s, want %s", c.chars, c.tokens, spec.Mode(), c.mode)
+		}
+	}
+}
+
+// D4: the capability ceiling is a SECOND limit, never a conversion. A token
+// budget under a char cap must satisfy both.
+func TestCeilingIsASecondLimit(t *testing.T) {
+	items := make([]string, 20)
+	for i := range items {
+		items[i] = "some ordinary words of prose here\n"
+	}
+	render := func(i int) string { return items[i] }
+	br := BudgetRender{Header: "H\n", Marker: "…\n"}
+
+	spec, _ := NewSpec(0, 1000) // a token budget far larger than the ceiling
+	spec.Ceiling = 120
+	limits := spec.Limits()
+	if len(limits) != 2 {
+		t.Fatalf("expected the token budget AND the char ceiling, got %d limit(s)", len(limits))
+	}
+	_, payload := TakeWithinBudget(len(items), limits, br, render)
+	if BudgetChars(payload) > 120 {
+		t.Fatalf("char ceiling ignored: %d chars", BudgetChars(payload))
+	}
+	if err := limits.Complies(payload); err != nil {
+		t.Fatal(err)
+	}
+	rep := spec.Report(payload)
+	if rep.Mode != BudgetModeTokens || rep.CeilingChars != 120 {
+		t.Fatalf("the ceiling must be reported, got %+v", rep)
+	}
+}
+
+// D4: the approximate counter is named honestly and behaves as documented.
+func TestApproxTokenCounter(t *testing.T) {
+	c := ApproxTokenCounter()
+	if c.Name() != config.TokenizerApprox {
+		t.Fatalf("tokenizer name %q must be the approximate one", c.Name())
+	}
+	if !contains(c.Name(), "approx") {
+		t.Fatalf("an approximate counter must SAY so in its name, got %q", c.Name())
+	}
+	if CharCounter().Name() != config.TokenizerChars {
+		t.Fatal("char counter name")
+	}
+	if c.Count("") != 0 {
+		t.Fatal("empty string costs nothing")
+	}
+	// monotone in its input: appending text never lowers the count
+	prev := 0
+	acc := ""
+	for _, w := range []string{"the", " quick", " brown", " fox 12345", " — ünïcödé", "\n\nend."} {
+		acc += w
+		n := c.Count(acc)
+		if n < prev {
+			t.Fatalf("count fell from %d to %d at %q", prev, n, acc)
+		}
+		prev = n
+	}
+	// deterministic
+	if c.Count(acc) != prev {
+		t.Fatal("counter is not deterministic")
+	}
+	// over-estimates plain English prose relative to the ~4 chars/token
+	// rule of thumb the previous advice told callers to apply by hand
+	prose := "The quick brown fox jumps over the lazy dog and then considers its position carefully."
+	if got, rough := c.Count(prose), BudgetChars(prose)/4; got < rough {
+		t.Fatalf("approx counter under-estimates prose: %d < %d — it is meant to be generous", got, rough)
+	}
+	// a mode name round-trips to its counter
+	if got, err := CounterFor(BudgetModeTokens); err != nil || got.Name() != config.TokenizerApprox {
+		t.Fatalf("CounterFor(tokens) = %v, %v", got, err)
+	}
+	if _, err := CounterFor("furlongs"); err == nil {
+		t.Fatal("unknown mode must not resolve to a counter")
 	}
 }
 

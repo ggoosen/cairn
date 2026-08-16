@@ -15,6 +15,7 @@ import (
 	"fmt"
 
 	"github.com/ggoosen/cairn/internal/config"
+	"github.com/ggoosen/cairn/internal/rank"
 )
 
 // selfIsThin reports whether THIS node is thin. A read-only restore has no
@@ -110,7 +111,12 @@ func (d *Daemon) maybeRemoteConsult(local *SearchOutput, opts SearchOptions) *Se
 	if addr == "" {
 		return nil
 	}
-	remote, err := d.RemoteSearch(addr, opts.Query, opts.BudgetChars)
+	spec, serr := rank.NewSpec(opts.BudgetChars, opts.BudgetTokens)
+	if serr != nil {
+		return nil // already refused upstream; never re-derive a budget here
+	}
+	spec.Ceiling = opts.BudgetCeilingChars
+	remote, err := d.RemoteSearch(addr, opts.Query, spec)
 	if err != nil || remote == nil {
 		fmt.Fprintf(d.warn, "remote query to %s failed (%v) — returning local recent results only (partial)\n", addr, err)
 		return nil

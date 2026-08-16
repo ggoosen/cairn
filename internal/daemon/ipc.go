@@ -94,13 +94,18 @@ type Request struct {
 	LocalSub *LocalSubRequest `json:"local_sub,omitempty"`
 
 	// reads
-	Query            string `json:"query,omitempty"`
-	K                int    `json:"k,omitempty"`
-	BudgetChars      int    `json:"budget_chars,omitempty"`
-	IncludeRetracted bool   `json:"include_retracted,omitempty"`
-	AgentView        string `json:"agent_view,omitempty"` // fetch/digest view
-	InteractionID    string `json:"interaction_id,omitempty"`
-	ThreadID         string `json:"thread_id,omitempty"` // RETR-D4 thread expansion
+	Query        string `json:"query,omitempty"`
+	K            int    `json:"k,omitempty"`
+	BudgetChars  int    `json:"budget_chars,omitempty"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"` // D4: exactly one of the two
+	// BudgetCeilingChars (D4 × D3) is the session's max_budget_chars cap as a
+	// SECOND hard limit. `json:"-"`: the capability gate sets it, never a client
+	// — a client-settable ceiling would be a client-settable capability.
+	BudgetCeilingChars int    `json:"-"`
+	IncludeRetracted   bool   `json:"include_retracted,omitempty"`
+	AgentView          string `json:"agent_view,omitempty"` // fetch/digest view
+	InteractionID      string `json:"interaction_id,omitempty"`
+	ThreadID           string `json:"thread_id,omitempty"` // RETR-D4 thread expansion
 }
 
 // Response is the IPC reply.
@@ -394,7 +399,7 @@ func (d *Daemon) dispatch(req Request) Response {
 	// D3: a confined session sees its confinement on every answer, so a scoped
 	// result is never mistaken for the whole mesh.
 	if resp.Capability == nil && ctx.notice != nil &&
-		(ctx.notice.BudgetClamped || len(ctx.notice.TopicGrant) > 0) {
+		(ctx.notice.BudgetClamped || ctx.notice.BudgetCeilingChars > 0 || len(ctx.notice.TopicGrant) > 0) {
 		resp.Capability = ctx.notice
 	}
 	return resp
@@ -674,14 +679,16 @@ func (d *Daemon) dispatchOp(req Request, ctx reqContext) Response {
 
 	case "search":
 		sopts := SearchOptions{
-			Query: req.Query, K: req.K, BudgetChars: req.BudgetChars,
+			Query: req.Query, K: req.K,
+			BudgetChars: req.BudgetChars, BudgetTokens: req.BudgetTokens,
 			IncludeRetracted: req.IncludeRetracted,
 		}
 		if req.Search2 != nil {
 			sopts = *req.Search2
 		}
-		sopts.Principal = principal         // dispatch-resolved; client value ignored
-		sopts.Confine = ctx.confine.Scope() // D3; nil when unconfined
+		sopts.Principal = principal                       // dispatch-resolved; client value ignored
+		sopts.Confine = ctx.confine.Scope()               // D3; nil when unconfined
+		sopts.BudgetCeilingChars = req.BudgetCeilingChars // D4 × D3; gate-set only
 		out, err := d.Search(sopts)
 		if err != nil {
 			return fail(err)
@@ -689,8 +696,10 @@ func (d *Daemon) dispatchOp(req Request, ctx reqContext) Response {
 		return Response{OK: true, Search: out}
 
 	case "digest":
-		out, err := d.Digest(DigestOptions{AgentView: req.AgentView, BudgetChars: req.BudgetChars,
-			Principal: principal, Confine: ctx.confine.Scope()})
+		out, err := d.Digest(DigestOptions{AgentView: req.AgentView,
+			BudgetChars: req.BudgetChars, BudgetTokens: req.BudgetTokens,
+			BudgetCeilingChars: req.BudgetCeilingChars,
+			Principal:          principal, Confine: ctx.confine.Scope()})
 		if err != nil {
 			return fail(err)
 		}
@@ -864,7 +873,11 @@ func (d *Daemon) dispatchOp(req Request, ctx reqContext) Response {
 		// surface most likely to leak past a topic selector. Out-of-scope
 		// messages are dropped inside Thread and counted; a thread with NOTHING
 		// in scope is a typed refusal, never an empty rendering.
-		out, err := d.Thread(req.ThreadID, req.BudgetChars, principal, ctx.confine.Scope())
+		out, err := d.Thread(ThreadOptions{
+			ThreadID:    req.ThreadID,
+			BudgetChars: req.BudgetChars, BudgetTokens: req.BudgetTokens,
+			BudgetCeilingChars: req.BudgetCeilingChars,
+			Principal:          principal, Confine: ctx.confine.Scope()})
 		if err != nil {
 			return fail(err)
 		}
@@ -1067,8 +1080,10 @@ func (d *Daemon) dispatchOp(req Request, ctx reqContext) Response {
 
 	case "saved-run":
 		out, err := d.SavedRun(req.SavedName, SearchOptions{
-			K: req.K, BudgetChars: req.BudgetChars, IncludeRetracted: req.IncludeRetracted,
-			TaskID: req.Actor, Principal: principal, Confine: ctx.confine.Scope(),
+			K: req.K, BudgetChars: req.BudgetChars, BudgetTokens: req.BudgetTokens,
+			BudgetCeilingChars: req.BudgetCeilingChars,
+			IncludeRetracted:   req.IncludeRetracted,
+			TaskID:             req.Actor, Principal: principal, Confine: ctx.confine.Scope(),
 		})
 		if err != nil {
 			return fail(err)

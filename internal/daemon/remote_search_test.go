@@ -17,6 +17,7 @@ import (
 	"github.com/ggoosen/cairn/internal/daemon"
 	"github.com/ggoosen/cairn/internal/identity"
 	"github.com/ggoosen/cairn/internal/peer"
+	"github.com/ggoosen/cairn/internal/rank"
 )
 
 // setupPairedPair inits mesh-owner A (with the given role) on a loopback
@@ -78,7 +79,7 @@ func setupPairedPairCfg(t *testing.T, ownerRole string, configB func(dev *config
 func TestP33cRemoteSearchAgainstFullNode(t *testing.T) {
 	dB, addr := setupPairedPair(t, "") // owner A is a full node
 
-	out, err := dB.RemoteSearch(addr, "roastery approval", 2000)
+	out, err := dB.RemoteSearch(addr, "roastery approval", mustSpec(t, 2000, 0))
 	if err != nil {
 		t.Fatalf("remote search: %v", err)
 	}
@@ -90,7 +91,7 @@ func TestP33cRemoteSearchAgainstFullNode(t *testing.T) {
 func TestP33cThinNodeRefusesRemoteSearch(t *testing.T) {
 	dB, addr := setupPairedPair(t, "thin") // owner A is a THIN node
 
-	if _, err := dB.RemoteSearch(addr, "roastery approval", 2000); err == nil ||
+	if _, err := dB.RemoteSearch(addr, "roastery approval", mustSpec(t, 2000, 0)); err == nil ||
 		!strings.Contains(err.Error(), "thin") {
 		t.Fatalf("thin node did not refuse remote search: %v", err)
 	}
@@ -162,4 +163,15 @@ func TestP33eMeteredThinNodeSuppressesRemoteQuery(t *testing.T) {
 	if !strings.Contains(out.PartialReason, "metered") {
 		t.Fatalf("partial reason does not explain metered suppression: %q", out.PartialReason)
 	}
+}
+
+// mustSpec builds a budget spec for the tests that call the daemon API
+// directly (D4: a budget is a mode plus a limit, not a bare int).
+func mustSpec(t *testing.T, chars, tokens int) rank.Spec {
+	t.Helper()
+	spec, err := rank.NewSpec(chars, tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return spec
 }

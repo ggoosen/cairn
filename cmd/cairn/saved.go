@@ -60,13 +60,14 @@ func newSavedCmd(dirFlag *string) *cobra.Command {
 		},
 	})
 
-	var k, budget int
+	var k, budget, budgetTokens int
 	run := &cobra.Command{
 		Use:   "run <name>",
 		Short: "Run a saved search through the normal search path",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := call(dirFlag, daemon.Request{Op: "saved-run", SavedName: args[0], K: k, BudgetChars: budget})
+			resp, err := call(dirFlag, daemon.Request{Op: "saved-run", SavedName: args[0], K: k,
+				BudgetChars: budgetFlag(cmd, budget, budgetTokens), BudgetTokens: budgetTokens})
 			if err != nil {
 				return err
 			}
@@ -75,6 +76,7 @@ func newSavedCmd(dirFlag *string) *cobra.Command {
 	}
 	run.Flags().IntVar(&k, "k", 10, "max results")
 	run.Flags().IntVar(&budget, "budget", 0, "budget_chars over the COMPLETE payload (0 = unbudgeted)")
+	addBudgetTokensFlag(run, &budgetTokens)
 	cmd.AddCommand(run)
 
 	groupGuard(cmd)

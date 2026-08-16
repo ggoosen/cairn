@@ -4674,3 +4674,149 @@ plan named topic globs and budget caps, and inventing the rest without a
 caller would be guessing.
 
 Green: `make verify`, `make test-race`.
+
+## D4 — `budget_tokens` (2026-08-16) — DONE, with one question left to the operator
+
+Sprint S3, first of two. Rulings v0.3.1 §7 ruled `budget_chars` only **for
+P0**, for a stated reason ("no bundled tokenizers"); spec §7 always described
+`budget_tokens` + a named tokenizer. P0 is done, so building it is satisfying
+the spec rather than overriding the ruling — but the reason the ruling gave is
+still true, and that is the whole story of this item.
+
+**What shipped.** `budget_tokens` beside `budget_chars` on every budgeted
+surface — `digest`, `search`, `thread`, `saved-run` — through the daemon API,
+the IPC request, the CLI (`--budget-tokens`) and MCP (`budget_tokens` in all
+three budgeted tool schemas). **Exactly one, never both**: a request carrying
+both is refused with an error naming both numbers, at one place
+(`rank.NewSpec`), before any work is done. Resolving it by precedence was
+explicitly rejected — it would silently discard one of the two numbers the
+caller wrote, and the caller would never know which.
+
+**Every budgeted response now names the tokenizer and the mode.** A token
+budget against an unnamed tokenizer is not a measurement. `budget` carries
+`{budget_mode, budget_limit, tokenizer, budget_used, approximate}` on
+`SearchOutput`, `DigestOutput`, `ThreadOutput` and the MCP envelope; the CLI
+prints it on stderr so a piped payload stays clean. `budget_used` is the
+payload's real cost in the mode's own unit, so an agent can verify compliance
+from the response alone rather than trusting it.
+
+**The dependency question is NOT decided — see "Author rulings needed".**
+Counting tokens properly needs a real tokenizer; Cairn's dependency tree is
+deliberately small and offline, and adding a third-party module is not an
+agent's call (S1 hit the same wall over `golang.org/x/sys` and correctly
+refused). So the counter sits behind a one-method `rank.Counter` interface
+with one honest implementation, and **the honesty is in the name**: the
+tokenizer is `cairn-approx-v1`, reported verbatim to every caller, with
+`approximate: true` beside it, "APPROXIMATION" in the MCP schema and
+"APPROXIMATE" in the CLI line. It is a documented rule set (letters ÷ 4,
+digits ÷ 3, newlines 1, punctuation 1, non-ASCII per 2 UTF-8 bytes; constants
+in `internal/config/constants.go`) tuned to OVER-estimate typical prose,
+because over-estimating drops one item too many while under-estimating blows
+the caller's real context window. Its weakest case is non-Latin script, which
+the constant's comment says outright. Swapping in a vendored tokenizer is a
+new `Counter` and a new name; nothing else moves.
+
+**The capability cap became a second limit, not a conversion.** D3's
+`max_budget_chars` is written in CHARACTERS. A token-budgeted request under
+such a session keeps its token budget and gains the cap as an additional hard
+limit — `rank.Limits` is a conjunction, and `TakeWithinBudget` satisfies every
+limit at once. Inventing a characters-per-token rate to clamp by would be a
+guess presented to the operator as a constraint. Both limits are reported
+(`budget_ceiling_chars` in the budget block and in the capability notice), and
+it is deliberately NOT reported as a `budget_chars` clamp, because nothing was
+clamped.
+
+**Two things this quietly fixed, found by following the number.**
+
+- **The §11 budget-compliance gate would have gone wrong.**
+  `telemetry.Gates` compared `payload_chars > budget_requested`; with a token
+  limit in `budget_requested` that compares characters against tokens and
+  reports a violation for every honest token-budgeted retrieval. The
+  interactions table now records `budget_mode`, `budget_tokenizer` and
+  `payload_units` (cost in the budget's own unit) via the existing additive-
+  ALTER migration path, and the gate compares like with like.
+  `COALESCE(payload_units, payload_chars)` keeps every pre-D4 row's verdict
+  identical, and a caller that leaves the mode empty is treated as
+  character-budgeted, which is what it was.
+- **The thin-node remote-query path could have returned an over-budget
+  payload.** `remote_search` carried `budget` (chars) only, so a token budget
+  would have reached a peer as "no budget" and come back sized by the peer's
+  default. The wire message now carries `budget_tokens` too, AND the asker
+  re-checks the returned payload against its own limits and refuses it (keeping
+  its local result) if it does not comply — which is also the correct behaviour
+  against a peer running an older build that ignores the new field.
+
+**Deliberately unchanged:** the hard-budget property. Oversized items are
+dropped whole in both modes; the property test asserts the payload is exactly
+header + a prefix of rendered items (+ marker), which is what "never truncated
+mid-item" means operationally and is stronger than the old length-only check.
+
+**Tests.** `rank_test.go` runs the budget property over both modes for every
+limit from 1 to 30, plus the both-budgets refusal, the ceiling-as-second-limit
+case, and the counter's own properties (named "approx", deterministic,
+monotone, over-estimates prose). `retrieve_test.go`'s
+`TestBudgetComplianceProperty` is now a table over {chars, tokens} ×
+{search, digest, thread} × nine budgets, asserting compliance AND that each
+response's report describes its own payload. `budget_tokens_test.go` covers
+the IPC contract: both-budgets refused on every budgeted op, tokenizer named
+in every mode, the D3 char cap composing with a token budget, and whole-item
+dropping. `mcp_test.go` and `budget_tokens_cli_test.go` cover the two surfaces
+an agent actually uses.
+
+**Live verification**, real binary, real daemon (unit tests were not enough in
+S1 or S2): `cairn digest --budget-tokens 120` printed `budget: 40/120 tokens
+(tokenizer cairn-approx-v1 — APPROXIMATE)`; `--budget 500` printed `82/500
+chars (tokenizer unicode-scalars)` with no approximate label; both flags
+together exited 1 with `budget_chars and budget_tokens are mutually
+exclusive`; `cairn run --profile read-only --max-budget-chars 200 -- cairn
+digest --budget-tokens 5000` printed `capability: budget_tokens honored, with
+the session's 200-character cap as a second hard limit` and then `budget:
+46/5000 tokens … budget: session ceiling of 200 chars also applied`. Over real
+`cairn mcp` stdio, `cairn_digest{budget_tokens:120}` returned
+`{"budget_mode":"tokens","tokenizer":"cairn-approx-v1","approximate":true}`
+and `cairn_search` with both budgets returned an `isError` tool result reading
+"pass exactly ONE of budget_chars (300) and budget_tokens (100)".
+
+Three mutations were run against the suite and each fails it: dropping the
+both-budgets check in `NewSpec`; making the capability ceiling replace the
+token budget instead of joining it; and renaming the approximate tokenizer to
+something that does not say "approx".
+
+Green: `make verify`, `make test-race`.
+
+### Author rulings needed — D4 tokenizer dependency (raised 2026-08-16)
+
+**The question:** should Cairn vendor a real tokenizer, and if so which?
+
+What ships today is `cairn-approx-v1`, an approximation that says so in its
+name. That is honest, and for the job most callers have — "do not blow my
+context window" — a deliberate over-estimate is a defensible answer. It is
+NOT a substitute for a real tokenizer if the number is ever used to reason
+about cost, to compare against a provider's own count, or to fill a context
+window tightly.
+
+The candidates, with their real trade-offs:
+
+- **`github.com/tiktoken-go/tokenizer`** — pure Go, embeds the BPE ranks in
+  the binary, no network at runtime. Costs: a new third-party module, a
+  several-MB binary increase per vocabulary, and it is only correct for
+  OpenAI/`cl100k`-family models — it would name a tokenizer Cairn's actual
+  callers may not be using.
+- **`github.com/pkoukk/tiktoken-go`** — the more widely used binding, but it
+  downloads vocabulary files at first use by default. That breaks the
+  offline property outright; an embedded-vocab variant exists but is a second
+  dependency on top.
+- **`github.com/daulet/tokenizers`** — wraps HuggingFace's Rust tokenizers,
+  so it handles many model families correctly. Costs: CGO plus a Rust static
+  library, which is a materially worse build story than the one CLAUDE.md
+  already regrets for `mattn/go-sqlite3`.
+- **Do nothing.** Keep `cairn-approx-v1` and its honest name. Costs nothing,
+  measures nothing exactly.
+
+**Recommendation:** do nothing until a caller needs exactness, and revisit at
+E5 — if the agent-in-the-loop battery shows budget survival failing because
+the estimate is wrong (rather than because ranking is wrong), that is
+evidence, and `rank.Counter` is a one-file swap. Adding a multi-megabyte
+vocabulary and a model-family assumption to a deliberately small, offline
+dependency tree without that evidence would be the larger mistake. Recorded
+here rather than decided, per the sprint brief.

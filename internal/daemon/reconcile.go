@@ -46,6 +46,7 @@ import (
 	cairnlog "github.com/ggoosen/cairn/internal/log"
 	"github.com/ggoosen/cairn/internal/object"
 	"github.com/ggoosen/cairn/internal/peer"
+	"github.com/ggoosen/cairn/internal/rank"
 )
 
 // originRef names one append chain on the wire.
@@ -84,9 +85,14 @@ type syncMsg struct {
 
 	// P3-3c remote query: a thin node asks a full node to search on its behalf
 	// (spec §7 — "search = local recent + remote query dependency").
-	Query  string        `json:"query,omitempty"`  // remote_search request
-	Budget int           `json:"budget,omitempty"` // remote_search budget_chars
-	Search *SearchOutput `json:"search,omitempty"` // remote_results response
+	Query  string `json:"query,omitempty"`  // remote_search request
+	Budget int    `json:"budget,omitempty"` // remote_search budget_chars
+	// BudgetTokens (D4): a token budget carried over the wire. A peer running
+	// an older build ignores it and answers in characters, so the ASKER
+	// re-checks the returned payload against its own limits and falls back to
+	// its local result rather than handing back an over-budget payload.
+	BudgetTokens int           `json:"budget_tokens,omitempty"`
+	Search       *SearchOutput `json:"search,omitempty"` // remote_results response
 
 	// N7 blob replication
 	Hashes  []string `json:"hashes,omitempty"`  // blob_inv: blobs the sender holds
@@ -597,11 +603,12 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 				_ = writeSync(conn, syncMsg{Type: "remote_results", Err: "remote_search requires a query"})
 				continue
 			}
-			budget := req.Budget
-			if budget <= 0 {
+			budget, tokens := req.Budget, req.BudgetTokens
+			if budget <= 0 && tokens <= 0 {
 				budget = config.MCPSearchBudgetDefault
 			}
-			out, serr := d.Search(SearchOptions{Query: req.Query, BudgetChars: budget, AgentSurface: "remote", Principal: peerDevice})
+			out, serr := d.Search(SearchOptions{Query: req.Query, BudgetChars: budget, BudgetTokens: tokens,
+				AgentSurface: "remote", Principal: peerDevice})
 			if serr != nil {
 				_ = writeSync(conn, syncMsg{Type: "remote_results", Err: serr.Error()})
 				continue
@@ -624,7 +631,7 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 // merges it with local results and marks provenance. Best-effort: any transport
 // or peer error is returned so the caller can degrade to the local (partial)
 // result rather than fail the search.
-func (d *Daemon) RemoteSearch(addr, query string, budget int) (*SearchOutput, error) {
+func (d *Daemon) RemoteSearch(addr, query string, spec rank.Spec) (*SearchOutput, error) {
 	d.mu.Lock()
 	ident := d.syncIdentity()
 	trust := d.trust
@@ -641,7 +648,8 @@ func (d *Daemon) RemoteSearch(addr, query string, budget int) (*SearchOutput, er
 		return nil, err
 	}
 	defer pc.Close()
-	if err := writeSync(pc, syncMsg{Type: "remote_search", Query: query, Budget: budget}); err != nil {
+	if err := writeSync(pc, syncMsg{Type: "remote_search", Query: query,
+		Budget: spec.Chars, BudgetTokens: spec.Tokens}); err != nil {
 		return nil, err
 	}
 	resp, err := readSync(pc.R)
@@ -658,6 +666,13 @@ func (d *Daemon) RemoteSearch(addr, query string, budget int) (*SearchOutput, er
 	if resp.Search == nil {
 		return nil, errors.New("remote search returned no results")
 	}
+	// D4: never hand back a payload that breaks the caller's budget. A peer
+	// that does not understand budget_tokens answers in characters, and that
+	// answer is rejected here rather than passed off as compliant.
+	if berr := spec.Limits().Complies(resp.Search.Payload); berr != nil {
+		return nil, fmt.Errorf("remote peer returned an over-budget payload (%v) — is it running an older cairn?", berr)
+	}
+	resp.Search.Budget = spec.Report(resp.Search.Payload)
 	return resp.Search, nil
 }
 

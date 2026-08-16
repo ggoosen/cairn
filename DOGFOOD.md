@@ -72,7 +72,7 @@ Per surface:
     decisions/findings for other sessions, write a `.md` file into
     `~/cairn/views/<view>/outbox/` (front-matter optional:
     `action/text_class/declared_priority/topic_ids`). To retrieve, run
-    `cairn search "<query>" --budget 4000` and `cairn fetch <message-id>
+    `cairn search "<query>" --budget 4000` (or `--budget-tokens`) and `cairn fetch <message-id>
     --view <view>`; fetched bodies land in `views/<view>/fetched/`.
     Before ending a session, publish ONE handoff note — decisions and
     their reasons, unfinished work, surprises — with `cairn send --topic
@@ -117,8 +117,15 @@ the capability profile.
 
 Every content-bearing result arrives in the untrusted-content envelope
 (`trust: "untrusted"` + full provenance); budgets default to 1500 chars
-(digest) / 2000 (search) and are tunable per call. There is no
-force-class or topic auto-creation from MCP, by ruling (R20/R21).
+(digest) / 2000 (search) and are tunable per call. A caller that thinks in
+tokens can pass `budget_tokens` instead of `budget_chars` — exactly one of
+the two; both together is refused rather than silently resolved — and every
+budgeted response carries a `budget` block naming the mode, the limit, the
+**tokenizer** and what the payload cost. Today's token counter is
+`cairn-approx-v1`, a deliberate OVER-estimate rather than a BPE tokenizer,
+and it flags itself `approximate: true`; size a real context window with
+`budget_chars` if you need an exact number. There is no force-class or topic
+auto-creation from MCP, by ruling (R20/R21).
 
 **N1 acceptance leg (operator):** in Claude Desktop against the live mesh,
 run one full round-trip — digest → search → fetch → send → outcome — and
@@ -164,7 +171,11 @@ includes `thread`, which crosses topics by construction: out-of-scope
 messages are withheld and counted, and a wholly out-of-scope thread is
 refused. Whole-mesh renderings (`cairn map`, `cairn compact`) are refused
 outright under a topic grant. `--max-budget-chars` clamps every retrieval and
-the clamp is reported in the response — never applied silently. `cairn
+the clamp is reported in the response — never applied silently. A session
+capped in characters may still budget in TOKENS: the cap then applies as a
+second hard ceiling beside the token budget (both are reported) rather than
+being converted, because there is no honest characters-per-token rate to
+convert it by. `cairn
 session list` shows each handle's grant, so an audit distinguishes
 "read-only" from "read-only inside project/x".
 

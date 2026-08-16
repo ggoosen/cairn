@@ -300,8 +300,13 @@ type CapabilityNotice struct {
 	BudgetRequested int      `json:"budget_chars_requested,omitempty"`
 	BudgetGranted   int      `json:"budget_chars_granted,omitempty"`
 	BudgetClamped   bool     `json:"budget_clamped,omitempty"`
-	Withheld        int      `json:"withheld_out_of_scope,omitempty"`
-	Note            string   `json:"note,omitempty"`
+	// BudgetCeilingChars (D4): the session's character cap applied as a
+	// SECOND hard limit beside a token budget, rather than converted into
+	// one. Reported because a limit the agent cannot see is a limit it
+	// cannot report to a human.
+	BudgetCeilingChars int    `json:"budget_ceiling_chars,omitempty"`
+	Withheld           int    `json:"withheld_out_of_scope,omitempty"`
+	Note               string `json:"note,omitempty"`
 }
 
 func (c *Confinement) refuse(op, detail string) Response {
@@ -327,19 +332,33 @@ func (d *Daemon) applyConfinement(req *Request, c *Confinement) (*Response, *Cap
 	// 1. budget cap. A request that asks for no budget (0 = unbudgeted for
 	// search) is capped too — otherwise the cap is trivially bypassed by
 	// omitting the field.
+	//
+	// D4: the cap is written in CHARACTERS. A token-budgeted request is NOT
+	// clamped by converting the cap into tokens — there is no honest
+	// char↔token exchange rate, and a fabricated one would be a guess
+	// presented to the operator as a constraint. Instead the cap rides along
+	// as a SECOND hard limit: the payload must satisfy both the caller's
+	// token budget and the session's character ceiling. Reported either way.
 	if c.MaxBudget > 0 {
-		clamp := func(v *int) {
-			if *v <= 0 || *v > c.MaxBudget {
-				notice.BudgetRequested, notice.BudgetGranted, notice.BudgetClamped = *v, c.MaxBudget, true
-				*v = c.MaxBudget
+		tokenBudgeted := req.BudgetTokens > 0 || (req.Search2 != nil && req.Search2.BudgetTokens > 0)
+		if tokenBudgeted {
+			req.BudgetCeilingChars = c.MaxBudget
+			notice.BudgetCeilingChars = c.MaxBudget
+			notice.Note = fmt.Sprintf("budget_tokens honored; the session's %d-character cap also applies as a hard ceiling", c.MaxBudget)
+		} else {
+			clamp := func(v *int) {
+				if *v <= 0 || *v > c.MaxBudget {
+					notice.BudgetRequested, notice.BudgetGranted, notice.BudgetClamped = *v, c.MaxBudget, true
+					*v = c.MaxBudget
+				}
 			}
-		}
-		clamp(&req.BudgetChars)
-		if req.Search2 != nil {
-			clamp(&req.Search2.BudgetChars)
-		}
-		if notice.BudgetClamped {
-			notice.Note = fmt.Sprintf("budget_chars clamped to the session cap (%d)", c.MaxBudget)
+			clamp(&req.BudgetChars)
+			if req.Search2 != nil {
+				clamp(&req.Search2.BudgetChars)
+			}
+			if notice.BudgetClamped {
+				notice.Note = fmt.Sprintf("budget_chars clamped to the session cap (%d)", c.MaxBudget)
+			}
 		}
 	}
 

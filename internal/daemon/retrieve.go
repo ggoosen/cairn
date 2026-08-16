@@ -19,10 +19,20 @@ import (
 
 // SearchOptions is one search invocation (budget over the COMPLETE payload).
 type SearchOptions struct {
-	Query            string `json:"query"`
-	K                int    `json:"k,omitempty"`
-	BudgetChars      int    `json:"budget_chars,omitempty"`
-	IncludeRetracted bool   `json:"include_retracted,omitempty"`
+	Query string `json:"query"`
+	K     int    `json:"k,omitempty"`
+	// D4: exactly one budget, never both. A request carrying both is
+	// REFUSED — resolving it by precedence would silently ignore one of the
+	// two numbers the caller wrote.
+	BudgetChars      int  `json:"budget_chars,omitempty"`
+	BudgetTokens     int  `json:"budget_tokens,omitempty"`
+	IncludeRetracted bool `json:"include_retracted,omitempty"`
+
+	// BudgetCeilingChars (D4 × D3) is the session's max_budget_chars cap,
+	// enforced as a SECOND hard limit beside the caller's budget rather than
+	// converted into it. `json:"-"`: dispatch sets it from the capability
+	// gate, never a client.
+	BudgetCeilingChars int `json:"-"`
 
 	// RETR-D3 scope (spec §7.1 search(query, scope, k)): hard pre-filters.
 	// Topics match by NAME (existing topics only — typos refuse, they do
@@ -66,6 +76,10 @@ type SearchOutput struct {
 	// full peer — the peer's address. The results are that peer's complete view,
 	// not this node's local window.
 	RemoteSource string `json:"remote_source,omitempty"`
+	// Budget (D4) names the mode, the limit, the TOKENIZER that counted it and
+	// what the payload actually cost — a budget is only meaningful against a
+	// named tokenizer, so every budgeted response carries one.
+	Budget rank.Report `json:"budget"`
 }
 
 // RankedResult is one scored hit. RETR-D1: sender/created/topics/snippet
@@ -129,11 +143,18 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 	if opts.K <= 0 {
 		opts.K = 10
 	}
-	// RETR-D3: resolve the scope FIRST (hard filters before ranking, like
-	// digest topic filters); nil scope = unfiltered.
-	scope, err := d.proj.ScopeMessageIDs(opts.Topics, opts.Sender, opts.ThreadID)
+	// D4: exactly one budget. Refused BEFORE any work, so a malformed
+	// request costs nothing and reads the same on every surface.
+	spec, err := rank.NewSpec(opts.BudgetChars, opts.BudgetTokens)
 	if err != nil {
 		return nil, fmt.Errorf("rejected before ack: %w", err)
+	}
+	spec.Ceiling = opts.BudgetCeilingChars
+	// RETR-D3: resolve the scope FIRST (hard filters before ranking, like
+	// digest topic filters); nil scope = unfiltered.
+	scope, serr := d.proj.ScopeMessageIDs(opts.Topics, opts.Sender, opts.ThreadID)
+	if serr != nil {
+		return nil, fmt.Errorf("rejected before ack: %w", serr)
 	}
 	// D3: the capability grant is an additional HARD filter, intersected with
 	// whatever the caller asked for. It runs through the same resolver, so
@@ -243,11 +264,11 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 	} else if len(scored) > opts.K {
 		scored = scored[:opts.K]
 	}
-	out, err := d.finishRetrieval(scored, rows, profile, mode, opts.BudgetChars)
+	out, err := d.finishRetrieval(scored, rows, profile, mode, spec)
 	if err != nil {
 		return nil, err
 	}
-	d.recordInteraction("search", out.InteractionID, opts.Query, opts.BudgetChars, out, opts.TaskID, opts.AgentSurface, opts.AgentInstanceID, opts.Principal)
+	d.recordInteraction("search", out.InteractionID, opts.Query, out.Budget, out, opts.TaskID, opts.AgentSurface, opts.AgentInstanceID, opts.Principal)
 	// P3-3d: on a thin node with remote-query enabled, prefer a full peer's
 	// complete result over our partial local one (best-effort; keeps local on
 	// failure). Last, so no lock is held across the network call.
@@ -259,7 +280,7 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 
 // recordInteraction logs telemetry (local-only; never an event). Missing
 // attribution is daemon-inferred and flagged (rulings §10).
-func (d *Daemon) recordInteraction(kind, interactionID, query string, budget int, out *SearchOutput, taskID, surface, instance, principal string) {
+func (d *Daemon) recordInteraction(kind, interactionID, query string, budget rank.Report, out *SearchOutput, taskID, surface, instance, principal string) {
 	if d.tel == nil {
 		return
 	}
@@ -282,7 +303,12 @@ func (d *Daemon) recordInteraction(kind, interactionID, query string, budget int
 	it := telemetry.Interaction{
 		InteractionID: interactionID, Kind: kind,
 		TaskID: taskID, AgentSurface: surface, AgentInstanceID: instance, Principal: principal,
-		Inferred: inferred, Query: query, BudgetRequested: budget,
+		Inferred: inferred, Query: query,
+		// D4: the limit and the payload cost are both recorded in the
+		// budget's OWN unit, so the §11 compliance gate compares like with
+		// like whichever mode the caller used.
+		BudgetRequested: budget.Limit, BudgetMode: budget.Mode,
+		BudgetTokenizer: budget.Tokenizer, PayloadUnits: budget.Used,
 		PayloadChars: rank.BudgetChars(out.Payload), ResultCount: len(out.Results),
 		RetrievalMode: out.RetrievalMode, CreatedAt: d.now(), ResultIDs: ids,
 	}
@@ -328,7 +354,7 @@ func inlineMeta(s string) string {
 // finishRetrieval renders the budget-compliant payload, stores why_ranked
 // inputs, and assembles the output. Budget covers the ENTIRE payload —
 // header, entries, truncation marker (rulings §7).
-func (d *Daemon) finishRetrieval(scored []rank.Scored, rows map[string]projection.RankRow, profile rank.Profile, mode string, budget int) (*SearchOutput, error) {
+func (d *Daemon) finishRetrieval(scored []rank.Scored, rows map[string]projection.RankRow, profile rank.Profile, mode string, spec rank.Spec) (*SearchOutput, error) {
 	interactionID := d.newUUID()
 
 	ids := make([]string, 0, len(scored))
@@ -368,21 +394,15 @@ func (d *Daemon) finishRetrieval(scored []rank.Scored, rows map[string]projectio
 			inlineMeta(mm.Sender), row.CreatedAt, topics) + quoteLines(snippets[s.MessageID])
 	}
 	header := fmt.Sprintf("interaction\t%s\tmode\t%s\n", interactionID, mode)
-	included := len(scored)
-	payload := header
-	for i := range scored {
-		payload += render(i)
-	}
-	if budget > 0 {
-		included, payload = rank.TakeWithinBudget(len(scored), budget,
-			rank.BudgetRender{Header: header, Marker: "TRUNCATED\n"}, render)
-	}
+	included, payload := rank.TakeWithinBudget(len(scored), spec.Limits(),
+		rank.BudgetRender{Header: header, Marker: "TRUNCATED\n"}, render)
 
 	out := &SearchOutput{
 		InteractionID: interactionID,
 		RetrievalMode: mode,
 		Payload:       payload,
 		Omitted:       len(scored) - included,
+		Budget:        spec.Report(payload),
 	}
 	if r := d.thinSearchPartialReason(); r != "" {
 		out.Partial, out.PartialReason = true, r
@@ -517,10 +537,16 @@ type ViewConfig struct {
 
 // DigestOptions parameterizes one digest generation.
 type DigestOptions struct {
-	AgentView   string `json:"agent_view"`
-	BudgetChars int    `json:"budget_chars"`
-	TaskID      string `json:"task_id,omitempty"`
-	Principal   string `json:"principal,omitempty"` // dispatch-resolved (N2)
+	AgentView string `json:"agent_view"`
+	// D4: exactly one of BudgetChars / BudgetTokens, and a digest requires
+	// one of them (unlike search, which may be unbudgeted).
+	BudgetChars  int    `json:"budget_chars"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
+	TaskID       string `json:"task_id,omitempty"`
+	Principal    string `json:"principal,omitempty"` // dispatch-resolved (N2)
+	// BudgetCeilingChars (D4 × D3): the session's max_budget_chars cap, a
+	// second hard limit rather than a conversion. Dispatch-set only.
+	BudgetCeilingChars int `json:"-"`
 	// Confine (D3) is the session's resolved topic grant — dispatch-set only
 	// (`json:"-"`). Unlike the view's own hard topic filters it also binds the
 	// MANDATORY items: an explicit recipient or a pin outside the grant would
@@ -541,6 +567,8 @@ type DigestOutput struct {
 	// recent window only, not the whole corpus.
 	Partial       bool   `json:"partial,omitempty"`
 	PartialReason string `json:"partial_reason,omitempty"`
+	// Budget (D4): mode, limit, tokenizer and the payload's cost in that unit.
+	Budget rank.Report `json:"budget"`
 }
 
 // Digest generates views/<agent>/digest.md: candidates pass the view's hard
@@ -551,8 +579,15 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 	if !validViewName(opts.AgentView) {
 		return nil, fmt.Errorf("invalid agent view %q (plain names only: no separators, no ..)", opts.AgentView)
 	}
-	if opts.BudgetChars <= 0 {
-		return nil, fmt.Errorf("digest requires budget_chars > 0 (budget_tokens is unsupported_in_P0)")
+	// D4: exactly one budget, and a digest must have one — an unbudgeted
+	// digest is the whole corpus, which is precisely what a digest is not.
+	spec, err := rank.NewSpec(opts.BudgetChars, opts.BudgetTokens)
+	if err != nil {
+		return nil, err
+	}
+	spec.Ceiling = opts.BudgetCeilingChars
+	if !spec.Bounded() {
+		return nil, fmt.Errorf("digest requires a budget: pass budget_chars > 0 or budget_tokens > 0 (exactly one)")
 	}
 	cfg := d.readViewConfig(opts.AgentView)
 
@@ -710,7 +745,7 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 	render := func(i int) string {
 		return d.renderDigestEntry(i+1, scored[i], rows[scored[i].MessageID], entryMeta[scored[i].MessageID], disputed[scored[i].MessageID], pendingRepl[scored[i].MessageID])
 	}
-	included, payload := rank.TakeWithinBudget(len(scored), opts.BudgetChars,
+	included, payload := rank.TakeWithinBudget(len(scored), spec.Limits(),
 		rank.BudgetRender{Header: header, Marker: "…truncated…\n"}, render)
 
 	// mandatory overflow accounting (drop-oldest-first is the sort order:
@@ -773,6 +808,7 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 		Included:         included,
 		OmittedMandatory: omitted,
 		RetrievalMode:    mode,
+		Budget:           spec.Report(payload),
 	}
 	if r := d.thinSearchPartialReason(); r != "" {
 		dout.Partial, dout.PartialReason = true, r
@@ -781,7 +817,7 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 	for i := 0; i < included; i++ {
 		so.Results = append(so.Results, RankedResult{MessageID: scored[i].MessageID})
 	}
-	d.recordInteraction("digest", interactionID, cfg.InterestQuery, opts.BudgetChars, so, opts.TaskID, opts.AgentView, "", opts.Principal)
+	d.recordInteraction("digest", interactionID, cfg.InterestQuery, dout.Budget, so, opts.TaskID, opts.AgentView, "", opts.Principal)
 	return dout, nil
 }
 
@@ -957,18 +993,40 @@ type ThreadOutput struct {
 	// Withheld (D3) counts messages dropped because they lie outside the
 	// session's topic grant — distinct from Omitted, which is budget.
 	Withheld int `json:"withheld_out_of_scope,omitempty"`
+	// Budget (D4): mode, limit, tokenizer and the payload's cost in that unit.
+	Budget rank.Report `json:"budget"`
+}
+
+// ThreadOptions is one thread expansion request. It became a struct with D4:
+// a budget is now a mode plus a limit plus a capability ceiling, and three
+// more positional ints would have been unreadable.
+type ThreadOptions struct {
+	ThreadID string `json:"thread_id"`
+	// D4: exactly one of these; both is a refusal. Neither = unbudgeted.
+	BudgetChars  int `json:"budget_chars,omitempty"`
+	BudgetTokens int `json:"budget_tokens,omitempty"`
+	// BudgetCeilingChars (D4 × D3), Principal and Confine are dispatch-set.
+	BudgetCeilingChars int      `json:"-"`
+	Principal          string   `json:"-"`
+	Confine            []string `json:"-"`
 }
 
 // Thread renders a whole conversation. Until this existed an agent handed
 // a reply could see that a thread existed (peek exposes thread_id) but had
 // no way to read it. Bodies are quoted per line (untrusted content).
-func (d *Daemon) Thread(threadID string, budget int, principal string, confine []string) (*ThreadOutput, error) {
+func (d *Daemon) Thread(opts ThreadOptions) (*ThreadOutput, error) {
+	threadID, confine, principal := opts.ThreadID, opts.Confine, opts.Principal
 	if threadID == "" {
 		return nil, fmt.Errorf("thread_id is required")
 	}
-	msgs, err := d.proj.ThreadMessages(threadID)
+	spec, err := rank.NewSpec(opts.BudgetChars, opts.BudgetTokens)
 	if err != nil {
 		return nil, err
+	}
+	spec.Ceiling = opts.BudgetCeilingChars
+	msgs, terr := d.proj.ThreadMessages(threadID)
+	if terr != nil {
+		return nil, terr
 	}
 	if len(msgs) == 0 {
 		return nil, fmt.Errorf("thread %s not found (or has no live messages)", threadID)
@@ -993,7 +1051,7 @@ func (d *Daemon) Thread(threadID string, budget int, principal string, confine [
 		msgs = kept
 	}
 	if len(msgs) == 0 {
-		return &ThreadOutput{ThreadID: threadID, Withheld: withheld}, nil
+		return &ThreadOutput{ThreadID: threadID, Withheld: withheld, Budget: spec.Report("")}, nil
 	}
 	interactionID := d.newUUID()
 	header := fmt.Sprintf("# thread %s — %d message(s)\ninteraction: %s\n\n", threadID, len(msgs), interactionID)
@@ -1009,25 +1067,18 @@ func (d *Daemon) Thread(threadID string, budget int, principal string, confine [
 		}
 		return entry + "\n"
 	}
-	included := len(msgs)
-	payload := header
-	for i := range msgs {
-		payload += render(i)
-	}
-	if budget > 0 {
-		included, payload = rank.TakeWithinBudget(len(msgs), budget,
-			rank.BudgetRender{Header: header, Marker: "…truncated…\n"}, render)
-	}
+	included, payload := rank.TakeWithinBudget(len(msgs), spec.Limits(),
+		rank.BudgetRender{Header: header, Marker: "…truncated…\n"}, render)
 	out := &ThreadOutput{
 		InteractionID: interactionID, ThreadID: threadID,
 		Included: included, Omitted: len(msgs) - included, Payload: payload,
-		Withheld: withheld,
+		Withheld: withheld, Budget: spec.Report(payload),
 	}
 	so := &SearchOutput{Payload: payload, RetrievalMode: "thread"}
 	for i := 0; i < included; i++ {
 		so.Results = append(so.Results, RankedResult{MessageID: msgs[i].MessageID})
 	}
-	d.recordInteraction("thread", interactionID, threadID, budget, so, "", "", "", principal)
+	d.recordInteraction("thread", interactionID, threadID, out.Budget, so, "", "", "", principal)
 	return out, nil
 }
 

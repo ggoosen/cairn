@@ -419,6 +419,44 @@ const (
 	// everything else in the payload.
 	SearchSnippetChars = 200
 
+	// --- D4 token budgets -------------------------------------------------
+	//
+	// A budget is only meaningful against a NAMED tokenizer, so every
+	// budgeted response reports the one it used. Two are defined:
+	//
+	//   TokenizerChars  — exact. budget_chars counts Unicode scalar values,
+	//                     which needs no vocabulary and cannot drift.
+	//   TokenizerApprox — an APPROXIMATION, and its name says so. Cairn's
+	//                     dependency tree is deliberately small and offline
+	//                     (see eval/go.mod), and no real BPE tokenizer is
+	//                     vendored, so budget_tokens is counted by the rules
+	//                     below rather than by a vocabulary. It is tuned to
+	//                     OVER-estimate typical prose: dropping one item too
+	//                     many keeps a hard budget hard, while under-counting
+	//                     would silently blow the caller's real context
+	//                     window. Replacing it with a vendored tokenizer is a
+	//                     dependency decision for the operator; the counter
+	//                     is behind rank.Counter so the swap is local.
+	TokenizerChars  = "unicode-scalars"
+	TokenizerApprox = "cairn-approx-v1"
+
+	// ApproxTokenLettersPerToken: an ASCII letter run costs
+	// ceil(len/4) tokens — the familiar "four characters per token" for
+	// English prose, applied per word rather than to the whole payload, so
+	// short words are not averaged into long ones.
+	ApproxTokenLettersPerToken = 4
+
+	// ApproxTokenDigitsPerToken: BPE vocabularies split long digit runs into
+	// groups of at most three, so a digit run costs ceil(len/3).
+	ApproxTokenDigitsPerToken = 3
+
+	// ApproxTokenBytesPerNonASCII: non-ASCII text is charged one token per
+	// two UTF-8 bytes — CJK (3 bytes/char) costs ~2, accented Latin
+	// (2 bytes/char) costs 1, astral emoji (4 bytes) cost 2. This is the
+	// weakest part of the estimate and the reason the tokenizer is named
+	// "approx": it is deliberately generous rather than accurate.
+	ApproxTokenBytesPerNonASCII = 2
+
 	// MCPMaxLineBytes bounds one stdio JSON-RPC message (N1). Matches the
 	// IPC bound: the MCP layer never carries more than one IPC payload.
 	MCPMaxLineBytes = 32 << 20
