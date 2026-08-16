@@ -5983,3 +5983,37 @@ a legitimate weaker hit. The test's subject is that the event after a parked
 one still projects, so it now asserts the intended message is the BEST match
 rather than the only match. That is the only pre-existing expectation that
 moved.
+
+### Reconciliation after the parallel run (bookkeeping 2026-08-16)
+
+Four sprints ran concurrently today (S15, S9, S7, plus S4 earlier alongside
+S5). Their plan maintenance was suspended so they could not conflict on
+BUILD-PLAN.md; this closes it.
+
+- **S7 shipped** — sprint block deleted, Coverage marked shipped.
+- **S9 split** — mutual pairing authentication and metered/battery sensing
+  shipped and are removed from §6; the iroh wire remains and is now blocked
+  on a DEPENDENCY RULING rather than on effort, so the sprint is restated as
+  `S9 — iroh transport [gated: an author ruling on the binding]` and the
+  question is in the §8 open-rulings table.
+- **S15 shipped** (the agent did its own maintenance).
+- README's "On P3" paragraph claimed metered sensing was deferred and
+  described the pairing asymmetry. Both were false as of a0d8d21/abdc820.
+  Corrected. S9 correctly left README alone because S7 was editing it.
+
+Two defects raised from reading CI rather than a local terminal, held in a
+new sprint S16:
+
+- **D12** — `verify (macos-latest)` has been RED since at least D1, on the
+  unix-socket path limit. Five sprints reported "make verify green"
+  truthfully, on Linux, while the primary platform was broken. The procedural
+  lesson is the more important half: a local green is not a green build, and
+  nobody was reading the runners.
+- **D13** — a release binary cannot name its own version (`p1-<commit>`, not
+  the tag), surfaced by S7 and correctly left in another lane.
+
+Also noted, not acted on: the brief given to each sprint agent said "never
+mention a model name in commits", which conflicts with the harness-mandated
+`Co-Authored-By` trailer that every commit on this branch carries. S15 flagged
+it rather than silently diverging from the convention. The trailer wins; the
+instruction was over-broad and should say "no model identifier in prose".

@@ -64,12 +64,22 @@ nothing from anyone; the later sprints name their gate in the heading.
 **Exit:** the §2 acceptance criteria, of which the load-bearing one is that a
 seeded fake API key never reaches the object store.
 
-### S7 — Distribution [partly gated: Apple Developer ID]
+### S16 — CI truth and release identity [ready — RUN THIS NEXT]
 
-- **D6** prebuilt signed binary + Homebrew tap (§4)
+Both found by reading CI rather than a local terminal, after five sprints
+reported "verify green" on Linux while macOS — the **primary** platform — had
+been failing for hours.
 
-**Exit:** `brew install` on a clean machine yields a working `cairn` with no
-Xcode toolchain; the workflow asserts the artifact is a `sqlite_fts5` build.
+- **D12** macOS `make verify` fails on the unix-socket path limit (§4)
+- **D13** a release binary cannot name its own version (§4)
+
+**Exit:** CI is green on macOS and ubuntu; a built artifact reports the tag it
+was released under.
+
+**Watch:** D12 is the more important of the two, and not only for the fix — a
+green Linux run has been standing in for a green build all day. Whatever the
+repair, the sprint is not done until the macOS job actually passes on a
+runner, observed, not inferred.
 
 ### S8 — Ranking completeness [ready]
 
@@ -84,20 +94,27 @@ that lockstep is the whole difficulty, not the penalty arithmetic.
 being optional — transcripts are highly repetitive and a scoped search
 without penalties drowns in near-identical chunks.
 
-### S9 — Mesh transport completeness [ready]
+### S9 — iroh transport [gated: an author ruling on the binding]
+
+Mutual pairing authentication and metered/battery sensing **shipped**
+(2026-08-16); only the wire itself is left, and it is now blocked on a
+dependency decision rather than on effort.
 
 - **iroh transport** (§6) — the live wire, relay self-hosting + diagnostics,
-  NAT-traversing dial-by-key; the transport seam is already in place
-- **Automatic metered/battery sensing** (§6)
-- **Mutual pairing authentication** (§6) — the handshake authenticates
-  dialer→responder only
+  NAT-traversing dial-by-key
+
+**The ruling needed.** `n0-computer/iroh-ffi` ships no Go bindings.
+`github.com/tmc/go-iroh` is a pure-Go clean-room port that maps onto the
+existing transport seam almost verbatim and was demonstrated working
+(two endpoints, round trip by public key) — but it is v0.0.0, untagged,
+single-author, unaffiliated with n0, days old, vendors a quic-go fork and a
+patched `crypto/tls`, and raises Cairn's Go floor to 1.26 (an R52 decision).
+The alternatives are cgo against `iroh-c-ffi`, or uniffi-bindgen-go against
+`iroh-ffi` — both add a Rust toolchain and a per-platform static library to
+S7's packaging. Marker in `internal/peer/transport.go`; options in PROGRESS.
 
 **Exit:** two nodes pair and reconcile over iroh with no Tailscale
-dependency; a metered device is detected without the manual flag; the
-pairing handshake authenticates in both directions.
-
-**Watch:** large. iroh alone is bigger than most sprints here. Split it if it
-resists — the seam exists precisely so it can land incrementally.
+dependency, on a binding the author has sanctioned.
 
 ### S10 — Hardware validation [gated: two physical machines]
 
@@ -188,9 +205,10 @@ or the sprint set is wrong.
 | S15 ✅ shipped | D11 | agent |
 | S5 ✅ shipped | D1 | agent |
 | S6 | C3 | agent, after review |
-| S7 | D6 | agent + operator (signing) |
+| S7 ✅ shipped | D6 | agent + operator (signing) |
+| S16 | D12, D13 | agent |
 | S8 | P2 penalties | agent |
-| S9 | iroh, metered sensing, mutual pairing auth | agent |
+| S9 (partial) | iroh — **blocked on a ruling**; metered sensing and mutual pairing auth ✅ shipped | author, then agent |
 | S10 | P3 two-machine pass, live re-audit | operator + hardware |
 | S11 | E1, E3, venv, E4/E9 reported, E5, E7, E8, P2 calibration | operator + agent |
 | S12 | D7, D8, ladder rungs 6–7 | author, then agent |
@@ -581,6 +599,47 @@ not implement a mute as a negative selector under D3 without that ruling.
 exists is backwards. If an exploration surface is wanted it needs its own
 design pass; until then this stays a question, not a task.
 
+### D12 — macOS `make verify` fails on the unix-socket path limit (S) [code]
+
+CI on this branch has been red on `verify (macos-latest)` since at least D1.
+Every `internal/` package passes; `cmd/cairn` fails, deterministically,
+macOS-only:
+
+```
+--- FAIL: TestD5AdoptStandaloneScript
+    error: listen unix /var/folders/df/djsxfhc17x95674wsm_g8s980000gn/T/
+           cd53430871316/cairn/01a00b15-…-….sock: bind: invalid argument
+```
+
+macOS caps `sun_path` at ~104 bytes. Its `TMPDIR` alone is ~50 characters of
+`/var/folders/…`; add the test's own temp dir, the per-user socket directory,
+a 36-character UUID and `.sock`, and `bind` fails with `invalid argument`.
+Linux allows 108 bytes and has a short `/tmp`, so the same suite is green
+here. The socket-directory design (FIX-A7) explicitly claimed to respect
+"the ~104-byte path cap the code documents" — so either that reasoning was
+wrong or this path defeats it. Establish which before changing anything.
+
+**Why it matters beyond the fix.** Five sprints in a row reported "make
+verify green" truthfully, on Linux, while the primary platform was broken.
+The lesson is procedural: a local green is not a green build.
+
+**Acceptance.** `verify (macos-latest)` passes on a hosted runner — observed,
+not inferred. A test asserts the socket path stays inside the platform limit
+given a realistically long `TMPDIR`, so this cannot regress silently on a
+platform nobody develops on.
+
+### D13 — a release binary cannot name its own version (S) [code]
+
+`cairn --version` prints `p1-<commit>`, computed from build info and not
+settable via `-ldflags -X`, so a tagged release artifact cannot report the
+tag it was released under. S7's release notes state the discrepancy rather
+than hiding it, but a binary that cannot identify its own release is a
+support problem the moment anyone other than the author runs one.
+
+**Acceptance.** A binary built by the release workflow reports its tag;
+a development build still reports something honest (commit + dirty state)
+rather than claiming a tag it does not have.
+
 ### DEBT non-goals
 
 - **Reranking with an LLM** — breaks R47/R51; a model's opinion does not
@@ -606,8 +665,6 @@ design pass; until then this stays a question, not a task.
 | Two-machine live pass: pairing / thin-role / transport / remote-query on real hardware over a real tailnet (the July audit ran loopback single-host for P3's additions) | [hardware] | README "On P3", PROGRESS P3 close |
 | Live re-audit of pairing/trust/sync code extended SINCE the audited July commit | [hardware] | README Status caveat |
 | iroh transport: the live wire, relay self-hosting + diagnostics, NAT-traversing dial-by-key (transport seam already in place) | [code, large] | spec §12 P3, `internal/peer/transport.go` |
-| Automatic metered/battery sensing (manual `metered` flag exists; sensing is platform work) | [code] | spec §7, config `Metered` |
-| Mutual pairing authentication (handshake currently authenticates dialer→responder only) | [code] | PROGRESS P3-2b/2c |
 
 ## §7. P4 — self-organising knowledge (evidence-gated, needs P2 usage data)
 
@@ -632,3 +689,4 @@ via `RULING-NEEDED`.
 | D9 residual: should session `lastUsed` persist across a daemon restart (README promises idle revocation; the reset is documented as deliberate)? Conservative interim shipped — reap on expiry + dead pid only | nothing (confirmation) |
 | D10 residual: does an unworkable embedding backlog count as §8.2 debt? Conservative reading shipped — the axis is zeroed with no embedder | nothing (confirmation) |
 | Mutes vs "positive grants only" | §4: D7 |
+| iroh Go binding: adopt `tmc/go-iroh` (v0.0.0, days old, vendored TLS/QUIC, Go floor 1.26 per R52) vs cgo against `iroh-c-ffi` vs wait | S9: the iroh wire |
