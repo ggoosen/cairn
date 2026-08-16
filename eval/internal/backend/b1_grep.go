@@ -57,6 +57,9 @@ func (b *grepTranscripts) Open(_ context.Context, cfg Config) error {
 	if cfg.WorkDir == "" {
 		return errors.New("B1 requires a WorkDir")
 	}
+	if err := refuseArm(B1GrepTranscript, cfg.Arm); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(cfg.WorkDir, 0o700); err != nil {
 		return err
 	}

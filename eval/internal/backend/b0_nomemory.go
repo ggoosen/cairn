@@ -21,7 +21,9 @@ func (b *noMemory) Capabilities() Capabilities {
 	}
 }
 
-func (b *noMemory) Open(context.Context, Config) error { return nil }
+func (b *noMemory) Open(_ context.Context, cfg Config) error {
+	return refuseArm(B0NoMemory, cfg.Arm)
+}
 
 func (b *noMemory) Write(_ context.Context, item Item) (WriteReceipt, error) {
 	b.writes++

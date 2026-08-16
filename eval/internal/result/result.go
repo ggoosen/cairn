@@ -135,6 +135,17 @@ type Outcome struct {
 	// these files and a third party re-reading them will want the fields we
 	// did not think to parse.
 	Raw string `json:"raw,omitempty"`
+
+	// Explanations holds `cairn why-ranked` output per returned message id,
+	// verbatim. It is an OBSERVATION, not a judgment: it is the arithmetic the
+	// system published for this interaction.
+	//
+	// It is recorded because E4's recomputed ablations (±freshness, ±priority,
+	// vector-only) are derived from it. Storing the traces rather than the
+	// re-ranked ordering keeps the record primary and the ablation derived — a
+	// third party can recompute a different ablation from the same file, or
+	// check ours, without rerunning anything.
+	Explanations map[string]string `json:"explanations,omitempty"`
 }
 
 // NewRun starts a record. RunID is derived from the run's inputs rather than

@@ -55,6 +55,13 @@ const (
 	// CLAUDE.md tell sessions to use, for the same reason.
 	DefaultBudgetChars = 1500
 
+	// AdversarialBudgetChars is the budget E6 asks its surfaces for. It is
+	// deliberately large: a tight budget would drop planted payloads before
+	// they reached the agent, and a surface that never carried an injection
+	// would report clean containment it had not actually demonstrated. E6 is
+	// measuring what happens when content DOES arrive.
+	AdversarialBudgetChars = 40000
+
 	// GrepContextChars bounds how much text the file-backed baselines (B1,
 	// B2) return around a match. It models "the agent reads the matching
 	// chunk", not "the agent reads the whole file"; it is a MODELLING

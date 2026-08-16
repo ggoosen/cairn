@@ -145,6 +145,34 @@ func (c Capabilities) Supports(s Surface) bool {
 	return false
 }
 
+// ArmConfig is a NATIVE ablation arm: a change to how the system under test is
+// configured, rather than a post-hoc re-ranking of what it returned. The
+// catalogue lives in internal/ablation; this is the part a backend must
+// honour, kept here (as plain data, not an import) so backend stays the leaf
+// package it is.
+//
+// A backend that cannot realize a non-default ArmConfig must REFUSE it at Open
+// with ErrArmUnrealizable. Running the default condition and letting the caller
+// label the record with the arm's name would fabricate a result — in whichever
+// direction happened to suit — and it is exactly the failure mode the loudly
+// failing B3/B4 stubs exist to prevent.
+type ArmConfig struct {
+	// ID names the arm, for error messages and records.
+	ID string
+	// Env is extra process environment for the system under test.
+	Env []string
+	// AddressToView writes items addressed to the evaluation view, which is
+	// what confers the "recipient" mandatory inclusion class.
+	AddressToView bool
+}
+
+// IsDefault reports whether the arm asks for nothing the shipped default does
+// not already do.
+func (a ArmConfig) IsDefault() bool { return len(a.Env) == 0 && !a.AddressToView }
+
+// ErrArmUnrealizable: this backend cannot be configured into the requested arm.
+var ErrArmUnrealizable = errors.New("backend cannot realize this ablation arm")
+
 // Config is the uniform construction input.
 type Config struct {
 	// WorkDir is a directory the backend owns exclusively.
@@ -155,6 +183,9 @@ type Config struct {
 	// is random today; the field exists so that a backend which acquires
 	// randomness later cannot become irreproducible quietly.
 	Seed int64
+	// Arm is the native ablation configuration. The zero value is the shipped
+	// default, which every backend can realize.
+	Arm ArmConfig
 }
 
 // Backend is the uniform memory condition.
@@ -169,6 +200,14 @@ type Backend interface {
 	Retrieve(ctx context.Context, req Request) (*Response, error)
 	// Close releases everything Open acquired.
 	Close(ctx context.Context) error
+}
+
+// Explainer is implemented by a backend that publishes its ranking arithmetic
+// for a prior interaction. Only Cairn does; that asymmetry is not a harness
+// convenience, it IS one of the claims (ENG-explainability), and E4's
+// recomputed ablations are only possible because of it.
+type Explainer interface {
+	Explain(ctx context.Context, interactionID, messageID string) (string, error)
 }
 
 // New constructs a backend by id.

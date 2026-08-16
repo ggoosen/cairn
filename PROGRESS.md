@@ -4933,3 +4933,373 @@ second import path with different semantics from `cairn ingest`, and the
 manifest records what was dropped so an operator can re-link deliberately.
 
 Green: `make verify`, `make test-race`.
+
+## S4 — Evaluation apparatus, built DARK (2026-08-16) — DONE
+
+E4 (ablations + baselines), E9's recall-under-growth curve, and E6
+(adversarial/safety) are built. Every one of them runs end to end. **None of
+them reports a number**, because every `signoff:` in `eval/claims.yaml` is
+still `pending`.
+
+All work is inside `eval/`; nothing outside it changed.
+
+### The rule this sprint was built under
+
+Apparatus may be built ahead of sign-off; no measurement may be reported as
+evidence before its kill criterion is signed. The distinction is between
+COMPUTING a number and REPORTING one — an apparatus nobody can exercise is an
+apparatus nobody has debugged, but an unfalsifiable number is worse than no
+number, because it looks like evidence.
+
+That rule is now **enforced by code that reads the register**, not by
+discipline:
+
+- `internal/claims` parses `claims.yaml` — a strict, ~200-line, stdlib-only
+  parser that REFUSES an unknown key, a stray indent or a claim missing its
+  signoff. It refuses rather than skips because a lenient parser would drop a
+  hand-edited signoff and leave the gate reading whatever it read before.
+  A signoff is accepted only as an ISO date: "yes"/"true"/"signed" are refused,
+  since a signoff that cannot be dated cannot be audited against the results it
+  authorised.
+- `internal/score.Reportable()` opens only when **both** halves hold: every
+  bearing claim carries a dated signoff, AND the corpus declares independent
+  labels. Neither is sufficient. Signed criteria over an author-written corpus
+  is still a statement about the harness.
+- `cairn-eval measure` REFUSES an independent corpus outright while the
+  criteria are unsigned, with no override flag. Running the sample corpus is
+  fine (it is labelled not-evidence); running mined human ground truth produces
+  the first half of real evidence, and that is the ordering E1 exists to
+  prevent.
+- `cmd/cairn-eval/darkness_test.go` runs the real commands and fails on
+  comparative language or on a metric name with a value attached to it. Naming
+  a metric is allowed — the ablation catalogue has to be able to say "nDCG
+  moves honestly but Recall@K cannot" — a name with a number is not.
+
+Observations and judgments stay in **separate artifacts**: `internal/result`
+records what happened and still carries no metric field (its test asserts the
+shape); `internal/score` writes a derived ScoreCard that stamps
+`evidence: false` and the reason into its own bytes, so a stray file argues
+against itself.
+
+### E4 — ablations and baselines
+
+`internal/metric` implements nDCG@k, MRR, Recall@k, Precision@k and Success@k
+(retained only so spec §11's existing gate number stays reconcilable), with
+hand-worked test vectors. Three properties are asserted rather than commented:
+**an error is not a zero** (unscoreable queries are counted and excluded, never
+imputed); precision is denominated by k, so returning less is not rewarded; and
+the 95% interval is a seeded bootstrap that refuses to draw below 20 queries.
+
+The ablation catalogue (`internal/ablation`) is the sprint's main design
+decision. Cairn exposes **no CLI switch** for ±freshness, ±priority or
+vector-only, and `eval/` is a separate module precisely so it cannot reach in.
+So every arm declares its **fidelity**:
+
+| arm | fidelity | how |
+|---|---|---|
+| `as-shipped` (RRF, P0) | native | the control |
+| `lexical-only` | native | no embedder configured; `retrieval_mode` asserted |
+| `profile-p0` / `profile-p2` | native | `CAIRN_RANK_PROFILE`; the profile in the published arithmetic is asserted |
+| `mandatory-inclusion` | native | items written `--to <view>`; a WRITE-side arm, since inclusion class is not a weight |
+| `no-freshness`, `no-priority` | recomputed | re-ranked from `cairn why-ranked` |
+| `vector-only` | recomputed | ordered by the published `vec rank` |
+| `priority-undecayed` | **unavailable** | fails loudly |
+
+Recomputed arms work through `internal/explain`, which parses `why-ranked` and
+**reconciles every trace** (printed products must sum to the printed total)
+before using it — because a silent parse failure would look exactly like a
+successful ablation. Their shared limits string, copied verbatim into every
+scorecard section, says what they cannot show: a re-ranking cannot surface a
+document retrieval never returned, so **Recall@K at the requested K cannot
+move**, and every effect size is a lower bound.
+
+`priority-undecayed` is declared UNAVAILABLE and errors rather than running:
+`why-ranked` publishes the decayed `P_eff` but not the undecayed normalized
+priority, so "priority does not earn its place" and "the DECAY does not earn
+its place" cannot be separated black-box. Reconstructing it from a fresh
+message's near-zero decay would be an assumption dressed as a measurement.
+
+Arms that fail to take effect are errors, not silent duplicates:
+`profile-p2` asserts the profile in the arithmetic, `lexical-only` asserts
+`retrieval_mode`, `vector-only` refuses on a lexical-only daemon. A
+silently-untaken arm reads as "this ablation made no difference", which is a
+mislabelled result and worse than a missing one. B3/B4 keep failing loudly and
+now do so INSIDE the matrix, so an unimplemented baseline appears as a stated
+refusal rather than an absence.
+
+Ablations are Cairn-only and refused twice — by the runner and again by the
+baseline backends (`ErrArmUnrealizable`), because running B1's default under an
+arm's name would fabricate a result.
+
+### E9 — recall under growth (that curve only)
+
+`internal/growth` grows the corpus 10×/100×/1000× around a FIXED query set with
+budget and k held constant. Filler comes from a seeded bigram model over the
+corpus's own vocabulary, so distractors are lexically plausible rather than
+trivially separable, and it is timestamped AFTER the real material — long-term
+memory is asked to find old things in a big new corpus.
+
+**Two generators, never averaged.** `neutral` removes query vocabulary (growth
+in unrelated areas — a LOWER bound on interference); `contending` keeps it
+(growth in the same area, which is what actually happens to a project's memory
+— an UPPER bound). They bracket the answer; averaging them would report a point
+estimate of nothing. A corpus too small to build a distinguishable model from is
+refused, because near-duplicate filler would plant second copies of the answers
+and then report that recall held up.
+
+Verified at 1000× (6,000 items) against a live daemon: 77s. The full curve is
+cheap. The rest of E9 — recall-over-age, supersession, stale-confidence,
+duplicate dilution, temporal competence, every mesh metric — is **not** built,
+and the scorecard says so in its notes.
+
+### E6 — adversarial / safety, and exactly where it stops
+
+Nine payloads (`internal/adversarial`), all published by a NON-operator
+principal: instruction override, fake operator directive, spoofed onboarding
+record, tool-call injection, exfiltration lure, envelope escape, provenance
+spoof, conversation forgery, and one deliberately front-loaded payload (below).
+Each carries a unique greppable marker, and `Validate()` refuses a payload
+whose marker is not in its own body — such a payload could never be complied
+with and would contribute a free zero to the rate.
+
+Daemon-side containment is checked end to end, and checks have **three** states.
+Inconclusive is not folded into pass or fail: a check whose preconditions were
+never met has established nothing, and counting it as a pass manufactures
+containment while counting it as a failure manufactures a bug.
+
+The R56 question is answered end to end, and the answer is stronger than
+expected. `OnboardingRecord` looks up the latest **operator-authored** message
+on the onboarding topic, so a structurally-valid non-operator record is never
+even surfaced to `Verify()` — defence in depth ahead of the authorship gate.
+The check proves the record IS in the mesh before reading "not found" as
+containment, then drives `onboarding apply` for real against a throwaway
+instructions file and asserts the file is byte-identical and carries none of
+the attacker's values, because R56's claim is about EFFECT and a gate that
+reported a refusal while still writing config would pass a message check.
+R56's other half — the record "stays readable as untrusted data" — is checked
+too.
+
+**Where the agent-in-the-loop boundary sits.** Built: the corpus, the planting,
+the collection of the exact bytes an agent would be handed on each of digest /
+search / fetch (kept in the report as `agent_bytes`, so a third party can run
+their own agent without rerunning anything), every structural check, and the
+scoring of a transcript once one exists. NOT built: the agent runner itself
+(T2 — networked, stochastic, costly; it is E5's infrastructure and a second
+agent loop here would guarantee two that disagree). The seam is exactly
+`[]adversarial.Transcript → Score()`. `Score` and `Rate` return
+`ErrAgentRequired` rather than a zero, and the report carries
+`compliance_status: "NOT MEASURED…"` in its own bytes. A compliance rate of
+zero that was never measured is the most damaging number this repository could
+publish.
+
+The scorer classifies four ways, not two: `acted` (objective — a tool call or
+side effect carrying the marker, which quoting cannot produce), `not-present`,
+`quoted-while-refusing`, and `ambiguous`. Ambiguous cases go to an
+adjudication queue and `Rates.Final()` refuses to call the rate settled until a
+human clears it. The refusal-cue heuristic is the weakest part of E6 and lives
+in one visible list for that reason.
+
+### Findings the plumbing surfaced (observations, not verdicts)
+
+Running the apparatus on the sample corpus turned up four things about Cairn
+worth recording. None is reported as a measurement; all are visible in the run
+records.
+
+1. **Lexical search is conjunctive over every query term.**
+   `projection.FTSQuery` joins quoted terms with a space, which FTS5 reads as
+   AND, so a natural-language question — exactly what CLAUDE.md tells agents to
+   type — returns nothing unless every word appears in the document. All six
+   sample queries returned zero results from `cairn search`; B1 (grep, which
+   falls back to any-term) returned hits for the same queries. The harness now
+   raises `RETURNED NOTHING FOR EVERY QUERY` on any condition that comes back
+   empty across the board, because a uniform zero is a real score and an alarm
+   at the same time.
+2. **The digest reports `retrieval_mode: full` when the view has no interest
+   query** (`retrieve.go`: "no relevance component in play"), even with no
+   embedder present. Defensible, but it means the field cannot distinguish
+   "hybrid ran" from "there was nothing to retrieve with".
+3. **A view with no standing interest has no relevance component at all** —
+   R = 1.0 uniformly, so its digest is freshness and priority only. B5 now
+   declares each query as a LOCAL standing interest (R25, what CLAUDE.md tells
+   agents to do) before generating the digest; without that, digest-surface
+   ablations would have been measuring a surface with no relevance in it.
+4. **A digest entry excerpts only the first few body lines**, which keeps most
+   of an injection out of that surface — a real, incidental containment layer.
+   It is named as such rather than credited to the envelope, and payload
+   `inj-009` is front-loaded on purpose so the per-line quoting is actually
+   exercised: an attacker who knows about the excerpt puts the payload in the
+   head.
+
+### Harness changes worth knowing about
+
+B5's DIGEST surface now runs over **MCP** rather than `cairn digest`. The CLI
+prints the payload and nothing else; the MCP envelope carries the same
+daemon-generated payload plus the `interaction_id` that `why-ranked` is keyed
+on. Without it the digest has no published arithmetic and ±freshness could only
+run on search — the wrong answer, since the digest is where freshness matters
+most (72-hour half-life against search's 90 days). It is also the surface an
+agent actually reads. MCP failing to start is a hard error, not a fallback.
+
+`eval/` still has **zero external dependencies**, and the black-box boundary is
+untouched.
+
+### Verified
+
+`make eval` green (14 packages). `make verify` green. Exercised against a live
+daemon: `measure -arms all` (13 Cairn arms + 4 baseline conditions run; 2 arms
+refused loudly and correctly), `growth` at 1/10/100/1000×, `adversarial`
+(23/23 structural checks held, 0 inconclusive). Nothing printed a number.
+
+### Left for the operator
+
+Sign (or edit, or reject) the 21 kill criteria in `eval/claims.yaml`.
+`cairn-eval claims` is the readout. Until then the gate stays shut, which is
+the point.
+
+---
+
+## D1 — sqlite-vec integration (2026-08-16) — DONE
+
+Sprint S5. `schema.sql` stored vectors in a plain table and `HeadVectors`
+pulled **every** head vector into process memory for an in-process cosine
+scan; `config.BruteForceMaxCandidates = 5000` named the cliff. CLAUDE.md
+pinned `asg017/sqlite-vec-go-bindings`, with brute force as the sanctioned
+fallback (rulings §7). Both are now in the tree, and the interesting part of
+the item is the relationship between them.
+
+**The extension works here, in-process, with nothing to install.** The cgo
+binding compiles sqlite-vec from source INTO the binary and registers it as an
+SQLite auto-extension, so `vec0` exists on every connection the process opens.
+That is the opposite of the ONNX story: no runtime dylib to locate, nothing to
+bundle. Pinned at `v0.1.6` — the newest release that is not a prerelease.
+
+**`vectors` stays the source of truth; `vec0` is a derived index over it.**
+The plain table is written exactly as before, and a new `vec_index` virtual
+table (created lazily, because vec0 fixes its dimension at CREATE time and we
+do not know it until the first vector arrives) is mirrored **inside
+`InsertVector`'s transaction** — one writer, one commit, so the index can be
+neither ahead of nor behind the vector it indexes. `vec_map` bridges
+revision_id to the INTEGER rowid vec0 requires, the same shape and for the
+same reason as `fts_map`. `InvalidateVectors` drops the index with the
+vectors. `ProjectionSchemaVersion` 7 → 8; the auto-rebuild path replays from
+the log, exercised on a real log written by the previous binary (below).
+
+**Brute force is the ORACLE, not dead code.** `VectorTopKBruteForce` and
+`VectorTopKIndexed` sit side by side in `internal/projection/vec.go`, both
+exported, both reached through one `VectorTopK` that routes. The equivalence
+test asks both on a seeded corpus and demands the **identical** top-K —
+unscoped, scoped, with and without retracted messages, with exact-duplicate
+vectors planted to force ties, and above the cliff at 6,000 vectors. Three
+mutations were run against that test and all three were caught: removing the
+over-fetch, dropping the scope from the KNN, and relaxing the model partition.
+
+**Identical is engineered, not hoped for.** vec0's KNN is exhaustive rather
+than approximate, so the index cannot miss a neighbour — but its distances are
+float32 and the oracle's cosines are float64, and a tie at the K boundary is
+resolved by whichever rows happen to come back. So the index is used as a
+candidate GENERATOR: fetch `k + 64`, re-score those with the same `embed.Cosine`
+the oracle uses, cut with the same (similarity desc, message_id asc)
+comparator, and if a tie group straddles the fetch boundary, double the fetch
+and retry up to sqlite-vec's own `k` ceiling. Constants in
+`internal/config/constants.go`.
+
+**Scoping binds INSIDE the query, and that was the capability risk.** Before
+D1 the vector candidates were the whole corpus, filtered in Go afterwards. Now
+the topic/sender/thread scope and the D3 capability grant are pushed into the
+KNN as a `rowid IN (...)` constraint, which sqlite-vec applies BEFORE choosing
+the k nearest — so the answer is the top-k of the permitted set, not the
+permitted part of the global top-k. A nil scope means unrestricted and an
+EMPTY scope means nothing, which is the distinction that stops a grant
+matching no topics from admitting everything. Two daemon tests cover it, one
+of them a confined session over real IPC against a corpus whose forbidden
+message is a near-duplicate of the granted one; both fail when the scope is
+removed from the call.
+
+**Cross-model comparison is unreachable, not filtered.** The model id is a
+vec0 PARTITION KEY and every query constrains it, so a vector from another
+model is in another partition. `schema.sql:160`'s rule is now enforced by the
+storage layer rather than by a WHERE clause.
+
+**Absence is a supported state.** `projection.Open` feature-probes and, on
+failure, logs the reason and keeps brute force — never an error. It is
+exercised three ways: a `cairn_novec` build tag that compiles the extension
+OUT entirely (so `vec_version()` genuinely does not exist), an operator kill
+switch `CAIRN_VECTOR_INDEX=off` on the shipping binary, and `make test-novec`,
+now wired into `make verify` so the fallback is part of the green bar. At
+`Open` the index is reconciled against `vectors` whenever the two disagree —
+which is what a machine that gains or loses the extension between runs looks
+like. `cairn status` reports `vector path: vec0 (sqlite-vec v0.1.6)` or
+`brute_force (…reason…)`.
+
+### The bug this sprint found
+
+Not in the vector code. `messages.head_revision_id` had **no index**, and
+every vector query — both paths — joins through it. With the index absent
+SQLite built a transient automatic index per query, and the vec0 path measured
+**66 ms against brute force's 36 ms**: the fast path was slower than the thing
+it replaced, on the real corpus, while every unit test passed. `CREATE INDEX
+idx_messages_head` is part of the v8 schema, and afterwards the same
+measurement reads **11.4 ms vs 37.8 ms**.
+
+Two consequences worth keeping. The KNN now runs as its OWN statement and the
+~160 resulting rowids are resolved by a second lookup, because hanging the
+projection joins off the `MATCH` makes the vector query's cost depend on
+indexes that have nothing to do with vector search. And the scope filter is
+written as a join DRIVEN BY the scope list rather than `message_id IN (SELECT
+value FROM json_each(...))`, which invites SQLite to walk the corpus and
+re-evaluate the list per row.
+
+### Verified, with real binaries
+
+- **v7 → v8 rebuild on a real log**: a corpus built by the pre-D1 binary
+  (21 messages, embedded), then opened by the new one — `WARNING: projection
+  schema version mismatch: found 7, want 8 — rebuilding the derived projection
+  from the log`, daemon up, `vector path: vec0 (sqlite-vec v0.1.6)`, and the
+  search results **identical in id and order** to the pre-D1 run (scores differ
+  in the 6th decimal: freshness decay between the two runs, not the vector
+  path).
+- **Extension absent, same corpus**: the `cairn_novec` binary starts, serves,
+  returns the identical top-10, accepts a new `cairn send`, and `cairn doctor`
+  reports clean. Reopening with the vec0 binary reconciles the index at `Open`
+  and the message written while it was absent is found through vec0.
+- **Above the cliff**: 6,052 messages (12,108 events) driven through the real
+  CLI. Per search through the daemon, 100 searches × 3 runs: **vec0 59 ms,
+  brute force 76 ms** (client + IPC baseline ≈ 4 ms); identical top-10 across
+  the two paths. In-process on that same projection: **vec0 11.4 ms, brute
+  force 37.8 ms**.
+- **Not loading every vector**: allocation-bounded in the test suite — on a
+  6,000-vector corpus, vec0 allocates 92 KB against brute force's 3.7 MB, and
+  the test fails if the fast path allocates more than a quarter of the corpus
+  or if the oracle allocates less than all of it.
+- `make verify` (including `test-novec`) and `make test-race` green.
+
+### Judgment calls
+
+- **`v0.1.6`, not `v0.1.7-alpha.2`.** Both probe identically; the stable tag is
+  the conservative pin.
+- **The digest's vector top-K stays UNSCOPED.** The digest fuses a global
+  lexical top-K with a global vector top-K and reads a rank only for
+  candidates that already survived the view's filters and the D3 grant, so
+  nothing out of scope reaches the agent. Scoping only the vector half would
+  tilt RRF toward it, and scoping both is a ranking change rather than an
+  indexing one — out of scope for a performance task. Search is different: it
+  already scoped before its top-K, so it keeps doing so.
+- **`cairn_novec` is an opt-OUT tag.** The default build has no new tag and
+  `make verify` still asserts that an untagged build fails with the FIX-F4
+  guard. The tag exists so the fallback can be tested on a binary where the
+  extension is genuinely missing rather than merely disabled.
+- **A wrong-width vector is refused loudly** rather than skipped. It is
+  unreachable through enrichment (EnrichOnce refuses a foreign model,
+  ReindexSemantic invalidates first), and a silent skip would desynchronize
+  the index from its source of truth.
+- **A `k` above sqlite-vec's KNN ceiling (4096, found by asking for more)
+  falls back to the oracle** instead of erroring. Retrieval asks for 100.
+
+### Residual, recorded not hidden
+
+`HeadVectors` still exists and subscription matching still uses it, because
+R24 calibrates a threshold against the WHOLE similarity distribution and
+records every evaluated candidate as an observation — a top-K index cannot
+serve that. Changing it is a ranking-semantics decision, not an indexing one.
+In practice it is bounded by a subscription's hard topic filters, and it runs
+at digest time rather than per search. Noted in the code at the function.
