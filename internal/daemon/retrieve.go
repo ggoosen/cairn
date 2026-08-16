@@ -1025,18 +1025,18 @@ func (d *Daemon) RetrievalStatus() RetrievalStatus {
 	e := d.emb()
 	if e == nil {
 		return RetrievalStatus{Mode: "lexical_only", Cause: "no_embedder",
-			Detail: "no embedder configured — provision the embed venv (scripts/cairn-embed-bootstrap.sh) or set CAIRN_EMBED_PYTHON"}
+			Detail: "no embedder configured; provision the embed venv (scripts/cairn-embed-bootstrap.sh) or set CAIRN_EMBED_PYTHON"}
 	}
 	if d.DegradationLevel().LexicalOnlyForced() {
 		return RetrievalStatus{Mode: "lexical_only", Cause: "ladder_rung_4",
-			Detail: "degradation ladder rung 4: the embedding backlog is shedding the vector query — it clears as the enricher catches up"}
+			Detail: "degradation ladder rung 4; the embedding backlog is shedding the vector query, and it clears as the enricher catches up"}
 	}
 	d.embMu.RLock()
 	failedAt, okAt, lastErr := d.embLastFail, d.embLastOK, d.embLastErr
 	d.embMu.RUnlock()
 	if !failedAt.IsZero() && failedAt.After(okAt) {
 		return RetrievalStatus{Mode: "lexical_only", Cause: "embedder_failing",
-			Detail: fmt.Sprintf("embedder %s is configured but its last call failed: %s", e.ModelID(), lastErr)}
+			Detail: fmt.Sprintf("embedder %s is configured but its last call failed; %s", e.ModelID(), lastErr)}
 	}
 	return RetrievalStatus{Mode: "hybrid"}
 }

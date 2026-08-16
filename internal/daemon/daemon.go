@@ -69,8 +69,8 @@ type Daemon struct {
 	embLastOK   time.Time
 	embLastFail time.Time
 	embLastErr  string
-	trust    *identity.Trust
-	lg       *cairnlog.Log
+	trust       *identity.Trust
+	lg          *cairnlog.Log
 	// logs holds append handles for FOREIGN origins (N6 replication ingest +
 	// frontier). The active origin is d.lg; the map excludes it.
 	logs          map[cairnlog.Origin]*cairnlog.Log
