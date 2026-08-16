@@ -32,11 +32,12 @@ two-machine rig · **[data]** needs real usage data first.
 The rest of this file is the specification. This part is the order to work
 it, as sprints, plus the honest reason each blocked item is blocked.
 The sprints are exhaustive: **S1–S14 cover every item in Part II**, so
-finishing them is finishing the backlog. **S3–S5 and S8 need nothing from
-anyone**, so an agent can start at S3 and run without waiting. (S1, defect
-clearance — D9 session reaping and D10 ladder-vs-missing-embedder — and S2,
-mesh integrity and scoped capabilities — D2 origin-liveness beacon and D3
-capability `resource_selectors` — both shipped on 2026-08-16; see PROGRESS.md.)
+finishing them is finishing the backlog. **S4, S5 and S8 need nothing from
+anyone**, so an agent can start at S4 and run without waiting. (S1, defect
+clearance — D9 session reaping and D10 ladder-vs-missing-embedder; S2, mesh
+integrity and scoped capabilities — D2 origin-liveness beacon and D3
+capability `resource_selectors`; and S3, small surfaces — D4 `budget_tokens`
+and D5 standalone-mesh adoption — all shipped on 2026-08-16; see PROGRESS.md.)
 
 ## Sprints
 
@@ -51,17 +52,8 @@ and `make verify` + `make test-race` green before moving on.
 
 **The sprint set is exhaustive.** Every item in Part II belongs to exactly
 one sprint — see Coverage at the end of this part — so finishing S1–S14 is
-finishing the backlog, with no separate track running alongside. S3–S5 and S8
+finishing the backlog, with no separate track running alongside. S4, S5 and S8
 need nothing from anyone; the later sprints name their gate in the heading.
-
-### S3 — Small surfaces [ready]
-
-- **D4** `budget_tokens` (§4)
-- **D5** `cairn adopt-standalone` (§4)
-
-**Exit:** the budget property test runs in both char and token modes over
-every renderer and the response names the tokenizer; a standalone mesh merges
-into a primary ending `cairn doctor` clean on both origins.
 
 ### S4 — Evaluation apparatus, dark [ready]
 
@@ -85,8 +77,8 @@ number is reported as evidence.**
 (brute force retained as the oracle); extension-absent still starts and
 serves; a corpus above the cliff answers without loading every vector.
 
-**Note:** promote S5 ahead of S3/S4 if C3 is imminent — transcript ingest
-walks straight off the brute-force cliff.
+**Note:** promote S5 ahead of S4 if C3 is imminent — transcript ingest walks
+straight off the brute-force cliff.
 
 ### S6 — Capture [gated: crossed review of the privacy model]
 
@@ -214,7 +206,7 @@ or the sprint set is wrong.
 |---|---|---|
 | S1 ✅ shipped | D9, D10 | agent |
 | S2 ✅ shipped | D2, D3 | agent |
-| S3 | D4, D5 | agent |
+| S3 ✅ shipped | D4, D5 | agent |
 | S4 | E4 + E9 growth curve (apparatus), E6 | agent |
 | S5 | D1 | agent |
 | S6 | C3 | agent, after review |
@@ -602,36 +594,6 @@ as dead code. Extension-absent test: `Open` succeeds, `cairn status` reports
 the path in use, results unchanged. A corpus above the cliff answers without
 loading every vector. `make verify` and `make test-race` green; the schema
 bump replays cleanly from a log written by the previous version.
-
-### D4 — `budget_tokens` (M) [code]
-
-Rulings §7 ruled `budget_chars` only for P0; `retrieve.go` still refuses
-`budget_tokens` explicitly. Callers are LLM sessions whose real constraint is
-tokens, and the char↔token ratio varies enough by content that the current
-advice — divide by four — is a guess the caller has to make.
-
-Accept `budget_tokens` alongside `budget_chars` (exactly one, never both).
-Count with a vendored tokenizer whose identity is recorded in the response,
-because a budget is only meaningful against a named tokenizer. The hard-budget
-property is unchanged: oversized items are dropped whole, never truncated.
-
-**Acceptance.** The budget property test runs in both modes over every
-renderer. The response names the tokenizer and mode. A request carrying both
-budgets is refused, not silently resolved.
-
-### D5 — `cairn adopt-standalone` (S) [code]
-
-R34 permits either a command or a documented script for merging an ad-hoc
-standalone mesh into the primary; neither exists (PROGRESS N9). The
-operator-facing failure is that a mesh started casually on a second machine
-is currently a dead end. Given R34's latitude, prefer the documented
-procedure first — a rare, high-consequence operation is safer as a script the
-operator reads before running than as a verb that hides the steps. Promote to
-a command only if the procedure proves mechanical.
-
-**Acceptance.** A test or rehearsed transcript that merges a standalone mesh
-into a primary and ends with `cairn doctor` clean on both origins, no event
-loss from either side.
 
 ### D6 — prebuilt signed binary + Homebrew tap (M) [code] + [operator]
 
