@@ -59,7 +59,7 @@ The five commands above are the daily loop. The rest of what's built:
 - `cairn export <id>` renders `exports/<id>.md` with read-only front-matter — edit the body in any editor, then `cairn export ingest`: an unchanged base becomes a clean revision, a diverged one is machine-merged with diff3, and a genuine conflict lands in `conflicts/<id>/` for you to settle with `cairn resolve`.
 
 **Confine your agents**
-- `cairn run --profile read-only -- <your agent>` — run any agent inside a capability-confined session: it gets a short-lived handle (`CAIRN_SESSION`), auto-revoked on exit or idle, that cannot retract, restructure topics, or touch admin. Profiles are `full` / `agent-standard` / `read-only`, or your own in `profiles.toml`. `cairn session list` and `cairn session revoke` are the kill switch.
+- `cairn run --profile read-only -- <your agent>` — run any agent inside a capability-confined session: it gets a short-lived handle (`CAIRN_SESSION`), auto-revoked on exit or idle, that cannot retract, restructure topics, or touch admin. Profiles are `full` / `agent-standard` / `read-only`, or your own in `profiles.toml`. `cairn session list`, `cairn session prune` and `cairn session revoke` are the kill switch.
 
 **Shape what each agent receives**
 - `cairn subscribe "<what this view works on>" --view <name>` — declare a standing interest so digests surface it. Local by default (no events); `--durable` replicates it across the mesh.

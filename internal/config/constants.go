@@ -573,6 +573,15 @@ const (
 	ProfilesFileName   = "profiles.toml" // device-local capability profiles
 	SessionEnvVar      = "CAIRN_SESSION" // set by `cairn run` for the child
 
+	// D9: minting a session used to rewrite the whole session array, so the
+	// cost of the Nth mint grew with N. Mints and revokes now append one line
+	// to a journal beside the snapshot; the snapshot is rewritten only when
+	// the journal has grown past max(SessionJournalMinCompact, live sessions),
+	// which makes the per-mint cost amortized O(1) instead of O(n). The
+	// minimum keeps a small mesh from compacting on nearly every mint.
+	SessionsJournalFileName  = "sessions.journal" // device-local (cache-class)
+	SessionJournalMinCompact = 64
+
 	// SavedSearchesFileName: P2-4 named, re-runnable queries. Device-local
 	// operator convenience (like sessions/profiles) — not replicated, not an
 	// event; survives reindex.

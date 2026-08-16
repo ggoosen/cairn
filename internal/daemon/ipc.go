@@ -427,7 +427,23 @@ func (d *Daemon) dispatch(req Request) Response {
 		return Response{OK: true}
 
 	case "session-list":
-		return Response{OK: true, Status: map[string]any{"sessions": d.sessions.list()}}
+		return Response{OK: true, Status: map[string]any{"sessions": d.sessions.list(d.now())}}
+
+	case "session-prune":
+		// D9: force the sweep and compaction now, and say what went — the
+		// operator's way to clear a backlog minted by an older daemon.
+		removed, remaining, err := d.sessions.prune(d.now())
+		if err != nil {
+			return fail(err)
+		}
+		total := 0
+		byReason := map[string]any{}
+		for reason, n := range removed {
+			total += n
+			byReason[reason] = n
+		}
+		return Response{OK: true, Status: map[string]any{
+			"removed": total, "by_reason": byReason, "remaining": remaining}}
 
 	case "subscribe-durable":
 		if req.Subscribe == nil {

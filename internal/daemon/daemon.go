@@ -402,7 +402,15 @@ func Start(opts Options) (*Daemon, error) {
 		d.Close()
 		return nil, err
 	}
-	sess, err := loadSessions(lockDir, profiles, d.now())
+	// D9: the device id lets the session table decide whether a recorded pid
+	// names a LOCAL process. A portable-only restore (R9 read-only) has no
+	// device identity at all, and an empty id means "trust no pid binding" —
+	// such a daemon reaps on expiry alone.
+	deviceID := ""
+	if loaded.Device != nil {
+		deviceID = loaded.Device.DeviceID
+	}
+	sess, err := loadSessions(lockDir, deviceID, profiles, d.now())
 	if err != nil {
 		d.Close()
 		return nil, err

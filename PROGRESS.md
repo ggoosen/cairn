@@ -4311,3 +4311,94 @@ the `lastUsed` reset as written, marked `// RULING-NEEDED:`.
 
 Full defect writeup, including the upstream leak in cmd/cairn/mcp.go:67 where
 a `defer`red revoke cannot run on signal termination: build/BUILD-PLAN.md §4 D9.
+
+## D9 — capability sessions are never reaped (2026-08-16) — DONE
+
+Sprint S1, first of two live defects found by inspection on the dev node:
+2,673 resident sessions, 1,524 of them already expired, in a 772 KB
+`sessions.json` that was rewritten in full on every mint. Four compounding
+causes, all four addressed.
+
+**The leak had a source, and it is fixed at the source.** `cairn mcp` minted a
+session per process and released it with `defer`, which does not run when the
+process is killed by a signal — exactly how MCP clients tear down stdio
+servers. `cmd/cairn/mcp.go` now installs a SIGTERM/SIGINT handler that revokes
+the handle and exits 128+n; the `defer` remains for the ordinary path, both
+routed through a `sync.Once` so a revoke never fires twice. SIGKILL still
+cannot be caught, which is why the daemon reaps as well.
+
+**Reaping, with the pid binding finally read.** `BoundPID` was recorded and
+printed and read nowhere, so a handle was valid for its full 24h TTL whether
+or not its process existed. The session table now sweeps on load, on mint, on
+list, and on demand (`cairn session prune`, new IPC op `session-prune`,
+operator-tier and non-delegable like the other `session-*` ops). A record is
+dead when its TTL has passed, when its expiry cannot be parsed (`resolve()`
+has always treated that as expired), or when the process it is bound to is
+gone or has been recycled.
+
+**Two guards against reaping something live**, because over-reaping revokes a
+running agent's handle mid-session and is strictly worse than the leak:
+
+- the pid is trusted only for a record **this device** minted (new
+  `bound_device`); a pid number from another device names an unrelated local
+  process, and a record written before this change carries no device at all,
+  so it is reaped on expiry alone.
+- the pid is paired with the **process incarnation captured at mint** (new
+  `bound_proc`: boot id + start-time tick on Linux), so a recycled pid cannot
+  resurrect a dead session's record. This is the spec's "pair it with
+  `CreatedAt`" guard implemented as an identity captured *at* `CreatedAt`
+  rather than as a comparison against it — a start-time-vs-`CreatedAt`
+  comparison would be wrong under the `cairn_testhooks` simulated clock, where
+  `CreatedAt` comes from an offset clock and a process start time does not, and
+  a back-dated evaluation run would then reap every live session. Comparing an
+  identity token needs no clock at all.
+
+Everything undecidable reads as ALIVE: `Kill(pid, 0)` returning anything other
+than ESRCH/EPERM, an unreadable `/proc`, an unbound pid. Off Linux the
+incarnation token is unavailable (macOS keeps the start time in a `kinfo_proc`
+that stdlib `syscall` does not expose on darwin, and this change does not add
+`golang.org/x/sys` for one refinement), so a pid there is judged on liveness
+alone: gone, or owned by another user, reaps it. The gap that leaves is a pid
+recycled into another process of the same user inside the TTL, which fails
+safe — the record lives out its TTL, exactly as it did before. Documented in
+`internal/daemon/proc_other.go`.
+
+**The mint path is bounded.** `sessions.json` is now a compacted snapshot with
+an append-only `sessions.journal` beside it; a mint or revoke appends one line,
+and the snapshot is rewritten only when the journal grows past
+max(`SessionJournalMinCompact`=64, live sessions), which makes the per-mint
+cost amortized O(1). Journal replay is idempotent (tokens are unique and never
+reused), so a crash between snapshot write and journal removal is harmless, and
+a torn final line stops replay rather than failing startup — the file stays
+cache-class. Measured: 300 mints serialize 364 records, where the old path
+serialized 45,150.
+
+**Tests are the negative ones**, per the sprint's own warning
+(`session_reap_test.go`, `session_reap_internal_test.go`): a live session is
+not reaped by the sweep on list, the sweep on mint, an explicit prune, or a
+daemon restart, and still resolves afterwards; a foreign-device and a legacy
+pid binding are not trusted; a killed process's session is reaped and its
+handle stops granting; a 500-record expired backlog is dropped on load and the
+file shrinks; prune reports counts per reason; the incarnation token is stable
+under a live process across repeated reads.
+
+Deliberately NOT changed: `resolve()` still does not consult the pid (a
+`cairn run` child may legitimately outlive nothing, but a token passed to a
+grandchild is a case this fix has no reason to break), and idle is not a
+reaping reason — see the ruling below.
+
+Green: `make verify`, `make test-race`.
+
+### Author rulings needed — D9 session idle-across-restart (interim implemented 2026-08-16)
+
+The question raised on 2026-08-15 (immediately above) is unanswered and NOT
+blocking. The conservative interim is now implemented: reaping happens on
+expiry and on a dead bound process — neither of which is in question — and
+`loadSessions` still resets `lastUsed`, so the idle window still restarts on
+every daemon start. Marker: `// RULING-NEEDED:` on `reapLocked` in
+`internal/daemon/session.go`.
+
+Restated for the author: persisting `lastUsed` would make the README's
+"auto-revoked on exit or idle" true across restarts, but the reset is
+documented in code as deliberate, so flipping it is the author's call, not
+this fix's.

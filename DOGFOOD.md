@@ -130,6 +130,7 @@ cairn run --profile agent-standard --name claude-code-a -- claude
 cairn run --profile read-only --name viewer -- some-tool
 cairn session list          # live handles (token prefixes only)
 cairn session revoke <tok>  # end one immediately
+cairn session prune         # reap expired/dead-process handles now
 ```
 
 `cairn run` mints a 24h session handle, exports it as `CAIRN_SESSION`, and

@@ -158,8 +158,10 @@ discouraged.
 | `--force-class` | R20 — text-class policy may downgrade; MCP cannot override it |
 | durable (replicated) subscriptions | R55 — `cairn_subscribe` is the LOCAL tier only: own view, no events, no capability escalation. The durable tier is operator-only, via the CLI |
 
-Sessions are short-lived (24h TTL, 6h idle) and auto-revoked on exit.
-`cairn session list` and `cairn session revoke` are the kill switch.
+Sessions are short-lived (24h TTL, 6h idle) and auto-revoked on exit — the
+daemon reaps a handle whose bound process is gone, so a client killed by a
+signal leaves nothing resident. `cairn session list` and `cairn session revoke`
+are the kill switch; `cairn session prune` sweeps on demand.
 
 If you want a strictly read-only harness, launch it confined and let it inherit
 the handle:

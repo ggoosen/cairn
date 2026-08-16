@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 
 	"github.com/spf13/cobra"
 
@@ -65,9 +66,9 @@ func newRunCmd(dirFlag *string) *cobra.Command {
 	return cmd
 }
 
-// `cairn session list|revoke` — operator visibility into live handles.
+// `cairn session list|prune|revoke` — operator visibility into live handles.
 func newSessionCmd(dirFlag *string) *cobra.Command {
-	cmd := &cobra.Command{Use: "session", Short: "Inspect and revoke capability sessions (operator tier only)"}
+	cmd := &cobra.Command{Use: "session", Short: "Inspect, prune and revoke capability sessions (operator tier only)"}
 	cmd.AddCommand(&cobra.Command{
 		Use:   "list",
 		Short: "List live sessions (token prefixes only — handles stay opaque)",
@@ -78,6 +79,31 @@ func newSessionCmd(dirFlag *string) *cobra.Command {
 				return err
 			}
 			return printJSON(cmd, resp.Status["sessions"])
+		},
+	})
+	// D9: the daemon sweeps on load, on mint and on list, so a healthy node
+	// never needs this. It exists for the backlog an OLDER daemon left behind
+	// (2,673 records on the dev node) and to give the operator a way to see,
+	// on demand, what the sweep considers dead.
+	cmd.AddCommand(&cobra.Command{
+		Use:   "prune",
+		Short: "Reap expired and dead-process sessions now and compact the store",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resp, err := call(dirFlag, daemon.Request{Op: "session-prune"})
+			if err != nil {
+				return err
+			}
+			removed, _ := resp.Status["removed"].(float64)
+			remaining, _ := resp.Status["remaining"].(float64)
+			fmt.Fprintf(cmd.OutOrStdout(), "pruned %d session(s); %d remain\n", int(removed), int(remaining))
+			if by, ok := resp.Status["by_reason"].(map[string]any); ok && len(by) > 0 {
+				for _, reason := range sortedKeys(by) {
+					n, _ := by[reason].(float64)
+					fmt.Fprintf(cmd.OutOrStdout(), "  %-18s %d\n", reason, int(n))
+				}
+			}
+			return nil
 		},
 	})
 	cmd.AddCommand(&cobra.Command{
@@ -94,4 +120,15 @@ func newSessionCmd(dirFlag *string) *cobra.Command {
 	})
 	groupGuard(cmd)
 	return cmd
+}
+
+// sortedKeys keeps a map-derived report deterministic (a prune summary that
+// reorders itself between runs is harder to diff than it needs to be).
+func sortedKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
