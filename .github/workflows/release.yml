@@ -118,7 +118,11 @@ jobs:
           # `make build` is the project's build convention: -tags sqlite_fts5,
           # no cairn_testhooks (a release binary must not be able to be told
           # "this volume is encrypted"), and no cairn_novec.
-          make build
+          #
+          # D13: CAIRN_VERSION links the tag into the binary, so the artifact
+          # can name the release it belongs to. Nothing else sets it — a
+          # development build has no way to claim a tag.
+          make build CAIRN_VERSION="${{ steps.version.outputs.tag }}"
           file bin/cairn
 
       - name: Assert the artifact's architecture and build stamp
@@ -132,6 +136,14 @@ jobs:
           V="$(./bin/cairn --version)"
           case "$V" in *dirty*) echo "FAIL: release build is VCS-dirty: $V"; git status --porcelain; exit 1 ;; esac
           case "$V" in *-dev*) echo "FAIL: release build has no VCS stamp: $V"; exit 1 ;; esac
+          # D13: and it must name THIS tag. An unstamped artifact is the exact
+          # defect this assertion exists to stop shipping — a binary a user
+          # cannot identify is a support problem the moment anyone other than
+          # the author runs one.
+          case "$V" in
+            "${{ steps.version.outputs.tag }}"*) ;;
+            *) echo "FAIL: the artifact does not name its release tag ${{ steps.version.outputs.tag }}: $V"; exit 1 ;;
+          esac
           echo "build stamp: $V"
 
       # ---- macOS signing. Skipped, loudly, when no credentials are configured.
@@ -298,6 +310,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${{ steps.collect.outputs.version }}"
+          TAG="${{ steps.collect.outputs.tag }}"   # D13: the notes quote the artifact's own version string
           if [ "${{ steps.collect.outputs.signed }}" = "yes" ]; then
             SIGN_NOTE="The macOS binary is Developer ID signed (and notarized if notary credentials were configured). Bare executables cannot carry a stapled ticket, so Gatekeeper verifies it online."
           else
@@ -325,7 +338,7 @@ jobs:
           - **Linux binaries are dynamically linked against glibc 2.35** (built on Ubuntu 22.04). Older distributions must build from source. There is no musl artifact.
           - **macOS artifact is arm64 only.** Cairn's platform rule is macOS arm64 primary, Linux best-effort, no Windows.
           - **\`git\` must be on PATH at runtime** — \`cairn export ingest\` shells out to \`git merge-file\`.
-          - **\`cairn --version\` prints \`p1-<commit>\`, not this tag.** The version string is derived from Go build info (RULINGS.md R11) and names the milestone and the exact commit, which is the more useful fact when triaging; the tag names the release. The commit it prints is the one this release was built from.
+          - **\`cairn --version\` prints \`${TAG} (p1-<commit>)\`.** The tag is linked into the artifact at release time, so the binary can name the release it belongs to; the commit stays beside it because that is the fact that triages a bug report, and it is the commit this release was built from. A build from source reports \`p1-<commit>\` alone — it has no tag and does not invent one.
           - **Semantic search is opt-in.** Run \`cairn-embed-bootstrap.sh\` (shipped in the tarball, and installed under \`\$(brew --prefix)/share/cairn\`) or set \`CAIRN_EMBED_PYTHON\`. Without it retrieval is lexical-only, which works; \`cairn status\` names the mode.
           - Every artifact was built on a native runner of its own architecture and **executed there** before upload: a real mesh, a real daemon, a send and a search (\`packaging/release-smoke.sh\`). That is the FIX-F4 guard — a build without FTS5 never reaches this page.
           EOF

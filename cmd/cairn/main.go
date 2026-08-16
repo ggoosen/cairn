@@ -9,33 +9,78 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// version derives from build info (RULINGS.md R11): milestone status + VCS
-// rev. G7.5: P0 complete + P1 through the pre-N9 fixes → "p1".
+// releaseVersion is the release tag, STAMPED AT LINK TIME by the release
+// workflow:
+//
+//	go build -ldflags "-X main.releaseVersion=v0.3.0" ./cmd/cairn
+//
+// (see the Makefile's CAIRN_VERSION). It is empty in every other build, and
+// that emptiness is the point: D13 asks that a released artifact name its tag,
+// and equally that a development build never claim one it does not have. The
+// only way to set it is to link it in, so a binary that prints a tag was built
+// by something that knew the tag.
+var releaseVersion string
+
+// version is what `cairn --version`, `cairn status` and the FIX-H7
+// stale-daemon check all report. See buildVersion for the shape.
 var version = func() string {
+	rev, dirty, ok := vcsStamp()
+	return buildVersion(releaseVersion, rev, dirty, ok)
+}()
+
+// vcsStamp reads the VCS facts Go embeds in the binary (RULINGS.md R11):
+// the commit and whether the tree it was built from was modified. ok is false
+// for a build with no build info at all (`go run` of a bare file, some test
+// harnesses) — which is itself a fact worth reporting rather than papering
+// over.
+func vcsStamp() (rev string, dirty, ok bool) {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "", false, false
+	}
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		}
+	}
+	return rev, dirty, true
+}
+
+// buildVersion composes the version string from the linked-in release tag (if
+// any) and the VCS stamp. Kept pure so the composition is testable without
+// building four binaries.
+//
+// Milestone + commit is the DEVELOPMENT shape and is unchanged (RULINGS.md
+// R11, FIX-G7.5): "p1-<12 hex>", plus "-dirty" when the tree was modified, or
+// "p1-dev" when there is no stamp at all.
+//
+// D13 prefixes the release tag when one was linked in: "v0.3.0 (p1-<commit>)".
+// The tag leads because that is the fact a user reporting a bug can read off
+// their install, but the commit stays because it is the fact the author needs
+// to triage it — and because keeping the whole development stamp inside the
+// parentheses means "-dirty" and "-dev" remain visible to the release
+// workflow's guard, which refuses to publish an artifact carrying either. A
+// tag next to the word "dirty" is a self-refuting claim; a tag that had
+// silently swallowed it would not be.
+func buildVersion(release, rev string, dirty, haveInfo bool) string {
 	v := "p1"
-	if info, ok := debug.ReadBuildInfo(); ok {
-		rev, dirty := "", false
-		for _, s := range info.Settings {
-			switch s.Key {
-			case "vcs.revision":
-				rev = s.Value
-			case "vcs.modified":
-				dirty = s.Value == "true"
-			}
-		}
-		if len(rev) >= 12 {
-			v += "-" + rev[:12]
-		} else {
-			v += "-dev"
-		}
-		if dirty {
-			v += "-dirty"
-		}
-	} else {
+	switch {
+	case !haveInfo, len(rev) < 12:
 		v += "-dev"
+	default:
+		v += "-" + rev[:12]
+	}
+	if dirty {
+		v += "-dirty"
+	}
+	if release != "" {
+		return release + " (" + v + ")"
 	}
 	return v
-}()
+}
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {

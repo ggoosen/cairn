@@ -6111,3 +6111,45 @@ The `lint` job was ALSO red at 9bca52a, on `internal/rank/rank_test.go:174`
 parallel S8 sprint and was being edited while this ran, so it was left alone
 deliberately rather than risk a conflicting edit. It is a one-line change.
 
+## D13 — a release binary can now name its own version (2026-08-16) — DONE [S16]
+
+`cairn --version` printed `p1-<commit>` derived from Go build info and
+settable by nothing, so a tagged artifact could not report its tag; S7's
+release notes documented the discrepancy instead of fixing it.
+
+**Shape.** `p1-<12 hex>` (+`-dirty`, or `p1-dev` with no stamp) is unchanged
+for development builds. A release build reports `v0.3.0 (p1-<commit>)`. The
+tag leads because it is the fact a user can read off their install; the commit
+stays because it is the fact that triages the bug report — and because keeping
+the whole development stamp inside the parentheses means `-dirty` and `-dev`
+remain visible to the release workflow's existing guard, which refuses to
+publish an artifact carrying either. **A tag printed next to the word "dirty"
+refutes itself; a tag that had silently swallowed it would not.**
+
+**Mechanism.** `main.releaseVersion`, empty in every build except one linked
+with `-ldflags -X`. `make build CAIRN_VERSION=v0.3.0` produces that link and
+nothing else does, so a binary printing a tag was built by something that knew
+the tag. `main.go` splits into `vcsStamp()` (impure) and `buildVersion()`
+(pure, table-tested).
+
+**Where it is asserted.** Three places, because the failure mode is silence —
+a renamed symbol or mistyped `-X` path is accepted by the linker and the tag
+is simply absent:
+
+- `cmd/cairn/version_stamp_test.go` links a real stamped binary and runs it,
+  taking the linker flags from `make print-ldflags` rather than restating them
+  (so renaming the symbol fails the test instead of passing against a string
+  nothing uses). It also asserts the other half — the suite's own unstamped
+  binary must claim no tag.
+- `ci.yml`'s packaging job now builds with `CAIRN_VERSION=v0.0.0-ci` and
+  asserts both halves on **every push**. The release workflow only runs on a
+  tag, so without this the stamping would first be exercised by a real
+  release.
+- `release.yml` asserts the artifact's version string begins with the tag
+  being released, alongside the existing `-dirty`/`-dev` refusals. The release
+  notes now quote the real string instead of explaining why it is wrong.
+
+**Judgment call.** A stamped build of a dirty tree still prints the tag, with
+`-dirty` beside it, rather than suppressing the tag. Suppression would make
+the release workflow's guard test a condition that can no longer occur, and an
+operator hand-building with `CAIRN_VERSION` deserves to see both facts.

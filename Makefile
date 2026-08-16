@@ -14,7 +14,23 @@ GOTESTTAGS := -tags sqlite_fts5,cairn_testhooks
 # a release one; `build` and `deploy` do not use it.
 GONOVECTAGS := -tags sqlite_fts5,cairn_testhooks,cairn_novec
 
-.PHONY: build test test-short test-race test-novec vet verify all install deploy fuzz eval eval-vet eval-test
+# D13: a release artifact must be able to name the tag it was released under.
+# `cairn --version` otherwise derives everything from Go build info, which
+# knows the commit but has never heard of the tag — so a downloaded binary
+# could not say which release it was. Set CAIRN_VERSION and the tag is linked
+# in; leave it unset (every development build, every test build) and the
+# binary reports commit + dirty state and claims no tag at all.
+#
+#   make build CAIRN_VERSION=v0.3.0
+#
+# GOLDFLAGS is exported so the D13 test can link a stamped binary using the
+# SAME string this file produces, rather than a copy of it that can drift.
+CAIRN_VERSION ?=
+ifneq ($(strip $(CAIRN_VERSION)),)
+GOLDFLAGS := -ldflags=-X=main.releaseVersion=$(CAIRN_VERSION)
+endif
+
+.PHONY: build test test-short test-race test-novec vet verify all install deploy fuzz eval eval-vet eval-test print-ldflags
 
 all: vet test build
 
@@ -67,7 +83,13 @@ verify:
 
 build:
 	go build $(GOTAGS) ./...
-	go build $(GOTAGS) -o bin/cairn ./cmd/cairn
+	go build $(GOTAGS) $(GOLDFLAGS) -o bin/cairn ./cmd/cairn
+
+# The exact linker flags `build` would use for a given CAIRN_VERSION. The D13
+# test reads this instead of hard-coding the flag, so a rename of the stamped
+# symbol cannot leave the test passing against a string nothing else uses.
+print-ldflags:
+	@printf '%s' '$(GOLDFLAGS)'
 
 test:
 	go test $(GOTESTTAGS) ./...

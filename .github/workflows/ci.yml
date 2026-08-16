@@ -70,7 +70,24 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: make build
+      # D13: built the way a RELEASE is built — with the tag linked in. The
+      # release workflow only runs when someone pushes a tag, so without this
+      # the stamping mechanism would be exercised for the first time by a real
+      # release. A renamed symbol or a mistyped -X path fails silently: the
+      # linker accepts it and the tag is simply absent.
+      - run: make build CAIRN_VERSION=v0.0.0-ci
+      - name: Assert the release build stamps its tag
+        run: |
+          V="$(./bin/cairn --version)"
+          echo "version: $V"
+          case "$V" in v0.0.0-ci*) ;; *) echo "FAIL: a stamped build did not name its tag: $V"; exit 1 ;; esac
+          case "$V" in *p1*) ;; *) echo "FAIL: the stamped build dropped its commit stamp: $V"; exit 1 ;; esac
+          # And an UNSTAMPED build must claim no tag — the other half of D13.
+          go build -tags sqlite_fts5 -o bin/cairn-unstamped ./cmd/cairn
+          U="$(./bin/cairn-unstamped --version)"
+          echo "unstamped version: $U"
+          case "$U" in p1-*) ;; *) echo "FAIL: an unstamped build reports $U, expected p1-<commit>"; exit 1 ;; esac
+          rm -f bin/cairn-unstamped
       - name: Package and verify a release tarball
         run: |
           packaging/package.sh --binary bin/cairn --os linux --arch amd64 \
