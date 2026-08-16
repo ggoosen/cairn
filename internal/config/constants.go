@@ -238,6 +238,33 @@ const (
 	// BruteForceMaxCandidates: below this, plain cosine scan is the
 	// acceptable fallback when sqlite-vec fails to load (rulings §7).
 	BruteForceMaxCandidates = 5000
+
+	// D1 — sqlite-vec candidate over-fetch. vec0's KNN is EXACT (an
+	// exhaustive scan in C with a bounded heap, not an approximate index),
+	// so the only way its top-K can disagree with the brute-force oracle is
+	// a tie or a float32/float64 rounding difference at the K boundary. We
+	// therefore ask vec0 for k + VectorIndexOverfetch candidates and re-score
+	// THOSE with the same float64 cosine the oracle uses, then cut to k with
+	// the same (similarity desc, message_id asc) comparator. Identical
+	// arithmetic on a superset of the answer ⇒ identical answer.
+	VectorIndexOverfetch = 64
+	// VectorIndexMaxK is sqlite-vec's own ceiling on a KNN `k` (it refuses
+	// larger ones outright). Discovered by asking for more, not read off a
+	// page. A request above it is not an error condition: the brute-force
+	// oracle answers instead, which is what it is there for.
+	VectorIndexMaxK = 4096
+	// VectorIndexOverfetchMax bounds the doubling retry used when a tie
+	// group straddles the fetch boundary (so the tie cannot be resolved from
+	// what we fetched). Reaching the cap means thousands of exactly-equal
+	// similarities, where any deterministic cut is as good as another.
+	VectorIndexOverfetchMax = VectorIndexMaxK
+
+	// VecRebuildBatch pages the vec0 rebuild over `vectors`. The rebuild runs
+	// only when the derived index and the source of truth disagree (a first
+	// run with the extension, or one written by a build without it), and it
+	// pages precisely so rebuilding the index that exists to avoid loading
+	// every vector does not itself load every vector.
+	VecRebuildBatch = 512
 )
 
 // Embed-worker watchdogs. The subprocess protocol has no deadline of its
@@ -258,7 +285,7 @@ const (
 // ---------------------------------------------------------------------------
 
 const (
-	ProjectionSchemaVersion = 7 // v7: fts_revisions_trigram companion index (CAPTURE C2); v6: parked_events.retryable (R49/FIX-J1); v5: attachment durability class (N7); v4: derivatives+summaries (N4); v3: subscriptions (N3); v2: parked_events
+	ProjectionSchemaVersion = 8 // v8: vec_map, the rowid bridge to the sqlite-vec index (D1); v7: fts_revisions_trigram companion index (CAPTURE C2); v6: parked_events.retryable (R49/FIX-J1); v5: attachment durability class (N7); v4: derivatives+summaries (N4); v3: subscriptions (N3); v2: parked_events
 
 	// FTSTokenize: unicode61 with tokenchars `_ - # @` (rulings §6).
 	FTSTokenize = "unicode61 tokenchars '_-#@'"

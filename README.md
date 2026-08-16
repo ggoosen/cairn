@@ -102,11 +102,15 @@ later phases and the open design rulings — lives in one file:
 execution order and says what each blocked item is blocked *on*.
 
 Worth knowing when reading the table: some outstanding work maps to **no
-phase row at all** — deferred scaling debt (vector search beyond the
-brute-force cliff, prebuilt binaries, the origin-liveness beacon) and
-surfaces the spec describes but no milestone built (mutes, an `explore`
-ranking profile). A green phase row is not a claim that nothing is owed
-underneath it.
+phase row at all** — deferred scaling debt (prebuilt binaries) and surfaces
+the spec describes but no milestone built (mutes, an `explore` ranking
+profile). A green phase row is not a claim that nothing is owed underneath
+it.
+
+Vector search runs on a `sqlite-vec` index, feature-probed at startup; where
+the extension will not load, the brute-force cosine scan answers instead and
+`cairn status` names which path is live. Both return the same top-K — that
+equivalence is a test, not an assumption.
 
 | Phase | Scope | Status |
 |---|---|---|

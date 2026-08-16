@@ -32,12 +32,13 @@ two-machine rig · **[data]** needs real usage data first.
 The rest of this file is the specification. This part is the order to work
 it, as sprints, plus the honest reason each blocked item is blocked.
 The sprints are exhaustive: **S1–S14 cover every item in Part II**, so
-finishing them is finishing the backlog. **S4, S5 and S8 need nothing from
+finishing them is finishing the backlog. **S4 and S8 need nothing from
 anyone**, so an agent can start at S4 and run without waiting. (S1, defect
 clearance — D9 session reaping and D10 ladder-vs-missing-embedder; S2, mesh
 integrity and scoped capabilities — D2 origin-liveness beacon and D3
-capability `resource_selectors`; and S3, small surfaces — D4 `budget_tokens`
-and D5 standalone-mesh adoption — all shipped on 2026-08-16; see PROGRESS.md.)
+capability `resource_selectors`; S3, small surfaces — D4 `budget_tokens` and
+D5 standalone-mesh adoption; and S5, scale — D1 sqlite-vec — all shipped on
+2026-08-16; see PROGRESS.md.)
 
 ## Sprints
 
@@ -52,7 +53,7 @@ and `make verify` + `make test-race` green before moving on.
 
 **The sprint set is exhaustive.** Every item in Part II belongs to exactly
 one sprint — see Coverage at the end of this part — so finishing S1–S14 is
-finishing the backlog, with no separate track running alongside. S4, S5 and S8
+finishing the backlog, with no separate track running alongside. S4 and S8
 need nothing from anyone; the later sprints name their gate in the heading.
 
 ### S4 — Evaluation apparatus, dark [ready]
@@ -68,17 +69,6 @@ Built now, reporting nothing until corpora land and criteria are signed.
 emits structured results; the growth curve runs at 10×/100×/1000× at fixed
 budget; injection compliance is measurable through digest/search/fetch. **No
 number is reported as evidence.**
-
-### S5 — Scale [ready]
-
-- **D1** sqlite-vec (§4)
-
-**Exit:** vec0 and brute force return identical top-K on a seeded corpus
-(brute force retained as the oracle); extension-absent still starts and
-serves; a corpus above the cliff answers without loading every vector.
-
-**Note:** promote S5 ahead of S4 if C3 is imminent — transcript ingest walks
-straight off the brute-force cliff.
 
 ### S6 — Capture [gated: crossed review of the privacy model]
 
@@ -208,7 +198,7 @@ or the sprint set is wrong.
 | S2 ✅ shipped | D2, D3 | agent |
 | S3 ✅ shipped | D4, D5 | agent |
 | S4 | E4 + E9 growth curve (apparatus), E6 | agent |
-| S5 | D1 | agent |
+| S5 ✅ shipped | D1 | agent |
 | S6 | C3 | agent, after review |
 | S7 | D6 | agent + operator (signing) |
 | S8 | P2 penalties | agent |
@@ -305,10 +295,10 @@ a no-op; a seeded fake API key does not appear in the object store; the fault
 matrix stays green (ingest rides the ordinary publish path, so durability
 ordering is inherited).
 
-**Drags forward:** D1 sqlite-vec (transcript volume reaches the brute-force
-cliff far sooner than curated traffic) and the duplicate/saturation penalties
-in §5 (transcripts are highly repetitive; without penalties a scoped search
-drowns in near-identical chunks).
+**Drags forward:** the duplicate/saturation penalties in §5 (transcripts are
+highly repetitive; without penalties a scoped search drowns in near-identical
+chunks). The brute-force cliff transcript volume would have walked off is
+already gone — S5 shipped the sqlite-vec index.
 
 ### C4 residual [operator]
 
@@ -573,28 +563,6 @@ to change the product, not the metric. Thresholds live in `eval/claims.yaml`.
 These map to no phase row in the README. A green phase row is not a claim
 that nothing is owed underneath it.
 
-### D1 — sqlite-vec integration (L) [code]
-
-`schema.sql` stores vectors in a plain table and `HeadVectors` loads **every**
-head vector into process memory for an in-process cosine scan;
-`config.BruteForceMaxCandidates = 5000` names the cliff. Fine at today's
-corpus size, binding the moment C3 lands. CLAUDE.md pinned
-`asg017/sqlite-vec-go-bindings`; brute force was always the fallback.
-
-Feature-probe the extension at `projection.Open` — load failure is NOT an
-error: log once, set a capability flag, keep brute force. When it loads,
-mirror vectors into a `vec0` virtual table and route `VectorTopK` through it,
-one writer, same transaction as the projection write. Bump
-`ProjectionSchemaVersion`; the auto-rebuild path replays from the log, so no
-migration is needed — but the rebuild must be exercised, not assumed.
-
-**Acceptance.** Equivalence test: vec0 and brute force return the **identical
-top-K** on a seeded corpus — brute force stays in the tree as the oracle, not
-as dead code. Extension-absent test: `Open` succeeds, `cairn status` reports
-the path in use, results unchanged. A corpus above the cliff answers without
-loading every vector. `make verify` and `make test-race` green; the schema
-bump replays cleanly from a log written by the previous version.
-
 ### D6 — prebuilt signed binary + Homebrew tap (M) [code] + [operator]
 
 README's Quickstart promises a "planned zero-dependency path" and today's
@@ -629,8 +597,9 @@ design pass; until then this stays a question, not a task.
 
 - **Reranking with an LLM** — breaks R47/R51; a model's opinion does not
   reconcile against printed arithmetic.
-- **Replacing brute-force cosine** — D1 keeps it as the test oracle. A vector
-  path with no independent check is a silent-corruption surface.
+- **Replacing brute-force cosine** — it is the sqlite-vec path's test oracle
+  and its fallback, and it stays. A vector path with no independent check is
+  a silent-corruption surface.
 - **Widening capabilities to negative grants** as a side effect of D3. That is
   D7's ruling to make.
 

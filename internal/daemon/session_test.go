@@ -47,6 +47,15 @@ func serveSession(t *testing.T, dir string, clock *fakeClock) func(daemon.Reques
 	if clock != nil {
 		opts.Now = clock.Now
 	}
+	return serveSessionWith(t, opts)
+}
+
+// serveSessionWith is serveSession with the Options chosen by the caller —
+// D1 needs a served daemon that also has an embedder, so the vector half of
+// retrieval actually runs behind the dispatch boundary.
+func serveSessionWith(t *testing.T, opts daemon.Options) func(daemon.Request) (*daemon.Response, error) {
+	t.Helper()
+	dir := opts.Dir
 	d, err := daemon.Start(opts)
 	if err != nil {
 		t.Fatal(err)

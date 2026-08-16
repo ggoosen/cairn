@@ -118,14 +118,22 @@ func blobVec(b []byte) []float32 {
 // InsertVector stores one revision embedding and marks enrichment done —
 // one transaction, idempotent (INSERT OR REPLACE by PK). Also pins the
 // projection-wide embedding model id in meta.
+//
+// D1: the sqlite-vec mirror is written in the SAME transaction. One writer,
+// one commit — the derived index cannot be ahead of, or behind, the vector it
+// indexes, which is the same invariant the projection checkpoint holds.
 func (p *Projection) InsertVector(revisionID, modelID string, vec []float32) error {
 	tx, err := p.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	blob := VecBlob(vec)
 	if _, err := tx.Exec(`INSERT OR REPLACE INTO vectors(revision_id, embedding_model_id, dim, vec) VALUES (?,?,?,?)`,
-		revisionID, modelID, len(vec), VecBlob(vec)); err != nil {
+		revisionID, modelID, len(vec), blob); err != nil {
+		return err
+	}
+	if err := p.vecInsertTx(tx, revisionID, modelID, blob, len(vec)); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`INSERT INTO enrichment(revision_id, lexical_indexed, embedded)
@@ -158,6 +166,9 @@ func (p *Projection) InvalidateVectors() error {
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(`DELETE FROM vectors`); err != nil {
+		return err
+	}
+	if err := p.vecClearTx(tx); err != nil { // D1: the derived index goes with it
 		return err
 	}
 	if _, err := tx.Exec(`UPDATE enrichment SET embedded=0`); err != nil {
@@ -341,9 +352,24 @@ func (p *Projection) SignalObservations() ([]SignalRow, error) {
 	return out, rows.Err()
 }
 
-// HeadVectors returns message_id → head-revision vector for one model
-// (brute-force cosine happens in the caller; P0 candidate sets ≪ 5k —
-// rulings §7 sanctions the fallback).
+// HasVectors reports whether any vector for this model is stored — the cheap
+// question "is this corpus embedded at all?", used to distinguish a hybrid
+// retrieval that found nothing from a lexical-only one.
+func (p *Projection) HasVectors(modelID string) (bool, error) {
+	var n int
+	err := p.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM vectors WHERE embedding_model_id=?)`, modelID).Scan(&n)
+	return n == 1, err
+}
+
+// HeadVectors returns message_id → head-revision vector for one model.
+//
+// D1 residual: this is the last caller-side full scan. Search and digest now
+// route through VectorTopK, but subscription matching (R24) needs the WHOLE
+// similarity distribution — it calibrates a threshold against it and records
+// every evaluated candidate as an observation — so a top-K index cannot serve
+// it. That is a ranking-semantics problem, not an indexing one; it stays
+// brute force until someone changes R24's calibration, and is bounded in
+// practice by a subscription's hard topic filters.
 func (p *Projection) HeadVectors(modelID string, includeRetracted bool) (map[string][]float32, error) {
 	rows, err := p.db.Query(`
 		SELECT m.message_id, v.vec

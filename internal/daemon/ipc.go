@@ -1005,6 +1005,16 @@ func (d *Daemon) dispatchOp(req Request, ctx reqContext) Response {
 		// D10: lexical-only has three unrelated causes with three different
 		// remedies (provision the venv / wait out the backlog / fix a broken
 		// embedder) and used to look identical from here.
+		// D1: WHICH vector path is live. The brute-force fallback is a
+		// supported state, not a fault — but an operator watching a large
+		// corpus needs to know which one is answering, because only one of
+		// them scales.
+		if d.proj.VectorIndexActive() {
+			st["vector_path"] = "vec0"
+		} else {
+			st["vector_path"] = "brute_force"
+		}
+		st["vector_path_detail"] = d.proj.VectorIndexNote()
 		rs := d.RetrievalStatus()
 		st["retrieval"] = rs.Mode
 		if rs.Cause != "" {

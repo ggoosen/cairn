@@ -8,7 +8,13 @@ GOTAGS := -tags sqlite_fts5
 # told "this volume is encrypted" by its environment.
 GOTESTTAGS := -tags sqlite_fts5,cairn_testhooks
 
-.PHONY: build test test-short test-race vet verify all install deploy fuzz eval eval-vet eval-test
+# D1: `cairn_novec` compiles sqlite-vec OUT, so the brute-force fallback that
+# rulings §7 requires is exercised on a binary where the extension genuinely
+# does not exist — not merely switched off. It is a TEST configuration, never
+# a release one; `build` and `deploy` do not use it.
+GONOVECTAGS := -tags sqlite_fts5,cairn_testhooks,cairn_novec
+
+.PHONY: build test test-short test-race test-novec vet verify all install deploy fuzz eval eval-vet eval-test
 
 all: vet test build
 
@@ -56,6 +62,8 @@ verify:
 	@ERR=$$(mktemp); 	if go build ./... 2>"$$ERR"; then 		echo "FAIL: plain 'go build ./...' unexpectedly succeeded"; rm -f "$$ERR"; exit 1; 	elif grep -q "sqlite_fts5" "$$ERR"; then 		echo "OK: untagged build fails with the instructive message"; rm -f "$$ERR"; 	else 		echo "FAIL: untagged build failed WITHOUT the instructive message:"; cat "$$ERR"; rm -f "$$ERR"; exit 1; 	fi
 	@echo "== running the tagged suite =="
 	$(MAKE) vet test
+	@echo "== running the suite with sqlite-vec compiled OUT (D1 fallback) =="
+	$(MAKE) test-novec
 
 build:
 	go build $(GOTAGS) ./...
@@ -66,6 +74,12 @@ test:
 
 test-short:
 	go test $(GOTESTTAGS) -short ./...
+
+# D1: the same suite with the vector extension absent. The daemon must start
+# and serve from brute force on a machine that has no sqlite-vec, so that
+# configuration is part of the green bar rather than a claim.
+test-novec:
+	go test $(GONOVECTAGS) ./...
 
 # The embedder, enricher goroutine, IPC connections and sync sweeps share a
 # daemon: the race detector is part of the green bar, not an extra.

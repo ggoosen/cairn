@@ -190,17 +190,23 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 		qvecs, err := e.Embed([]string{opts.Query})
 		d.noteEmbed(err) // D10: so `cairn status` can name a failing embedder
 		if err == nil {
-			heads, herr := d.proj.HeadVectors(e.ModelID(), opts.IncludeRetracted)
-			if herr == nil && len(heads) > 0 {
-				if scope != nil {
-					for id := range heads {
-						if !scope[id] {
-							delete(heads, id)
-						}
-					}
+			// D1: the SCOPE goes into the query, not around it. Whether the
+			// candidates come from the vec0 index or the brute-force oracle,
+			// the top-K is computed over the permitted set — a confined
+			// session cannot see a neighbour it has no grant for, and a
+			// --topic search cannot be diluted by out-of-topic vectors.
+			ids, verr := d.proj.VectorTopK(e.ModelID(), qvecs[0], config.FusionCandidatesVector,
+				opts.IncludeRetracted, scope)
+			if verr == nil {
+				vecIDs = ids
+				// "full" means the semantic path RAN over an embedded corpus,
+				// not that the scope left anything in it — a narrow scope that
+				// matches nothing is still a hybrid retrieval.
+				if len(ids) > 0 {
+					mode = "full"
+				} else if has, herr := d.proj.HasVectors(e.ModelID()); herr == nil && has {
+					mode = "full"
 				}
-				vecIDs = topKCosine(heads, qvecs[0], config.FusionCandidatesVector)
-				mode = "full"
 			}
 		}
 	}
@@ -501,30 +507,10 @@ func applyExplorationQuota(scored []rank.Scored, k int, isNew func(id string) bo
 	return out
 }
 
-func topKCosine(heads map[string][]float32, q []float32, k int) []string {
-	type hit struct {
-		id  string
-		sim float64
-	}
-	hits := make([]hit, 0, len(heads))
-	for id, v := range heads {
-		hits = append(hits, hit{id, embed.Cosine(q, v)})
-	}
-	sort.Slice(hits, func(a, b int) bool {
-		if hits[a].sim != hits[b].sim {
-			return hits[a].sim > hits[b].sim
-		}
-		return hits[a].id < hits[b].id
-	})
-	if len(hits) > k {
-		hits = hits[:k]
-	}
-	out := make([]string, len(hits))
-	for i, h := range hits {
-		out[i] = h.id
-	}
-	return out
-}
+// D1: the in-process cosine scan that used to live here moved into
+// internal/projection (VectorTopKBruteForce), beside the vec0 path it is the
+// oracle for. Both are reached through Projection.VectorTopK, so a caller
+// cannot accidentally pick one.
 
 // --- digest ------------------------------------------------------------------
 
@@ -670,12 +656,24 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 		}
 		if e := d.emb(); e != nil {
 			if qvecs, err := e.Embed([]string{cfg.InterestQuery}); err == nil {
-				heads, herr := d.proj.HeadVectors(e.ModelID(), false)
-				if herr == nil && len(heads) > 0 {
-					for i, id := range topKCosine(heads, qvecs[0], config.FusionCandidatesVector) {
+				// D1: same routed top-K as search, but deliberately UNSCOPED
+				// (nil). The digest fuses a global lexical top-K with a global
+				// vector top-K, and reads a rank only for candidates that
+				// already survived the view's hard filters and the D3 grant —
+				// so nothing out of scope reaches the agent. Scoping only the
+				// vector half would tilt RRF toward it; scoping both is a
+				// ranking change, not an indexing one, and does not belong in
+				// a performance task.
+				ids, verr := d.proj.VectorTopK(e.ModelID(), qvecs[0], config.FusionCandidatesVector, false, nil)
+				if verr == nil {
+					for i, id := range ids {
 						vecRank[id] = i + 1
 					}
-					mode = "full"
+					if len(ids) > 0 {
+						mode = "full"
+					} else if has, herr := d.proj.HasVectors(e.ModelID()); herr == nil && has {
+						mode = "full"
+					}
 				}
 			}
 		}

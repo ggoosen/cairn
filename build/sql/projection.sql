@@ -51,6 +51,11 @@ CREATE TABLE messages (
 );
 CREATE INDEX idx_messages_thread ON messages(thread_id);
 CREATE INDEX idx_messages_created ON messages(created_at);
+-- D1: every vector query joins head_revision_id → revision, on both the vec0
+-- and the brute-force path. Without this SQLite builds a transient automatic
+-- index for that join on EVERY query, which is exactly the per-query O(corpus)
+-- cost the vector index exists to remove.
+CREATE INDEX idx_messages_head ON messages(head_revision_id);
 
 CREATE TABLE revisions (
   revision_id TEXT PRIMARY KEY,
@@ -159,14 +164,29 @@ CREATE VIRTUAL TABLE fts_revisions_trigram USING fts5(
 );
 
 -- Vectors: one row per (revision, model). Never compare across models.
--- If sqlite-vec is available this becomes a vec0 virtual table; otherwise
--- this plain table + in-process brute-force cosine (<5k candidates).
+-- This table is the SOURCE OF TRUTH for embeddings and the brute-force
+-- oracle's input; it is written whether or not sqlite-vec is available
+-- (D1). The vec0 virtual table below is a derived INDEX over it.
 CREATE TABLE vectors (
   revision_id TEXT NOT NULL,
   embedding_model_id TEXT NOT NULL,
   dim INTEGER NOT NULL,
   vec BLOB NOT NULL,                  -- float32 little-endian
   PRIMARY KEY (revision_id, embedding_model_id)
+);
+
+-- D1: rowid bridge to the sqlite-vec index. vec0 virtual tables are keyed by
+-- INTEGER rowid, our vectors by revision_id, so one stable mapping lives here
+-- (same shape as fts_map, and for the same reason). The vec0 table itself is
+-- created LAZILY, in internal/projection/vec.go, because its dimension is not
+-- known until the first vector arrives and because the extension may not be
+-- present at all — when it is absent this table simply stays empty and the
+-- brute-force scan over `vectors` answers, which is the sanctioned fallback
+-- (rulings §7). Rebuilt from `vectors` whenever the two disagree, so the vec0
+-- index is as derived as everything else here.
+CREATE TABLE vec_map (
+  rowid INTEGER PRIMARY KEY,
+  revision_id TEXT NOT NULL UNIQUE
 );
 
 -- Enrichment state for retrieval_mode + reindex --semantic backfill.
