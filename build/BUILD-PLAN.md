@@ -36,10 +36,14 @@ immediately.
 
 **Buildable now, in this order:**
 
-0. **D9 session reaping** — a live defect, not an enhancement, so it goes
-   first: `sessions.json` grows without bound (2,673 records observed on the
-   dev node), the mint path is O(n) per session, and `cairn session list` has
-   stopped being a usable kill switch. Carries one question for the author.
+0. **D9 session reaping** and **D10 ladder vs missing embedder** — live
+   defects, not enhancements, so they go first. D9: `sessions.json` grows
+   without bound (2,673 records observed on the dev node), the mint path is
+   O(n) per session, and `cairn session list` has stopped being a usable kill
+   switch. D10: the degradation ladder reads "no embedder" as "behind", so an
+   idle laptop sheds summaries forever and the reported level misleads. Both
+   were found by inspection on a live node, both carry a policy question that
+   is recorded rather than blocking.
 1. **D2 origin-liveness beacon** and **D3 capability `resource_selectors`** —
    independent of everything else, each closes a spec gap that exists today,
    each has a two-daemon or dispatch-boundary test that proves it. Best
@@ -595,6 +599,54 @@ A killed `cairn mcp` process leaves no resident session once the sweep runs.
 Minting the 1000th session costs no more than the 10th. A live session is
 never reaped while its process is alive and inside its TTL — the test that
 matters most, because over-reaping breaks running agents.
+
+### D10 — the ladder cannot tell "behind" from "no embedder" (S/M) [code]
+
+**A live defect, same node as D9.** `assessDegradation`
+(internal/daemon/maintenance.go:19) samples `CountPendingEmbeddings()`
+unconditionally — it never checks whether an embedder exists. So the backlog
+axis cannot distinguish **backlog because we are behind** (real load; shed
+derived work to catch up) from **backlog because there is no embedder at
+all** (nothing to catch up to, so shedding buys nothing and never ends).
+
+Observed: 1,242 revisions unembedded because no venv is provisioned, read as
+debt, putting an idle laptop at rung 2 (delay-summaries) under zero load —
+and `message_summaries` holds 5 rows for 1,242 messages, which is that
+shedding actually happening.
+
+It worsens with corpus growth, because with no embedder the counter is
+monotonic in **corpus size, not load**: ~5,000 messages silently reaches rung
+3, 20,000 reaches rung 4 (thresholds at constants.go:593–596). Rungs 3 and 4
+are harmless no-ops in that state — you cannot delay embeddings that never
+run, and lexical-only is already true — but **rungs 1 and 2 shed real,
+achievable work forever**, and the reported level misleads the operator about
+why.
+
+**Two causes, one observable mode.** Today's `lexical_only` is
+`d.emb() == nil` (retrieve.go:147), *not* the ladder's rung 4, which would
+need 20,000 pending. Same visible state, two unrelated causes, and `cairn
+status` does not distinguish them — so an operator cannot tell "provision the
+venv" from "you are under load".
+
+**What.** Zero the backlog axis when no embedder is configured: "pending" is
+not debt when nothing can ever work it off. The disk axis (rungs 5–7) is
+unaffected and keeps governing. Separately, make `cairn status` name the
+cause of lexical-only — no embedder configured vs ladder rung 4 vs embedder
+present but failing — because the remedy differs in each case.
+
+**Policy note, not a blocker.** Whether an unworkable backlog counts as debt
+is a reading of spec §8.2. The conservative reading is that the ladder exists
+to shed derived work *so the system can catch up*; where catching up is
+impossible, shedding is pure loss with no recovery, so zeroing the axis is
+the ladder's intent rather than a change to it. Implement that, mark it
+`// RULING-NEEDED:` for confirmation, and do not block on the answer.
+
+**Acceptance.** A daemon with no embedder and 50,000 unembedded revisions
+reports Healthy on the backlog axis and writes summaries and auto-links
+normally. A daemon *with* an embedder and a real backlog still climbs the
+rungs exactly as it does today (the existing ladder tests must pass
+unchanged). Disk rungs are unaffected in both cases. `cairn status`
+distinguishes the causes of lexical-only, and a test pins each one.
 
 ### DEBT non-goals
 
