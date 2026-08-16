@@ -4310,7 +4310,9 @@ expiry and on dead bound-pid — neither of which is in question — and leave
 the `lastUsed` reset as written, marked `// RULING-NEEDED:`.
 
 Full defect writeup, including the upstream leak in cmd/cairn/mcp.go:67 where
-a `defer`red revoke cannot run on signal termination: build/BUILD-PLAN.md §4 D9.
+a `defer`red revoke cannot run on signal termination: build/BUILD-PLAN.md §4 D9
+at the time this was raised — the section was deleted when the work shipped
+(the plan's maintenance rule), and the writeup now lives in the D9 entry below.
 
 ## D9 — capability sessions are never reaped (2026-08-16) — DONE
 

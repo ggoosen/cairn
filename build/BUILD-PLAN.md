@@ -31,8 +31,10 @@ two-machine rig · **[data]** needs real usage data first.
 
 The rest of this file is the specification. This part is the order to work
 it, as sprints, plus the honest reason each blocked item is blocked.
-**Sprints S1–S5 need nothing from the operator**, so an agent can start at
-S1 immediately and run through S5 without waiting on anyone.
+**Sprints S2–S5 need nothing from the operator**, so an agent can start at
+S2 immediately and run through S5 without waiting on anyone. (S1, defect
+clearance — D9 session reaping and D10 ladder-vs-missing-embedder — shipped on
+2026-08-16; see PROGRESS.md.)
 
 ## Sprints
 
@@ -44,25 +46,6 @@ blocked work just stalls and lies about why.
 
 Run them in order. Each ships as its own commit(s) with PROGRESS.md updated,
 and `make verify` + `make test-race` green before moving on.
-
-### S1 — Defect clearance [ready]
-
-Two live defects found by inspection on a running node. Ahead of every
-enhancement, because they are wrong *now*.
-
-- **D9** session reaping (§4)
-- **D10** ladder vs missing embedder (§4)
-
-**Exit:** `sessions.json` reaches a bounded steady state and `cairn session
-prune` clears the backlog; a killed `cairn mcp` leaves no resident session; a
-daemon with no embedder reports Healthy on the backlog axis and writes
-summaries normally; `cairn status` names the cause of lexical-only. Both
-rulings recorded in PROGRESS, neither blocking.
-
-**Watch:** both fixes REMOVE behaviour, so the tests that matter are the
-negative ones — a live session is never reaped while its process lives inside
-its TTL, and a daemon with a real embedder and a real backlog still climbs the
-rungs exactly as today (existing ladder tests pass unchanged).
 
 ### S2 — Mesh integrity and scoped capabilities [ready]
 
@@ -132,7 +115,7 @@ Xcode toolchain; the workflow asserts the artifact is a `sqlite_fts5` build.
 
 These run in parallel and no agent can do them — E1 sign-off, corpus
 acquisition, the three §1 release blockers, C4 listings, the P3 two-machine
-pass, P2 calibration. Sprints S1–S5 are all deliberately independent of them,
+pass, P2 calibration. Sprints S2–S5 are all deliberately independent of them,
 so building never waits on this track and this track never waits on building.
 
 **Blocked, and by what:**
@@ -603,125 +586,6 @@ not implement a mute as a negative selector under D3 without that ruling.
 exists is backwards. If an exploration surface is wanted it needs its own
 design pass; until then this stays a question, not a task.
 
-### D9 — capability sessions are never reaped (M) [code] + [ruling]
-
-**A live defect, observed on the dev node:** `cairn session list` returns
-2,673 sessions accumulated since 2026-07-16, all named `mcp`, all
-`agent-standard` — 1,149 unexpired and 1,524 expired but still resident.
-`sessions.json` is 772 KB and growing at roughly two records per 90s while
-any MCP client runs.
-
-**Severity is operational, not a breach**, and saying so plainly matters:
-the daemon already treats a no-handle local caller as operator and the file
-is 0600 device-local, so 1,149 live `agent-standard` tokens grant nothing an
-attacker could not get more cheaply. This is consistent with the documented
-"confines agents, not attackers" posture. The real costs are unbounded
-growth, a quadratic mint path, and a kill switch nobody can read.
-
-Four compounding defects, each verified in the code:
-
-1. **Expiry is lazy via an unreachable path.** Expired records are deleted
-   only inside `resolve()` (session.go:280–289) — that is, only when someone
-   presents that exact token *after* it expired. A dead MCP client never
-   presents its token again, so its record is immortal. There is no
-   background sweep anywhere in `internal/daemon`.
-2. **`loadSessions` does not filter on load** (session.go:214–217), which is
-   the natural reaping point. It rehydrates every stored session verbatim and
-   sets `sess.lastUsed = now`, restarting the idle window on every daemon
-   restart — so idle revocation can never retire a session across a restart.
-3. **`persist()` rewrites the entire sorted array on every mutation**
-   (session.go:221). Minting one session is O(n) in all sessions ever
-   minted; cost grows quadratically over the mesh's life.
-4. **The leak has a source, upstream of session.go.** `cairn mcp` mints a
-   session per process and releases it with `defer` (cmd/cairn/mcp.go:67).
-   A deferred revoke does not run when the process is killed by a signal —
-   exactly how MCP clients tear down stdio servers — so every respawn leaks
-   precisely one record. Fixing only the reaping would leave the leak intact
-   and merely bound its backlog at the 24h TTL.
-
-**`BoundPID` is the fix, not a footnote.** It is recorded (session.go:254)
-and printed (session.go:312) and read **nowhere** in non-test code, so the
-pid binding is decorative and a token is valid for its full TTL regardless
-of whether its process still exists. A pid-liveness check is the honest
-implementation of the README's "auto-revoked on exit", reaps the leak at
-source rather than waiting out the TTL, and restores `session list` as a
-kill switch. Guard pid reuse: trust the pid only for sessions bound on this
-device, and pair it with `CreatedAt` so a recycled pid cannot resurrect a
-record.
-
-**What.** Drop expired entries in `loadSessions`; filter them in `list()`;
-sweep on create; reap sessions whose bound pid is gone; handle SIGTERM/SIGINT
-in `cairn mcp` so the revoke actually runs; add `cairn session prune` for the
-existing backlog. If the mint path stays O(n), bound it — an append-only
-journal with periodic compaction, or persisting only on a dirty flag.
-
-**RULING NEEDED — what should idle mean across a restart?** The README
-promises sessions are "auto-revoked on exit or idle". The code keeps that
-promise only within a single daemon lifetime, because `lastUsed` resets on
-load, and a comment says that reset is deliberate. Persisting `lastUsed`
-would make the user-facing promise true and stop a daemon restart from
-granting every stale token a fresh idle window — but it changes documented-
-as-intentional behaviour, so it needs an author ruling rather than a
-unilateral flip. Conservative interim: reap on expiry and dead-pid (neither
-of which is in question), leave the `lastUsed` reset alone, and mark it
-`// RULING-NEEDED:`.
-
-**Acceptance.** A daemon restarted with a `sessions.json` full of expired and
-dead-pid records loads a bounded set and rewrites the file smaller. `cairn
-session prune` retires the 2,673-record backlog and reports what it removed.
-A killed `cairn mcp` process leaves no resident session once the sweep runs.
-Minting the 1000th session costs no more than the 10th. A live session is
-never reaped while its process is alive and inside its TTL — the test that
-matters most, because over-reaping breaks running agents.
-
-### D10 — the ladder cannot tell "behind" from "no embedder" (S/M) [code]
-
-**A live defect, same node as D9.** `assessDegradation`
-(internal/daemon/maintenance.go:19) samples `CountPendingEmbeddings()`
-unconditionally — it never checks whether an embedder exists. So the backlog
-axis cannot distinguish **backlog because we are behind** (real load; shed
-derived work to catch up) from **backlog because there is no embedder at
-all** (nothing to catch up to, so shedding buys nothing and never ends).
-
-Observed: 1,242 revisions unembedded because no venv is provisioned, read as
-debt, putting an idle laptop at rung 2 (delay-summaries) under zero load —
-and `message_summaries` holds 5 rows for 1,242 messages, which is that
-shedding actually happening.
-
-It worsens with corpus growth, because with no embedder the counter is
-monotonic in **corpus size, not load**: ~5,000 messages silently reaches rung
-3, 20,000 reaches rung 4 (thresholds at constants.go:593–596). Rungs 3 and 4
-are harmless no-ops in that state — you cannot delay embeddings that never
-run, and lexical-only is already true — but **rungs 1 and 2 shed real,
-achievable work forever**, and the reported level misleads the operator about
-why.
-
-**Two causes, one observable mode.** Today's `lexical_only` is
-`d.emb() == nil` (retrieve.go:147), *not* the ladder's rung 4, which would
-need 20,000 pending. Same visible state, two unrelated causes, and `cairn
-status` does not distinguish them — so an operator cannot tell "provision the
-venv" from "you are under load".
-
-**What.** Zero the backlog axis when no embedder is configured: "pending" is
-not debt when nothing can ever work it off. The disk axis (rungs 5–7) is
-unaffected and keeps governing. Separately, make `cairn status` name the
-cause of lexical-only — no embedder configured vs ladder rung 4 vs embedder
-present but failing — because the remedy differs in each case.
-
-**Policy note, not a blocker.** Whether an unworkable backlog counts as debt
-is a reading of spec §8.2. The conservative reading is that the ladder exists
-to shed derived work *so the system can catch up*; where catching up is
-impossible, shedding is pure loss with no recovery, so zeroing the axis is
-the ladder's intent rather than a change to it. Implement that, mark it
-`// RULING-NEEDED:` for confirmation, and do not block on the answer.
-
-**Acceptance.** A daemon with no embedder and 50,000 unembedded revisions
-reports Healthy on the backlog axis and writes summaries and auto-links
-normally. A daemon *with* an embedder and a real backlog still climbs the
-rungs exactly as it does today (the existing ladder tests must pass
-unchanged). Disk rungs are unaffected in both cases. `cairn status`
-distinguishes the causes of lexical-only, and a test pins each one.
-
 ### DEBT non-goals
 
 - **Reranking with an LLM** — breaks R47/R51; a model's opinion does not
@@ -769,4 +633,6 @@ via `RULING-NEEDED`.
 | R38 bootstrap-trust retention breadth (`internal/daemon/daemon.go`) | nothing (confirmation) |
 | R40/R41 backfill confirmation (fork-repair revoke bundling) | nothing (confirmation) |
 | §8.2 reserved-slice vs send-never-blocks | §5: ladder rungs 6–7 |
+| D9 residual: should session `lastUsed` persist across a daemon restart (README promises idle revocation; the reset is documented as deliberate)? Conservative interim shipped — reap on expiry + dead pid only | nothing (confirmation) |
+| D10 residual: does an unworkable embedding backlog count as §8.2 debt? Conservative reading shipped — the axis is zeroed with no embedder | nothing (confirmation) |
 | Mutes vs "positive grants only" | §4: D7 |
