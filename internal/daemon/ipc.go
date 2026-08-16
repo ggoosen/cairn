@@ -884,6 +884,15 @@ func (d *Daemon) dispatch(req Request) Response {
 		} else {
 			st["embedder"] = "none (lexical_only)"
 		}
+		// D10: lexical-only has three unrelated causes with three different
+		// remedies (provision the venv / wait out the backlog / fix a broken
+		// embedder) and used to look identical from here.
+		rs := d.RetrievalStatus()
+		st["retrieval"] = rs.Mode
+		if rs.Cause != "" {
+			st["lexical_only_cause"] = rs.Cause
+			st["lexical_only_detail"] = rs.Detail
+		}
 		if pending, err := d.proj.CountPendingEmbeddings(); err == nil {
 			st["pending_embeddings"] = pending
 		}

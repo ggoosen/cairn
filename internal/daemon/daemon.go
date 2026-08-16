@@ -62,6 +62,13 @@ type Daemon struct {
 	// worker I/O internally.
 	embMu    sync.RWMutex
 	embedder embed.Embedder
+	// D10: the last outcome of an actual Embed call, so `cairn status` can
+	// tell "no embedder configured" from "an embedder that is failing" —
+	// today both show up only as lexical-only results, and the remedies are
+	// nothing alike. Guarded by embMu with the pointer it describes.
+	embLastOK   time.Time
+	embLastFail time.Time
+	embLastErr  string
 	trust    *identity.Trust
 	lg       *cairnlog.Log
 	// logs holds append handles for FOREIGN origins (N6 replication ingest +

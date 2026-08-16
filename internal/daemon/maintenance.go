@@ -18,8 +18,23 @@ import (
 // Returns the level for the caller (the enricher loop) to gate on.
 func (d *Daemon) assessDegradation() maintenance.Level {
 	debt := maintenance.Debt{}
-	if pending, err := d.proj.CountPendingEmbeddings(); err == nil {
-		debt.PendingEmbeddings = pending
+	// D10 — RULING-NEEDED (PROGRESS.md "Author rulings needed — D10"): a
+	// backlog nothing can ever work off is not debt. With no embedder
+	// configured, CountPendingEmbeddings is monotonic in CORPUS SIZE, not in
+	// load: an idle laptop with no venv sat at rung 2 (delay-summaries) with
+	// 1,242 unembeddable revisions and wrote 5 summaries for 1,242 messages.
+	// Rungs 3–4 are harmless no-ops in that state (you cannot delay embeddings
+	// that never run, and lexical-only is already true), but rungs 1–2 shed
+	// real, ACHIEVABLE work forever, and the ladder exists to shed derived work
+	// so the system can CATCH UP — where catching up is impossible, shedding
+	// is pure loss with no recovery. Zeroing the axis is read as the ladder's
+	// intent (spec §8.2) rather than a change to it; marked for confirmation.
+	// The disk axis (rungs 5–7) is a separate signal and is untouched.
+	embedderPresent := d.emb() != nil
+	if embedderPresent {
+		if pending, err := d.proj.CountPendingEmbeddings(); err == nil {
+			debt.PendingEmbeddings = pending
+		}
 	}
 	if free, ok := freeDiskBytes(d.dir); ok {
 		debt.DiskPressure = free < config.LadderDiskPressureFreeBytes
@@ -36,7 +51,11 @@ func (d *Daemon) assessDegradation() maintenance.Level {
 	d.mu.Unlock()
 	if lvl != prev {
 		// R45-style: a state change in a core subsystem is announced, not silent.
-		fmt.Fprintf(d.warn, "maintenance: degradation level %s → %s (pending embeddings %d)\n", prev, lvl, debt.PendingEmbeddings)
+		backlog := fmt.Sprintf("pending embeddings %d", debt.PendingEmbeddings)
+		if !embedderPresent {
+			backlog = "no embedder configured — backlog axis disengaged"
+		}
+		fmt.Fprintf(d.warn, "maintenance: degradation level %s → %s (%s)\n", prev, lvl, backlog)
 	}
 	return lvl
 }

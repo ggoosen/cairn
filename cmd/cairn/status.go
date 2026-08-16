@@ -60,6 +60,15 @@ func newStatusCmd(dirFlag *string) *cobra.Command {
 			fmt.Fprintf(out, "  sync listener: %v\n", s["sync_listener"])
 			fmt.Fprintf(out, "  rank profile:  %v\n", s["rank_profile"])
 			fmt.Fprintf(out, "  embedder:      %v\n", s["embedder"])
+			// D10: name the CAUSE of lexical-only. "no embedder configured",
+			// "the ladder is shedding the vector query" and "the embedder is
+			// failing" produced the same observable string before, and the
+			// operator's next move differs in each case.
+			if detail, ok := s["lexical_only_detail"].(string); ok {
+				fmt.Fprintf(out, "  retrieval:     %v — %s\n", s["retrieval"], detail)
+			} else {
+				fmt.Fprintf(out, "  retrieval:     %v (lexical + semantic)\n", s["retrieval"])
+			}
 			// SYNC-C4: a multi-device mesh with zero configured peers never
 			// replicates — say so instead of letting the operator find out.
 			members, _ := s["members"].(float64)

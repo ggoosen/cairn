@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/embed"
@@ -150,7 +151,9 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 	// lexical-only, shedding the vector query's cost even when an embedder is
 	// present. Inert at a healthy level.
 	if e := d.emb(); e != nil && !d.DegradationLevel().LexicalOnlyForced() {
-		if qvecs, err := e.Embed([]string{opts.Query}); err == nil {
+		qvecs, err := e.Embed([]string{opts.Query})
+		d.noteEmbed(err) // D10: so `cairn status` can name a failing embedder
+		if err == nil {
 			heads, herr := d.proj.HeadVectors(e.ModelID(), opts.IncludeRetracted)
 			if herr == nil && len(heads) > 0 {
 				if scope != nil {
@@ -864,6 +867,7 @@ func (d *Daemon) EnrichOnce(batch int) (int, error) {
 			continue // expired/missing: stays unembedded; lexical_only for it
 		}
 		vecs, err := e.Embed([]string{string(body)})
+		d.noteEmbed(err) // D10: a failing embedder is a reportable state, not just a log line
 		if err != nil {
 			return done, err
 		}
@@ -985,5 +989,54 @@ func (d *Daemon) emb() embed.Embedder {
 func (d *Daemon) SetEmbedderForTest(e embed.Embedder) {
 	d.embMu.Lock()
 	d.embedder = e
+	// a different embedder's health is not this one's (D10)
+	d.embLastOK, d.embLastFail, d.embLastErr = time.Time{}, time.Time{}, ""
 	d.embMu.Unlock()
+}
+
+// noteEmbed records the outcome of a real Embed call (D10). Health is "did the
+// LAST call work", not a rate: an embedder subprocess that has started failing
+// fails every call, and one that recovers reports healthy on its next success.
+func (d *Daemon) noteEmbed(err error) {
+	d.embMu.Lock()
+	defer d.embMu.Unlock()
+	if err == nil {
+		d.embLastOK = d.now()
+		return
+	}
+	d.embLastFail = d.now()
+	d.embLastErr = err.Error()
+}
+
+// RetrievalStatus explains what search will actually do right now and, when
+// that is lexical-only, WHY.
+//
+// D10: `lexical_only` in a search response has always been `d.emb() == nil`,
+// which is NOT the ladder's rung 4 — same visible state, unrelated causes,
+// opposite remedies (provision the venv vs wait out the load vs fix a broken
+// embedder), and `cairn status` could not tell them apart.
+type RetrievalStatus struct {
+	Mode   string `json:"mode"`             // "hybrid" | "lexical_only"
+	Cause  string `json:"cause,omitempty"`  // "" | "no_embedder" | "ladder_rung_4" | "embedder_failing"
+	Detail string `json:"detail,omitempty"` // one line, naming the remedy
+}
+
+func (d *Daemon) RetrievalStatus() RetrievalStatus {
+	e := d.emb()
+	if e == nil {
+		return RetrievalStatus{Mode: "lexical_only", Cause: "no_embedder",
+			Detail: "no embedder configured — provision the embed venv (scripts/cairn-embed-bootstrap.sh) or set CAIRN_EMBED_PYTHON"}
+	}
+	if d.DegradationLevel().LexicalOnlyForced() {
+		return RetrievalStatus{Mode: "lexical_only", Cause: "ladder_rung_4",
+			Detail: "degradation ladder rung 4: the embedding backlog is shedding the vector query — it clears as the enricher catches up"}
+	}
+	d.embMu.RLock()
+	failedAt, okAt, lastErr := d.embLastFail, d.embLastOK, d.embLastErr
+	d.embMu.RUnlock()
+	if !failedAt.IsZero() && failedAt.After(okAt) {
+		return RetrievalStatus{Mode: "lexical_only", Cause: "embedder_failing",
+			Detail: fmt.Sprintf("embedder %s is configured but its last call failed: %s", e.ModelID(), lastErr)}
+	}
+	return RetrievalStatus{Mode: "hybrid"}
 }

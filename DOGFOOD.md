@@ -50,7 +50,12 @@ python3 -m venv ~/cairn/.cairn/embed-venv
 
 If no venv is provisioned, the daemon now says so LOUDLY at every startup
 (R45): `embeddings: no embed venv found (semantic search disabled ...)`. A
-node running lexical-only is never a silent surprise again.
+node running lexical-only is never a silent surprise again. `cairn status`
+names the CAUSE — no embedder configured, the degradation ladder shedding the
+vector query, or a configured embedder that is failing — because the remedy
+differs in each case. With no embedder configured the unembedded backlog is
+NOT counted as degradation debt: nothing can work it off, so shedding
+summaries and auto-links would buy nothing and never end.
 
 ## 3. Wire the three agent surfaces
 

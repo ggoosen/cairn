@@ -4402,3 +4402,74 @@ Restated for the author: persisting `lastUsed` would make the README's
 "auto-revoked on exit or idle" true across restarts, but the reset is
 documented in code as deliberate, so flipping it is the author's call, not
 this fix's.
+
+## D10 — the ladder could not tell "behind" from "no embedder" (2026-08-16) — DONE
+
+Sprint S1, second live defect from the same node. `assessDegradation` sampled
+`CountPendingEmbeddings()` unconditionally, so the backlog axis could not tell
+**behind** (real load; shed derived work to catch up) from **no embedder at
+all** (nothing to catch up to). Observed: 1,242 revisions unembedded because no
+venv was provisioned, read as debt, putting an idle laptop at rung 2
+(delay-summaries) under zero load — and `message_summaries` held 5 rows for
+1,242 messages, which is that shedding actually happening. With no embedder the
+counter is monotonic in CORPUS SIZE, not in load, so it only ever worsens:
+~5,000 messages reaches rung 3, 20,000 reaches rung 4.
+
+**The fix is one condition:** the backlog axis is sampled only when an embedder
+is configured. Rungs 3–4 were harmless no-ops in that state anyway (you cannot
+delay embeddings that never run, and lexical-only was already true), but rungs
+1 and 2 shed real, ACHIEVABLE work forever. The disk axis (rungs 5–7) reads a
+different signal and is untouched in both states. The transition log now says
+"no embedder configured — backlog axis disengaged" rather than printing a
+pending count it is not using.
+
+An embedder that is present but FAILING still counts its backlog as debt: it is
+configured, the work is real, and the ladder's assumption that shedding buys
+time holds. Pinned by a test.
+
+**`cairn status` now names the cause of lexical-only**, which was the second
+half of the defect: today's `lexical_only` in a search response is
+`d.emb() == nil` (retrieve.go), which is NOT the ladder's rung 4 — same visible
+state, unrelated causes, and an operator could not tell "provision the venv"
+from "you are under load". New `Daemon.RetrievalStatus()` reports
+`hybrid` / `lexical_only` plus one of three causes with its remedy:
+
+| cause | means | remedy |
+|---|---|---|
+| `no_embedder` | nothing configured | provision the venv / `CAIRN_EMBED_PYTHON` |
+| `ladder_rung_4` | backlog is shedding the vector query | it clears as the enricher catches up |
+| `embedder_failing` | configured, last call errored | fix the embedder (the error is quoted) |
+
+The third was previously invisible: a failed query embed simply fell through to
+lexical results. The daemon now records the outcome of every real `Embed` call
+(query path and enricher), and health is "did the LAST call work" rather than a
+sticky flag — an embedder that recovers reports hybrid again on its next
+success. Swapping the embedder clears the record, since one embedder's health
+says nothing about another's.
+
+**One existing test changed, deliberately and visibly.**
+`TestP21DegradationLadderWired` manufactured its backlog by running with NO
+embedder — precisely the state D10 says is not debt — so it asserted the
+defect. It now starts the daemon WITH `embed.BagOfWords{}` and never runs the
+enricher, which produces a real backlog; every assertion (each rung, in order,
+with its gate flags) is untouched and passes unchanged. That is the only edit
+to an existing test in this sprint, and
+`TestD10EmbedderPresentStillClimbsTheLadder` re-pins the same climb
+independently so the zeroing cannot quietly become unconditional later.
+
+Green: `make verify`, `make test-race`.
+
+### Author rulings needed — D10 unworkable backlog as debt (raised 2026-08-16)
+
+Whether a backlog nothing can work off counts as "debt" is a reading of spec
+§8.2, not something the spec says outright. The conservative reading is
+implemented and NOT blocking: the ladder exists to shed derived work *so the
+system can catch up*, and where catching up is impossible, shedding is pure
+loss with no recovery — so zeroing the axis is the ladder's intent rather than
+a change to it.
+
+Question for the author: confirm that reading, or rule that an unworkable
+backlog should still degrade (in which case rungs 1–2 need a different
+justification, because in that state they shed achievable work permanently).
+Marker: `// RULING-NEEDED:` in `assessDegradation`,
+`internal/daemon/maintenance.go`.

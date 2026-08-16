@@ -57,13 +57,37 @@ func serveSessionDaemon(t *testing.T, dir string) (*daemon.Daemon, func(daemon.R
 	callD := func(req daemon.Request) (*daemon.Response, error) {
 		return daemon.Call(loaded.DeviceDir, req)
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for {
 		if _, err := callD(daemon.Request{Op: "status"}); err == nil {
 			return d, callD, stop
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("daemon never became reachable")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// waitStopped blocks until a stopped daemon has finished tearing its socket
+// down. Serve removes the socket file from a goroutine AFTER the listener
+// closes, and a replacement daemon reuses the same path — so starting the next
+// one too eagerly lets the old teardown delete the NEW socket, and the restart
+// test then fails for a reason that has nothing to do with sessions.
+func waitStopped(t *testing.T, dir string) {
+	t.Helper()
+	loaded, err := identity.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sock := daemon.SocketPath(loaded.Portable.CairnID)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(sock); os.IsNotExist(err) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("previous daemon never released its socket")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -160,6 +184,7 @@ func TestD9LiveSessionSurvivesDaemonRestart(t *testing.T) {
 	}
 	token := resp.Status["session"].(string)
 	stop()
+	waitStopped(t, dir)
 
 	_, callD2, _ := serveSessionDaemon(t, dir)
 	if !sessionTokens(t, callD2)[token[:8]] {
