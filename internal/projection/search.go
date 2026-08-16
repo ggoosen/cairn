@@ -29,19 +29,195 @@ type SearchResult struct {
 // FTSQuery converts a raw user/agent query into a safe FTS5 MATCH
 // expression: each whitespace-separated term is double-quoted (embedded
 // quotes doubled), so FTS5 operator characters (- # @ : etc.) can never
-// produce syntax errors or column filters. Semantics: implicit AND of
-// phrase-terms, bm25-ranked — identical to bareword behavior for plain
-// words.
+// produce syntax errors or column filters.
+//
+// Semantics (D11): the terms are joined with OR, not with the implicit AND
+// FTS5 applies to adjacent phrases. Conjunction made a document qualify only
+// by containing EVERY term, so "what did the council decide about approval"
+// returned nothing while "council approved" returned the document — the
+// retriever refused to answer the question an agent actually asks. Under
+// disjunction the document qualifies on any term and bm25 does the
+// discriminating: it sums an idf-weighted contribution per MATCHED term, so a
+// document matching more of the query (and rarer parts of it) sorts ahead of
+// one matching less. Measured on a 4-document fixture: matching "council"+"the"
+// scores −0.88764680 against −0.88764538 for "council" alone, and a document
+// matching only "the" scores −0.00000142.
+//
+// A term that tokenizes to nothing (`"---"`) yields an empty phrase, which
+// FTS5 matches against NO document — verified, and load-bearing: inside a
+// disjunction an empty phrase must stay inert rather than admit everything.
+// A query whose terms appear nowhere still returns nothing; OR is not
+// match-anything.
+//
+// This is the raw builder. The production candidate paths call it through
+// lexicalMatch, which first drops terms the index says carry no ordering
+// information (see LexicalPlan).
 func FTSQuery(raw string) string {
-	fields := strings.Fields(raw)
+	return ftsDisjunction(strings.Fields(raw))
+}
+
+// ftsDisjunction quotes and ORs an already-selected term list.
+func ftsDisjunction(fields []string) string {
 	if len(fields) == 0 {
-		return `""`
+		return `""` // matches nothing (an empty phrase is inert, not universal)
 	}
 	quoted := make([]string, len(fields))
 	for i, f := range fields {
 		quoted[i] = `"` + strings.ReplaceAll(f, `"`, `""`) + `"`
 	}
-	return strings.Join(quoted, " ")
+	return strings.Join(quoted, " OR ")
+}
+
+// LexicalPlan records which query terms actually formed the disjunction and
+// why the others did not. D11 widened matching from AND to OR; this is what
+// keeps the widening inspectable rather than a black box (spec §9), and it is
+// reported on every search response.
+type LexicalPlan struct {
+	// Terms is what was searched, in query order. Empty means no term of the
+	// query is in the index at all — the honest empty answer, not a refusal.
+	Terms []string `json:"terms,omitempty"`
+	// Common lists terms DROPPED because they occur in MORE than
+	// FTSNonDiscriminatingDocFraction of the indexed documents — past where
+	// bm25's idf crosses zero, so the index itself says they cannot order
+	// results. An OR over "the" is not recall, it is the whole corpus.
+	Common []string `json:"common_terms,omitempty"`
+	// Unmatched lists terms DROPPED because no indexed document contains them.
+	// They are inert, never unwanted: a query none of whose terms match still
+	// returns nothing.
+	Unmatched []string `json:"unmatched_terms,omitempty"`
+	// AllCommon reports the degenerate case: every matching term of the query
+	// was non-discriminating, so all of them were searched ANYWAY (they appear
+	// in Terms, not Common) rather than answering nothing. Also the normal state
+	// of a very small mesh, where every term is in half the documents.
+	AllCommon bool `json:"all_terms_common,omitempty"`
+}
+
+// ftsIndex names one FTS5 index and the rowid map that holds its document
+// population. The two values below are the only ones; their names are
+// compile-time constants (they are interpolated into SQL) and never caller
+// input.
+type ftsIndex struct{ table, mapTable string }
+
+var (
+	ftsRevisionsIndex   = ftsIndex{"fts_revisions", "fts_map"}
+	ftsDerivativesIndex = ftsIndex{"fts_derivatives", "fts_derivatives_map"}
+)
+
+// indexedDocs is the FTS index's document count — the N in bm25's idf.
+// max(rowid) is an O(log N) b-tree lookup on the map table, whose rowids are
+// assigned by INSERT and never deleted (retraction and supersession are
+// filtered at query time, never by removing FTS rows), so it equals the row
+// count. Should a row ever be deleted it would OVER-count, which widens the
+// cutoff and therefore drops FEWER terms — the safe direction: a term is never
+// discarded because the corpus was mis-measured downward.
+func (p *Projection) indexedDocs(idx ftsIndex) (int, error) {
+	var n sql.NullInt64
+	if err := p.db.QueryRow(`SELECT max(rowid) FROM ` + idx.mapTable).Scan(&n); err != nil {
+		return 0, err
+	}
+	return int(n.Int64), nil
+}
+
+// termDocs counts documents containing one term, stopping at limit. The
+// early exit is what bounds the cost: a term is only ever scanned as far as
+// the point where it stops being discriminating, so the expensive terms are
+// exactly the ones whose answer we already know once the limit is reached.
+func (p *Projection) termDocs(idx ftsIndex, quotedTerm string, limit int) (int, error) {
+	var n int
+	err := p.db.QueryRow(`SELECT count(*) FROM (SELECT rowid FROM `+idx.table+
+		` WHERE `+idx.table+` MATCH ? LIMIT ?)`, quotedTerm, limit).Scan(&n)
+	return n, err
+}
+
+// lexicalMatch builds the MATCH expression for a raw query against one index,
+// dropping terms the index says cannot order results (D11).
+//
+// The rule, in one sentence: search the terms that discriminate; if none of
+// them do, search all of them anyway. Precision comes from ranking, never from
+// refusing to answer — but a disjunction that includes "the" makes every
+// document a candidate, and then ranking is deciding between the whole corpus
+// on the strength of the one or two terms that meant something.
+//
+// Cost: one O(log N) count plus one early-exited probe per distinct term.
+// Single-term queries skip the probes entirely, which is a pure saving: with
+// one term the filter can only reach the all-common fallback (searching that
+// term) or drop it as unmatched (matching nothing, which searching it also
+// does), so the expression is the same either way.
+func (p *Projection) lexicalMatch(idx ftsIndex, raw string) (string, LexicalPlan, error) {
+	fields := dedupeFields(strings.Fields(raw))
+	if len(fields) <= 1 {
+		return ftsDisjunction(fields), LexicalPlan{Terms: fields}, nil
+	}
+	n, err := p.indexedDocs(idx)
+	if err != nil {
+		return "", LexicalPlan{}, err
+	}
+	if n == 0 {
+		return ftsDisjunction(fields), LexicalPlan{Terms: fields}, nil
+	}
+	// df ≥ cutoff ⇒ idf ≤ 0 ⇒ non-discriminating. The +1 makes it STRICTLY more
+	// than the fraction, and the floor of 2 says the thing bm25's ratio cannot:
+	// a term occurring in a single document names that document, so it is the
+	// most specific signal available whatever the corpus size. Without the
+	// floor a one-document mesh would call every term of every query common —
+	// true of the arithmetic, useless as a rule.
+	cutoff := int(float64(n)*config.FTSNonDiscriminatingDocFraction) + 1
+	if cutoff < 2 {
+		cutoff = 2
+	}
+	var plan LexicalPlan
+	var common []string
+	for _, f := range fields {
+		df, err := p.termDocs(idx, ftsDisjunction([]string{f}), cutoff)
+		if err != nil {
+			return "", LexicalPlan{}, err
+		}
+		switch {
+		case df == 0:
+			plan.Unmatched = append(plan.Unmatched, f)
+		case df >= cutoff:
+			common = append(common, f)
+		default:
+			plan.Terms = append(plan.Terms, f)
+		}
+	}
+	if len(plan.Terms) == 0 && len(plan.Unmatched) == 0 && len(common) > 0 {
+		// EVERY term of the query is common — "the project" against a corpus
+		// that says both words everywhere. The query carries no information to
+		// discriminate with, so search it as written rather than answering
+		// nothing: precision comes from ranking, and bm25 still prefers the
+		// documents matching more of it.
+		plan.AllCommon = true
+		plan.Terms = common
+	} else {
+		plan.Common = common
+	}
+	// Otherwise Terms may stay empty, and the expression matches nothing. That
+	// is the honest answer to a query whose content words name nothing in the
+	// corpus: falling back to its function words would return documents chosen
+	// for containing "the", which is the "OR became match-anything" failure.
+	// The asymmetry is deliberate — a query with nothing but common terms is
+	// answered; a query that ALSO brought terms the corpus has never seen is
+	// not answered on the strength of the leftovers.
+	return ftsDisjunction(plan.Terms), plan, nil
+}
+
+// dedupeFields keeps the first occurrence of each term: a repeated term costs
+// an extra df probe and tells bm25 nothing new.
+func dedupeFields(fields []string) []string {
+	if len(fields) < 2 {
+		return fields
+	}
+	seen := make(map[string]bool, len(fields))
+	out := fields[:0:0]
+	for _, f := range fields {
+		if seen[f] {
+			continue
+		}
+		seen[f] = true
+		out = append(out, f)
+	}
+	return out
 }
 
 // FTSTrigramQuery is FTSQuery's counterpart for the C2 companion index. A
@@ -65,7 +241,10 @@ func FTSTrigramQuery(raw string) string {
 // are excluded by default and included only with includeRetracted
 // (capability-gated at the caller — spec §5.3).
 func (p *Projection) SearchLexical(query string, k int, includeRetracted bool) ([]SearchResult, error) {
-	query = FTSQuery(query)
+	query, _, err := p.lexicalMatch(ftsRevisionsIndex, query)
+	if err != nil {
+		return nil, fmt.Errorf("lexical search: %w", err)
+	}
 	rows, err := p.db.Query(`
 		SELECT m.message_id, r.revision_id, r.body_hash, m.text_class, m.declared_priority,
 		       m.created_at, m.retracted, bm25(fts_revisions) AS score

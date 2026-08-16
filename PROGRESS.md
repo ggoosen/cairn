@@ -5762,3 +5762,224 @@ server while Option 1 would need one deployed separately.
 Until this is ruled on, `transport = "iroh"` refuses and the mesh runs on the
 audited tailnet transport. **No stub, no half-wire, and no dependency was added
 on the strength of a sandbox experiment.**
+
+## D11 — lexical search is disjunctive with preference (2026-08-16) — DONE [S15, Tier 1]
+
+**The defect, reproduced first on a real daemon.** `FTSQuery` joined the
+query's terms with FTS5's implicit AND, so a document qualified only by
+containing EVERY term. On a one-message mesh:
+
+    $ cairn search "council approved"                           -> 1 result
+    $ cairn search "what did the council decide about approval"  -> "results": null
+
+S4's apparatus had already found the same thing at corpus scale: six sample
+queries, zero results from `cairn search` for all six, while B1 (grep) returned
+hits. On the 184-document golden corpus the conjunctive matcher answered
+**at most one document for any query** — `cands=1` on a hit, `cands=0` on a
+miss — which is not retrieval, it is exact lookup wearing retrieval's clothes.
+
+**What shipped.** Terms are joined with `OR`, and bm25 does the discriminating:
+it sums an idf-weighted contribution per MATCHED term, so a document matching
+more of the query — and rarer parts of it — sorts above one matching less.
+Precision moves from *refusing to answer* into *ranking*.
+
+### The FTS5 construct, and what was rejected
+
+Measured on a four-document fixture before choosing (probe kept in the
+implementation comments, not in the tree):
+
+| expression | result |
+|---|---|
+| `"council" "the"` (implicit AND) | doc1 only |
+| `"council" OR "the"` | doc1 −0.88764680, then docs 2,3 at −0.00000142 |
+| `"council"` alone | doc1 −0.88764538 |
+| `"" ` / `"---"` (empty phrase) | matches NOTHING, inert inside an OR |
+
+Two facts fell out of that and both are load-bearing. Matching two terms scores
+better than matching one (−0.88764680 vs −0.88764538): **bm25 already
+implements "prefers more matched terms"**, so the disjunction needs no
+coverage counter of its own. And a document matching only `"the"` scores
+−0.00000142 — SQLite's bm25 clamps a non-positive idf to 1e-6, i.e. the index
+itself announces which terms cannot order anything.
+
+- **Chosen: plain `OR` between quoted phrases.** One MATCH expression, one bm25
+  ordering, so lexical rank position — the only thing the ranker consumes — is
+  a pure function of query and corpus. `why-ranked` prints `lex rank`; nothing
+  about reconciliation changes shape.
+- **Rejected: a relaxation ladder** (run AND, then subsets, then OR, and merge).
+  It would make candidate order a property of a merge policy rather than of one
+  bm25 ordering, and an external auditor would have to replay the ladder to
+  reproduce a rank. It also multiplies queries per search for a result bm25
+  already gives.
+- **Rejected: `NEAR()`** — proximity-constrained but still conjunctive inside
+  the group; it does not answer the defect.
+- **Rejected: prefix expansion (`term*`)** — widens by morphology, not by
+  disjunction, and moves toward match-anything.
+- **Rejected: an LLM or learned reranker** — BUILD-PLAN §4 non-goal, breaks
+  R47/R51 (a model's opinion does not reconcile against printed arithmetic).
+
+### The stopword problem showed up, and is solved as ranking
+
+The guard rail said stopword-heavy queries must not drag in every document
+containing "the", and measurement said they did: on the golden corpus a bare
+`OR` made **100 candidates (the pool cap)** for any query containing a
+function word — `"what did the team decide about the token rotation"` pulled
+the whole corpus in, and ranks 2..K were documents whose only claim was "the".
+
+The fix is a term filter derived from bm25 itself, not a word list. A term
+occurring in **more than half** the indexed documents is past the point where
+idf crosses zero, so the index says it cannot order results; it is dropped
+from the disjunction. Corpus-derived, language-independent, and it adapts as
+the corpus grows (`FTSNonDiscriminatingDocFraction`, the single new constant).
+That same query now builds a **10-candidate** pool with the right document
+still first.
+
+Two boundary rules make it safe, and each is pinned by its own test because
+each was found by a failing one:
+
+1. **A term in a single document is never common**, whatever the corpus size
+   (`cutoff` floors at 2). Without the floor a one-document mesh calls every
+   term of every query uninformative — arithmetically true, and it resurrects
+   the original defect on exactly the mesh the build plan reproduced it on.
+2. **When EVERY term of the query is common** ("the project" against a corpus
+   that says both words everywhere) the query is searched as written rather
+   than answered with silence — precision comes from ranking.
+
+**The asymmetry this creates, stated plainly.** If a query's content words
+match nothing and only its function words remain, it returns NOTHING rather
+than falling back ("what did the quokka decide about wombats" → empty; lexical
+arm searched no terms). But "the project" → answered. Adding a term to an OR
+therefore removes results in that one corner, which is not monotone. It is
+deliberate: the fallback exists for queries that carry no discriminating
+information at all, not as a way to answer a question about wombats with 100
+documents that contain "the". The alternative failed the sprint's own
+acceptance criterion.
+
+The C2 trigram companion keeps its conjunctive semantics, as instructed — it
+only ever fills pool slots the word index left empty, so nothing about it
+needed to move.
+
+### Visible, not silent
+
+Every search response now carries `lexical_query`: the terms searched, the
+terms dropped as `common_terms`, the terms dropped as `unmatched_terms`, and
+`all_terms_common` when the fallback fired. On the reproduction:
+
+    {"terms":["the","council"],"unmatched_terms":["what","did","decide","about","approval"]}
+
+An agent (or an auditor) can see why a result set has the shape it has without
+reasoning about bm25.
+
+### Guard rails — verified, not assumed
+
+- **R47/R51 reconciliation: verified by ACTUAL external recomputation**, not by
+  inspection. A python3 verifier parsed `cairn why-ranked` for every result of
+  the multi-term query `"what did the council decide about the drainage levy"`
+  on a live daemon, recomputed each score with plain IEEE-754 doubles (each
+  printed value × printed weight rounded individually, summed in R,S,F,P_eff,I,N
+  order) and compared against the score `cairn search` returned. **Bit-exact for
+  every result under BOTH profiles** (search-P0 and search-P2, the latter via
+  `CAIRN_RANK_PROFILE=p2`) — e.g. recomputed `0.9899434168389654` against
+  returned `0.9899434168389654`. The equivalent is now a permanent test
+  (`TestD11WhyRankedReconcilesForAMultiTermQuery`, both profiles, reusing the
+  R51 harness that reconciles against the RETURNED score).
+- **Hard budgets:** `TestBudgetComplianceProperty` still passes, and D11 adds
+  its own sweep over the queries the change widened (a stopword-heavy question,
+  `"the project"`, and bare `"the"`) × chars/tokens × five budgets including 1.
+  No overrun; more candidates cost more ranking, never more payload.
+- **`make verify` (incl. `test-novec`), `make test-race`, `make eval`: green.**
+
+### The golden corpus moved, case by case
+
+Lexical-only top-10 went **0.80 (24/30) → 0.97 (29/30)**; hybrid Success@5 is
+**unchanged at 0.97**. Nothing was re-recorded: the six cases that moved all
+moved from *nothing at all* to *the relevant document at rank 1*.
+
+| query | before | after |
+|---|---|---|
+| "when do proration credits apply" | 0 results | billing-proration @1 |
+| "autoscaler cleanup destroyed zone" | 0 results | deploy-dns @1 |
+| "tokenizer unicode grapheme truncation" | 0 results | ml-tokenizer @1 |
+| "corrupted embedding checkpoints" | 0 results | ml-tokenizer @1 |
+| "kubernetes canary error" | 0 results | deploy-canary @1 |
+| "zebra authentication middleware" | 0 results | still a miss (see below) |
+
+Every one of the other 24 kept its hit and kept it at rank 1. The remaining
+miss is unchanged and understood: "zebra" is not a token in this corpus
+(`unicode61 tokenchars '_-#@'` makes `zebra-api` ONE token), so the query can
+only match on "authentication" (df 10) and "middleware" (df 8), and the
+distractor notes that match the rarer of the two outrank the one document that
+matches the commoner. It was the hybrid pass's single miss before this change
+and remains it — bm25 behaving correctly on a corpus built to have decoys.
+
+**What did NOT move, and is worth saying:** the top-1 document for every query
+that already had a hit. The widening added results below the answer, not in
+front of it.
+
+A **ratchet** was added to `TestRunGoldenReproducesClaim`: lexical-only top-10
+must stay ≥ 0.96. The shipped gate (0.60) cannot tell conjunctive from
+disjunctive matching apart — 0.80 passes it — so a silent regression would
+otherwise sail through CI.
+
+### Mutation-tested
+
+Each mutation applied to the shipped code, suite run, then reverted:
+
+| mutation | caught by |
+|---|---|
+| `OR` → implicit AND (the original defect) | 3 projection tests, 1 daemon test, the golden ratchet |
+| common-term filter disabled | 2 projection, 2 daemon tests |
+| fallback fires even when content terms matched nothing | `TestD11AbsentSubjectMatterReturnsNothing` |
+| single-document cutoff floor removed | `TestD11OneDocumentMeshStillAnswers` |
+| cutoff back to non-strict (`df ≥ N/2`) | `TestD11HalfCorpusTermIsStillSearched` |
+| unmatched terms kept in the disjunction | 1 projection, 1 daemon test |
+
+The first two rounds found real gaps: the one-message reproduction and the
+half-corpus boundary were both initially unguarded, and the tests above exist
+because the mutations passed without them.
+
+### The evaluation harness, before and after
+
+`cairn-eval measure -corpus corpora/sample-plumbing-v1 -arms all`, run against
+a build of each side (the "before" from a throwaway worktree):
+
+    before:  8 arms flagged "RETURNED NOTHING FOR EVERY QUERY"
+             (B0 search+digest, B5 as-shipped/lexical-only/no-freshness/
+              no-priority/profile-p0/profile-p2 — every B5 SEARCH arm)
+    after:   2 — B0 search and digest, the no-memory control, which is
+             supposed to return nothing
+
+E4's B1-versus-B5 comparison now compares against a system that answers.
+**The darkness property is intact:** both runs end "NO NUMBERS ARE SHOWN", the
+scorecards stamp `evidence=false`, and `darkness_test.go` passes unchanged.
+
+### Cost, measured (2001-document corpus, per query)
+
+| query | AND (before) | OR without the filter | shipped |
+|---|---|---|---|
+| `council` | 0.27 ms | 0.30 ms | 0.22 ms |
+| `drainage levy` | 0.61 ms | 0.47 ms | 0.43 ms |
+| `what did the council decide about the drainage levy` | 0.68 ms (0 results) | 3.77 ms (100 junk candidates) | **0.80 ms (1 candidate)** |
+| six common terms, nothing else | 13.4 ms | 13.0 ms | 11.2 ms |
+
+The df probes are `SELECT count(*) FROM (SELECT rowid … MATCH ? LIMIT cutoff)`
+— early-exited, so a term is scanned only as far as the point where it stops
+discriminating — plus one `max(rowid)` for the corpus size, which is an
+O(log N) b-tree lookup because fts_map rowids are assigned by INSERT and never
+deleted. Net: the filter PAYS FOR ITSELF versus an unfiltered OR, and the
+natural-language query costs about what the old (empty) answer cost.
+
+**Recorded for S13's 1M scorecard:** a query made entirely of corpus-wide
+common terms is ~11–13 ms at 2k documents, and that cost is dominated by bm25
+ordering a saturated candidate pool — it was 13.4 ms under conjunction too, so
+D11 did not introduce it, but it scales with corpus size and should be measured
+at 1M rather than extrapolated.
+
+### One test's expectation changed, deliberately
+
+`TestF1UnprojectableEventIsParkedNotFatal` asserted `SearchLexical("after the
+poison")` returned EXACTLY ONE result. Under disjunction "before the poison" is
+a legitimate weaker hit. The test's subject is that the event after a parked
+one still projects, so it now asserts the intended message is the BEST match
+rather than the only match. That is the only pre-existing expectation that
+moved.

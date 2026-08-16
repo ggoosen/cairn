@@ -13,8 +13,19 @@ import (
 // LexicalTopK returns message IDs of HEAD-revision FTS matches in bm25
 // order (ties by message_id) — the lexical candidate list for RRF fusion.
 func (p *Projection) LexicalTopK(query string, k int, includeRetracted bool) ([]string, error) {
+	ids, _, err := p.LexicalTopKPlan(query, k, includeRetracted)
+	return ids, err
+}
+
+// LexicalTopKPlan is LexicalTopK plus the D11 term plan — which query terms
+// formed the disjunction, and which the index reported as carrying no ordering
+// information. Search reports it, so widened matching stays inspectable.
+func (p *Projection) LexicalTopKPlan(query string, k int, includeRetracted bool) ([]string, LexicalPlan, error) {
 	raw := query
-	query = FTSQuery(query)
+	query, plan, err := p.lexicalMatch(ftsRevisionsIndex, query)
+	if err != nil {
+		return nil, plan, fmt.Errorf("lexical candidates: %w", err)
+	}
 	rows, err := p.db.Query(`
 		SELECT m.message_id
 		FROM fts_revisions
@@ -25,26 +36,26 @@ func (p *Projection) LexicalTopK(query string, k int, includeRetracted bool) ([]
 		ORDER BY bm25(fts_revisions), m.message_id
 		LIMIT ?`, query, boolInt(includeRetracted), k)
 	if err != nil {
-		return nil, fmt.Errorf("lexical candidates: %w", err)
+		return nil, plan, fmt.Errorf("lexical candidates: %w", err)
 	}
 	defer rows.Close()
 	var out []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, err
+			return nil, plan, err
 		}
 		out = append(out, id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, plan, err
 	}
 	// N4: attachments are searchable via their derivatives — union hits from
 	// derivative text (body hits rank first; derivative hits append after,
 	// deduplicated). Provenance stays inspectable via `cairn derivative list`.
 	derivHits, err := p.DerivativeMessageHits(raw, k, includeRetracted)
 	if err != nil {
-		return nil, err
+		return nil, plan, err
 	}
 	// C2: same union, one source further out — the trigram companion index
 	// answers the substring/identifier queries the word index is structurally
@@ -53,7 +64,7 @@ func (p *Projection) LexicalTopK(query string, k int, includeRetracted bool) ([]
 	// displace a word hit or reorder what an agent already receives.
 	triHits, err := p.TrigramMessageHits(raw, k, includeRetracted)
 	if err != nil {
-		return nil, err
+		return nil, plan, err
 	}
 	seen := map[string]bool{}
 	for _, id := range out {
@@ -70,7 +81,7 @@ func (p *Projection) LexicalTopK(query string, k int, includeRetracted bool) ([]
 	}
 	appendUnseen(derivHits)
 	appendUnseen(triHits)
-	return out, nil
+	return out, plan, nil
 }
 
 // TrigramMessageHits returns HEAD-revision message IDs from the C2 trigram

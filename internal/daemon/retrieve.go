@@ -80,6 +80,12 @@ type SearchOutput struct {
 	// what the payload actually cost — a budget is only meaningful against a
 	// named tokenizer, so every budgeted response carries one.
 	Budget rank.Report `json:"budget"`
+	// LexicalQuery (D11) reports which query terms the lexical arm actually
+	// searched. Matching is disjunctive, so the answer to "why did this come
+	// back?" is no longer "it contained every word you typed"; this says what
+	// was searched and what the index dropped as carrying no ordering
+	// information, without an agent having to reason about bm25.
+	LexicalQuery *projection.LexicalPlan `json:"lexical_query,omitempty"`
 }
 
 // RankedResult is one scored hit. RETR-D1: sender/created/topics/snippet
@@ -164,7 +170,7 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 		return nil, fmt.Errorf("rejected before ack: %w", err)
 	}
 	scope = intersectScope(scope, confined)
-	lexIDs, err := d.proj.LexicalTopK(opts.Query, config.FusionCandidatesFTS, opts.IncludeRetracted)
+	lexIDs, lexPlan, err := d.proj.LexicalTopKPlan(opts.Query, config.FusionCandidatesFTS, opts.IncludeRetracted)
 	if err != nil {
 		return nil, err
 	}
@@ -274,6 +280,7 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 	if err != nil {
 		return nil, err
 	}
+	out.LexicalQuery = &lexPlan
 	d.recordInteraction("search", out.InteractionID, opts.Query, out.Budget, out, opts.TaskID, opts.AgentSurface, opts.AgentInstanceID, opts.Principal)
 	// P3-3d: on a thin node with remote-query enabled, prefer a full peer's
 	// complete result over our partial local one (best-effort; keeps local on

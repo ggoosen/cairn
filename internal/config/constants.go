@@ -302,6 +302,21 @@ const (
 	// answers them); a query left with no usable term skips the companion
 	// index entirely instead of running a match that cannot hit.
 	FTSTrigramMinTerm = 3
+
+	// FTSNonDiscriminatingDocFraction (D11) is the document frequency at which a
+	// query term stops saying anything about WHICH documents to prefer, as a
+	// fraction of the indexed documents. It is not a tuning dial and not a
+	// stopword list: BM25's inverse document frequency is
+	// idf = ln((N − n + 0.5)/(n + 0.5)), which crosses zero at exactly n = N/2,
+	// and SQLite's bm25() then clamps it to 1e-6 — measured: a term in 3 of 4
+	// documents scores −0.00000142 against −0.88764538 for a term in 1 of 4.
+	// Above this fraction the index itself declares the term worthless for
+	// ordering, so the D11 disjunction drops it instead of letting it widen the
+	// candidate pool to the whole corpus. Being corpus-derived it needs no
+	// language-specific word list and adapts as the corpus grows. If EVERY term
+	// is non-discriminating the query is answered with all of them anyway —
+	// precision comes from ranking, never from refusing to answer.
+	FTSNonDiscriminatingDocFraction = 0.5
 )
 
 // ParkedRetryableGrace (RULINGS.md R49.3) is how long a RETRYABLE parked event
