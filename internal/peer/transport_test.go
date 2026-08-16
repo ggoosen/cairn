@@ -165,7 +165,7 @@ func TestP32cPairingDisabledRefused(t *testing.T) {
 	t.Cleanup(func() { srv.Close() })
 
 	_, priv, _ := ed25519.GenerateKey(nil)
-	if _, err := PairDialWithTransport(tr, "node-a", "mesh-1", []byte(`{"invite_id":"x"}`), priv); err == nil {
+	if _, err := PairDialWithTransport(tr, "node-a", "mesh-1", []byte(`{"invite_id":"x"}`), priv, trust); err == nil {
 		t.Fatal("pairing accepted on a node with pairing disabled")
 	}
 }

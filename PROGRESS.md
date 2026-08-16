@@ -5328,3 +5328,95 @@ Not fixed here. It is a ranking-semantics change (R47/R51 reconciliation, the
 budget property tests and a golden corpus that is expected to MOVE are its
 guard rails), not a one-line loosening, and it deserves its own reviewed
 sprint rather than being folded into the plan-maintenance commit that found it.
+
+## P3-5 — mutual pairing authentication (2026-08-16) — DONE [S9, Tier 1]
+
+**Gap (recorded at P3-2c as deferred hardening):** the pairing handshake
+authenticated the DIALER to the inviting node (key possession) and nothing in
+the other direction. A joining node handed its root-signed credential to
+whatever answered the address the operator typed, then believed whatever verdict
+came back. A rogue endpoint could not forge membership, but it could harvest the
+credential's public half, refuse, or falsely ack — and the new node only learned
+something was wrong later, when sync failed.
+
+**Fix — the pairing wire is now v2 and authenticates both directions**
+(`internal/peer/pair.go`, `internal/config/constants.go`):
+
+    dialer → node:  hello{mode:"pair", cairn_id, nonce}
+    node   → dialer: pairMsg{v:2, server_device, nonce, sig}   ← NEW: the node proves ITSELF
+    dialer → node:  pairMsg{payload, sig}                       ← credential only after that passes
+    node   → dialer: pairMsg{ok, event_id}
+
+The dialer checks the node with `verifyPeer` — the SAME R27 rule the N5
+membership handshake applies (member, not revoked, signature over a nonce-bound
+transcript) — against the mesh trust the invitation proves from genesis
+(`identity.VerifyPairingInvitation`, or the installed pairing bootstrap). No new
+trust path, no new verifier: the check the joining node already ran offline is
+now also run against the live counterparty.
+
+Consequences, in order of importance:
+
+- **The credential is never handed to an unauthenticated endpoint.** The dialer
+  aborts before writing the payload, so a rogue listener learns nothing at all.
+  Verified against the shipped binary with a hand-written rogue listener that
+  claims the real cairn id: `ROGUE GOT NOTHING — the dialer refused us before
+  handing over the credential`.
+- **A false ack is no longer available to a non-member.**
+- Both proofs bind BOTH nonces and the node's device id, under domain separators
+  distinct from each other and from `SyncHelloDomain`, so no signature is
+  transplantable between protocol, direction or session.
+- The round trip count is unchanged (4 messages, was 5): the node's challenge
+  nonce arrives with its proof, so the dialer answers credential + proof in one
+  message.
+
+**Invariants deliberately preserved** (they were adversarially audited): hard
+single-use admission, server-side root re-verification in `servePair` /
+`AdmitPairedDevice`, expiry anchored in the root-signed cert, append-on-arrival,
+live trust refresh. Nothing in `internal/daemon/pairing.go` changed.
+
+**No silent downgrade.** A pre-v2 dialer (hello without a nonce) is refused with
+an instructive message naming the fix; its payload is drained first so the
+refusal cannot deadlock a synchronous transport. A v1 node is likewise refused by
+a v2 dialer. Downgrade is exactly what the version guards, so it is never
+negotiated.
+
+**Judgment call (operator-visible):** the dialer can only authenticate a node
+that is in the invitation's chain — i.e. one that was already in the mesh when
+the invitation was minted. Pairing with a node that JOINED AFTER the mint now
+fails closed. This is the conservative reading (a trust ceremony should not
+accept an unprovable counterparty) and the alternative — trusting the node's own
+claim — is precisely the hole being closed. `cairn pair join` says so on failure:
+mint the invitation on the node you intend to pair with, or pair with a device
+present at mint time. If the operator wants the looser behaviour it is a ruling,
+not a code change.
+
+**Tests.** `internal/peer/pair_test.go` (new, wire-level): both directions
+authenticate; a non-member rogue never receives the credential; a revoked node,
+a forged signature (right device id, wrong key), a foreign cairn, and nil trust
+are all refused with the credential unsent; a harvested proof replayed from
+another session is refused; the node signs NOTHING for a dialer it will refuse
+(no signing oracle); a v1 dialer is refused instructively, not downgraded; the
+dialer's proof over the old unbound transcript is refused.
+`internal/daemon/pairing_wire_test.go`: existing end-to-end pairing tests now
+carry the invitation trust, plus a new two-mesh test proving an invitation for
+mesh A cannot pair with a node of mesh B and admits nothing there.
+
+**Mutation-tested** (each mutation applied to the shipped code, suite re-run,
+then reverted): dialer skips `verifyPeer` → 4 tests fail; node's proof drops the
+dialer nonce → replay test fails; v1-dialer guard removed → downgrade test
+fails; nil-trust guard removed → its test fails; dialer proof drops the node id
+and dialer nonce → session-binding test fails; node signs before the cairn check
+→ signing-oracle test fails. No mutation passed unnoticed.
+
+**Live verification, two real daemons on loopback** (release binary, not the test
+harness): `cairn init` × 2 → `cairn pair invite` → `cairn pair join` admitted
+`device.add 057f18c5…`; node B's daemon then reconciled 5 events and `cairn
+search` on B found the message sent on A. Negatives, all refused with exit 1:
+replayed invite (`already admitted or revoked (pairing is single-use)`); a real
+second mesh answering the port (`wrong cairn`, logged with the presented cairn
+id); a rogue impersonating the right cairn id (`failed authentication against the
+invitation's chain — NOT handing it the invitation`, with the rogue confirming it
+received no credential); a device revoked after pairing (`SYNC REFUSED … is
+REVOKED`, and re-pairing refused).
+
+`go test -race` clean on `internal/peer`, `internal/daemon`, `cmd/cairn`.

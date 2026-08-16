@@ -89,16 +89,26 @@ func newPairCmd(dirFlag *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// P3-5: the mesh trust the invitation proves from GENESIS — the
+			// dialer authenticates the inviting node against it before handing
+			// over the credential. Re-derived here (rather than threaded out of
+			// the installer) so the check runs against a freshly verified chain
+			// on every attempt, including a retry after a network failure.
+			meshTrust, _, err := identity.VerifyPairingInvitation(inv, time.Now())
+			if err != nil {
+				return err
+			}
 			// pair over the wire: the inviting node appends our device.add. The
 			// payload carries only {cert, invite_id} — the private key stays here.
 			payload, err := json.Marshal(map[string]any{"cert": inv.Cert, "invite_id": inv.InviteID})
 			if err != nil {
 				return err
 			}
-			evID, err := peer.PairDial(args[1], inv.CairnID, payload, priv)
+			evID, err := peer.PairDial(args[1], inv.CairnID, payload, priv, meshTrust)
 			if err != nil {
 				return fmt.Errorf("identity installed, but the pairing handshake failed: %w\n"+
-					"(the invitation may have expired or already been used; if it succeeded once, just start the daemon to sync — re-running join is safe)", err)
+					"(the invitation may have expired or already been used; if it succeeded once, just start the daemon to sync — re-running join is safe)\n"+
+					"(if the node failed AUTHENTICATION: pairing is mutual (P3-5) — the node you dial must be provable from the invitation's own chain, so pair with a device that was already in the mesh when the invitation was minted, or mint a fresh invitation on the node you want to pair with)", err)
 			}
 			// SYNC-C3: persist the counterparty as a sync peer — we just proved
 			// it answers at args[1]. Without this, pairing succeeded but NOTHING

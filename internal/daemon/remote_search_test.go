@@ -59,7 +59,7 @@ func setupPairedPairCfg(t *testing.T, ownerRole string, configB func(dev *config
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := peer.PairDial(addr, inv.CairnID, payload, priv); err != nil {
+	if _, err := peer.PairDial(addr, inv.CairnID, payload, priv, inviteTrust(t, inv)); err != nil {
 		t.Fatalf("pair: %v", err)
 	}
 	if configB != nil {

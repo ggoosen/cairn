@@ -702,3 +702,21 @@ const (
 	OutboxErrorFile    = "error.json"
 	ReceiptSuffix      = ".receipt.json"
 )
+
+// P3-5 — mutual pairing authentication (S9). Appended as its own block so the
+// pairing constants above keep their original shape.
+const (
+	// PairProtocolVersion tags the pairing wire (distinct from
+	// SyncProtocolVersion, which tags post-handshake reconciliation). v1 was the
+	// dialer-authenticates-only handshake; v2 authenticates BOTH directions —
+	// the inviting node proves itself against the invitation's genesis-verified
+	// chain BEFORE the joining node hands over its credential. A version
+	// mismatch is refused instructively on both sides; it is never downgraded,
+	// because a silent downgrade is exactly the attack the version guards.
+	PairProtocolVersion = 2
+	// PairingServerHelloDomain domain-separates the INVITING node's proof from
+	// the dialer's key-possession proof (PairingHelloDomain) and from the N5
+	// handshake (SyncHelloDomain), so no signature is transplantable between
+	// protocols or directions.
+	PairingServerHelloDomain = "cairn-pair-server-hello-v1"
+)
