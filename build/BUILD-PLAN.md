@@ -32,10 +32,11 @@ two-machine rig · **[data]** needs real usage data first.
 The rest of this file is the specification. This part is the order to work
 it, as sprints, plus the honest reason each blocked item is blocked.
 The sprints are exhaustive: **S1–S14 cover every item in Part II**, so
-finishing them is finishing the backlog. **S2–S5 and S8 need nothing from
-anyone**, so an agent can start at S2 and run without waiting. (S1, defect
-clearance — D9 session reaping and D10 ladder-vs-missing-embedder — shipped on
-2026-08-16; see PROGRESS.md.)
+finishing them is finishing the backlog. **S3–S5 and S8 need nothing from
+anyone**, so an agent can start at S3 and run without waiting. (S1, defect
+clearance — D9 session reaping and D10 ladder-vs-missing-embedder — and S2,
+mesh integrity and scoped capabilities — D2 origin-liveness beacon and D3
+capability `resource_selectors` — both shipped on 2026-08-16; see PROGRESS.md.)
 
 ## Sprints
 
@@ -50,24 +51,8 @@ and `make verify` + `make test-race` green before moving on.
 
 **The sprint set is exhaustive.** Every item in Part II belongs to exactly
 one sprint — see Coverage at the end of this part — so finishing S1–S14 is
-finishing the backlog, with no separate track running alongside. S2–S5 and S8
+finishing the backlog, with no separate track running alongside. S3–S5 and S8
 need nothing from anyone; the later sprints name their gate in the heading.
-
-### S2 — Mesh integrity and scoped capabilities [ready]
-
-- **D2** origin-liveness beacon (§4) — catches a peer whose frontier moved
-  backwards, which nothing catches today
-- **D3** capability `resource_selectors` (§4) — confines a session to a
-  subtree, not just an action tier
-
-**Exit:** a two-daemon test raises the beacon alarm on a stale-backup restart
-with no false positive on ordinary restart/catch-up/thin-node; a session
-granted `topic="a/*"` is refused outside it with a **typed** refusal,
-including via `thread`.
-
-**Watch:** D3 touches the capability model (R21/R22/R23) — its own reviewable
-commit, never batched. Do not let a mute sneak in as a negative selector;
-that is D7's ruling.
 
 ### S3 — Small surfaces [ready]
 
@@ -228,7 +213,7 @@ or the sprint set is wrong.
 | Sprint | Part II items | Owner |
 |---|---|---|
 | S1 ✅ shipped | D9, D10 | agent |
-| S2 | D2, D3 | agent |
+| S2 ✅ shipped | D2, D3 | agent |
 | S3 | D4, D5 | agent |
 | S4 | E4 + E9 growth curve (apparatus), E6 | agent |
 | S5 | D1 | agent |
@@ -617,45 +602,6 @@ as dead code. Extension-absent test: `Open` succeeds, `cairn status` reports
 the path in use, results unchanged. A corpus above the cliff answers without
 loading every vector. `make verify` and `make test-race` green; the schema
 bump replays cleanly from a log written by the previous version.
-
-### D2 — origin-liveness beacon (M) [code]
-
-Spec §13.2 and rulings §2 deferred this in P0 for a stated reason — "requires
-peers" — and P1 has peers. The failure it catches is real and silent: a
-device restored from portable data only mints a new origin, and a device
-restored from a stale backup **regresses** its (generation, sequence). Today
-`detectFrontierForkFromPeer` catches divergence at the same sequence; nothing
-catches a peer whose frontier moved *backwards*.
-
-Persist the highest (generation, sequence) ever observed per origin device;
-on each reconcile compare the peer's advertised frontier against that
-watermark; a regression raises a durable alarm surfaced by `cairn net` and
-`cairn doctor`. Alarm, do not auto-quarantine: a regression signals operator
-error, not equivocation, and the fork machinery already owns equivocation.
-
-**Acceptance.** Two-daemon test where B restarts from a stale copy of its own
-state: A raises the alarm, names the origin and both watermarks, `cairn
-doctor` reports it. No false positive across an ordinary restart, an ordinary
-catch-up, or a thin node that legitimately holds less.
-
-### D3 — capability `resource_selectors` (M) [code]
-
-Spec §7.2 describes per-capability resource scoping — `topic="project/x/*"`,
-per-session budget caps. P0/P1 shipped the coarse action tiers only. A
-session can be denied *writing* but not confined to a *subtree*, which is the
-grant an operator actually wants for a narrow agent.
-
-Extend the capability record with optional selectors; enforce at the IPC
-dispatch boundary where the action tier is already checked, so enforcement
-stays singular. Topic globs resolve through the existing topic resolver — no
-second resolver. Budget caps clamp the requested `budget_chars`, and the
-clamp is reported rather than applied silently.
-
-**Acceptance.** A session granted `topic="a/*"` can search, digest and fetch
-within `a/*` and is refused outside it — including via `thread`, which
-crosses topics by construction. Refusals are **typed, not empty results**: an
-agent must be able to tell "nothing matched" from "you may not ask". Grants
-remain positive-only unless D7's ruling says otherwise.
 
 ### D4 — `budget_tokens` (M) [code]
 
