@@ -415,6 +415,13 @@ type RankRow struct {
 	Recipient      bool // explicit recipient of the requesting agent view
 	PinActive      bool // active pin on the head body object
 	PriorityConf   bool // signal.emit(priority_confirm) exists
+	// ThreadKey identifies the conversation for the S8 thread-saturation
+	// penalty. A ROOT message carries no thread_id — the thread emerges at the
+	// first reply and takes the root's id (see ThreadMessages) — so the key is
+	// COALESCE(thread_id, message_id): a root and its replies share one key, and
+	// a message that is nobody's root and nobody's reply keys uniquely on itself
+	// and can never saturate against anything.
+	ThreadKey string
 }
 
 // RankRows fetches rank inputs for a set of message IDs (agentView drives
@@ -433,7 +440,7 @@ func (p *Projection) RankRows(messageIDs []string, agentView string) (map[string
 	}
 	rows, err := p.db.Query(`
 		SELECT m.message_id, m.head_revision_id, r.body_hash, m.text_class, m.declared_priority,
-		       r.created_at, m.created_event_id,
+		       r.created_at, m.created_event_id, COALESCE(m.thread_id, m.message_id),
 		       EXISTS(SELECT 1 FROM recipients rc WHERE rc.message_id = m.message_id AND rc.agent_view = ?),
 		       EXISTS(SELECT 1 FROM pins pn WHERE pn.object_hash = r.body_hash AND pn.removed = 0),
 		       EXISTS(SELECT 1 FROM signals s WHERE s.message_id = m.message_id AND s.kind = 'priority_confirm')
@@ -447,7 +454,7 @@ func (p *Projection) RankRows(messageIDs []string, agentView string) (map[string
 		var rr RankRow
 		var recip, pin, pc int
 		if err := rows.Scan(&rr.MessageID, &rr.HeadRevisionID, &rr.BodyHash, &rr.TextClass, &rr.Priority,
-			&rr.CreatedAt, &rr.CreatedEventID, &recip, &pin, &pc); err != nil {
+			&rr.CreatedAt, &rr.CreatedEventID, &rr.ThreadKey, &recip, &pin, &pc); err != nil {
 			return nil, err
 		}
 		rr.Recipient, rr.PinActive, rr.PriorityConf = recip == 1, pin == 1, pc == 1

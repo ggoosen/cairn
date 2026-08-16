@@ -12,6 +12,12 @@ import "sort"
 type CalibCandidate struct {
 	MessageID        string
 	R, S, F, P, I, N float64
+	// Penalty is the S8 duplicate + thread-saturation contribution as it was
+	// LOGGED (already weight-multiplied, so ≤ 0). It is a fixed offset rather
+	// than a searchable weight: §9.1 pins the penalty cap, §9.3 calibrates the
+	// additive weights, and a grid that silently dropped the penalties would
+	// compare weight vectors against a baseline scored under different rules.
+	Penalty float64
 }
 
 // Episode is one retrieval episode with a known-good result (a `found`
@@ -30,7 +36,7 @@ func (w WeightVector) score(c CalibCandidate) float64 {
 	// forbid FMA contraction), so a calibration replay of the baseline weights
 	// reproduces logged scores bit-exactly.
 	return float64(w.R*c.R) + float64(w.S*c.S) + float64(w.F*c.F) +
-		float64(w.P*c.P) + float64(w.I*c.I) + float64(w.N*c.N)
+		float64(w.P*c.P) + float64(w.I*c.I) + float64(w.N*c.N) + c.Penalty
 }
 
 // rankOfFound returns the 1-based rank of the found candidate under w (0 if the

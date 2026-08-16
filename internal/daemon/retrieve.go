@@ -115,24 +115,45 @@ type componentsRecord struct {
 	Peff    string `json:"P_eff"`
 	I       string `json:"I,omitempty"` // P2 operator intent
 	N       string `json:"N,omitempty"` // P2 novelty
-	RRF     string `json:"RRF"`
-	LexRank int    `json:"lex_rank"`
-	VecRank int    `json:"vec_rank"`
-	Score   string `json:"score"`
-	Weights struct {
-		R string `json:"R"`
-		S string `json:"S,omitempty"`
-		F string `json:"F"`
-		P string `json:"P"`
-		I string `json:"I,omitempty"`
-		N string `json:"N,omitempty"`
+	// S8 penalties (P2 only). DupKey/DupAhead and ThreadKey/SatAhead are the
+	// EVIDENCE for the feature values: an auditor recomputes DUP and SAT from
+	// them without re-running retrieval, which is what makes a penalty part of
+	// the published arithmetic rather than an unexplained subtraction.
+	Dup       string `json:"DUP,omitempty"`
+	Sat       string `json:"SAT,omitempty"`
+	DupAhead  int    `json:"dup_ahead,omitempty"`
+	SatAhead  int    `json:"sat_ahead,omitempty"`
+	DupKey    string `json:"dup_key,omitempty"`
+	ThreadKey string `json:"thread_key,omitempty"`
+	RRF       string `json:"RRF"`
+	LexRank   int    `json:"lex_rank"`
+	VecRank   int    `json:"vec_rank"`
+	Score     string `json:"score"`
+	Weights   struct {
+		R   string `json:"R"`
+		S   string `json:"S,omitempty"`
+		F   string `json:"F"`
+		P   string `json:"P"`
+		I   string `json:"I,omitempty"`
+		N   string `json:"N,omitempty"`
+		Dup string `json:"DUP,omitempty"`
+		Sat string `json:"SAT,omitempty"`
 	} `json:"weights"`
 	CreatedAt string `json:"created_at"`
 	Mandatory string `json:"mandatory,omitempty"`
 }
 
-// fillP2Components adds the S/I/N component + weight strings when the profile is
-// P2 (kept out of the P0 record so existing explanations are byte-identical).
+// penaltyProduct is the recorded S8 penalty contribution to the score: the two
+// products summed in scorer order. Zero on a P0 record (no penalty fields, and
+// an absent decimal string parses to 0).
+func (rec componentsRecord) penaltyProduct() float64 {
+	return float64(rank.ParseDec(rec.Dup)*rank.ParseDec(rec.Weights.Dup)) +
+		float64(rank.ParseDec(rec.Sat)*rank.ParseDec(rec.Weights.Sat))
+}
+
+// fillP2Components adds the S/I/N and S8 penalty component + weight strings when
+// the profile is P2 (kept out of the P0 record so existing explanations are
+// byte-identical — P0 has no S/I/N terms and, per §9.1, no penalties either).
 func fillP2Components(rec *componentsRecord, s rank.Scored, profile rank.Profile) {
 	if !profile.IsP2() {
 		return
@@ -140,6 +161,10 @@ func fillP2Components(rec *componentsRecord, s rank.Scored, profile rank.Profile
 	w := profile.Weights()
 	rec.S, rec.I, rec.N = rank.Dec(s.S), rank.Dec(s.I), rank.Dec(s.N)
 	rec.Weights.S, rec.Weights.I, rec.Weights.N = rank.Dec(w.S), rank.Dec(w.I), rank.Dec(w.N)
+	rec.Dup, rec.Sat = rank.Dec(s.Components.Dup), rank.Dec(s.Components.Sat)
+	rec.Weights.Dup, rec.Weights.Sat = rank.Dec(w.Dup), rank.Dec(w.Sat)
+	rec.DupAhead, rec.SatAhead = s.Components.DupAhead, s.Components.SatAhead
+	rec.DupKey, rec.ThreadKey = s.DupKey, s.ThreadKey
 }
 
 // Search: FTS top-100 + vector top-100 → RRF k=60 → percentile → P0 search
@@ -257,6 +282,10 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 		c.CreatedAt = parseWall(row.CreatedAt)
 		c.Priority = row.Priority
 		c.Suspended = row.PinActive || row.PriorityConf
+		// S8 penalty keys: set unconditionally (they cost nothing and are read
+		// only by a profile that has penalty weights), so a profile switch never
+		// leaves them stale.
+		c.DupKey, c.ThreadKey = row.BodyHash, row.ThreadKey
 		if profile.IsP2() {
 			c.Salience = p2[id].Salience
 			c.Novelty = p2[id].Novelty
@@ -712,6 +741,8 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 			LexRank:   lexRank[id],
 			VecRank:   vecRank[id],
 			Mandatory: mandatory[id],
+			DupKey:    row.BodyHash, // S8: content identity (spec §9.1)
+			ThreadKey: row.ThreadKey,
 		}
 		if digestProfile.IsP2() {
 			c.Salience = p2[id].Salience
@@ -913,11 +944,35 @@ func (d *Daemon) WhyRanked(interactionID, messageID string) (string, error) {
 	term("P_eff", rec.Peff, rec.Weights.P, "   (executable priority, decayed)")
 	term("I", rec.I, rec.Weights.I, "   (operator intent)")
 	term("N", rec.N, rec.Weights.N, "   (novelty/exposure)")
+	// S8: the two §9.1 penalties, LAST because that is where the scorer adds
+	// them. Their weights are negative and equal to the cap, so the product is
+	// the penalty itself — capped by construction, never clamped after the fact.
+	// The annotation carries the evidence (how many earlier results shared the
+	// key, and which key), so the feature value is recomputable and not merely
+	// asserted.
+	term("DUP", rec.Dup, rec.Weights.Dup, fmt.Sprintf("   (%s; cap %s)",
+		penaltyEvidence(rec.DupAhead, "body", rec.DupKey), rank.Dec(config.PenaltyCap)))
+	term("SAT", rec.Sat, rec.Weights.Sat, fmt.Sprintf("   (%s; full at %s; cap %s)",
+		penaltyEvidence(rec.SatAhead, "thread", rec.ThreadKey),
+		rank.Dec(config.ThreadSaturationFullAt), rank.Dec(config.PenaltyCap)))
 	if rec.Mandatory != "" {
 		fmt.Fprintf(&b, "  mandatory: %s (inclusion class — not an additive score term)\n", rec.Mandatory)
 	}
 	fmt.Fprintf(&b, "  total %s\n", rec.Score)
 	return b.String(), nil
+}
+
+// penaltyEvidence renders the count a positional penalty was derived from and
+// the key it was counted over. The count is what makes the feature value
+// recomputable; the key is what lets an auditor recount it themselves.
+func penaltyEvidence(ahead int, sharing, key string) string {
+	if key == "" {
+		return "no key — exempt from this penalty"
+	}
+	if ahead == 1 {
+		return fmt.Sprintf("1 earlier result shares %s %s", sharing, key)
+	}
+	return fmt.Sprintf("%d earlier results share %s %s", ahead, sharing, key)
 }
 
 // --- enrichment ---------------------------------------------------------------

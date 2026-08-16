@@ -19,6 +19,58 @@ const sample = `01J8ZQ  rank 3 (profile=search-P0)
   total 0.730001
 `
 
+// A P2 trace with both S8 penalties live. The penalty weights are NEGATIVE (the
+// §9.1 cap), so an external verifier that summed |product| — or that skipped the
+// two lines it did not recognise — would disagree with the total.
+const penalised = `01J8ZR  rank 2 (profile=search-P2)
+  R     1 × 0.75 = 0.75   (lex rank 1, vec rank 2, RRF 0.0325)
+  S     0.4 × 0.08 = 0.032   (salience §9.2)
+  F     0.5 × 0.04 = 0.02   (created 2026-08-16T00:00:00Z)
+  P_eff 0 × 0 = 0   (executable priority, decayed)
+  I     0.6 × 0.1 = 0.06   (operator intent)
+  N     0.25 × 0.03 = 0.0075   (novelty/exposure)
+  DUP   1 × -0.15 = -0.15   (1 earlier result shares body b3:aaaa; cap 0.15)
+  SAT   0.6666666666666666 × -0.15 = -0.09999999999999999   (2 earlier results share thread 01J8ZP; full at 3; cap 0.15)
+  total 0.6194999999999999
+`
+
+// The penalties are terms like any other: parsed, summed in printed order, and
+// reconciled against the total. Before S8 this trace would have reconciled to
+// 0.8695 — i.e. the harness would have believed a score the agent never saw.
+func TestParsePenalties(t *testing.T) {
+	e, err := Parse(penalised)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := e.Terms[TermDup]; got.Value != 1 || got.Weight != -0.15 || got.Product != -0.15 {
+		t.Fatalf("DUP term parsed wrong: %+v", got)
+	}
+	if got := e.Terms[TermSat]; got.Weight != -0.15 {
+		t.Fatalf("SAT term parsed wrong: %+v", got)
+	}
+	if err := e.Reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	// an ablation must carry the penalties through: dropping F changes the score
+	// by exactly F's product and by nothing else.
+	if diff := e.ScoreWithout() - e.ScoreWithout(TermF); math.Abs(diff-0.02) > 1e-12 {
+		t.Fatalf("dropping F on a penalised trace moved the score by %v, want 0.02", diff)
+	}
+}
+
+// Mutation guard: an external verifier that ignored the penalty lines would
+// reconcile a trace whose total does not include them. Assert it does not.
+func TestReconciliationCatchesAnIgnoredPenalty(t *testing.T) {
+	e, err := Parse(strings.Replace(penalised,
+		"  DUP   1 × -0.15 = -0.15   (1 earlier result shares body b3:aaaa; cap 0.15)\n", "", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Reconcile(); err == nil {
+		t.Fatal("a trace missing its duplicate penalty reconciled: the verifier is not summing penalties")
+	}
+}
+
 func TestParse(t *testing.T) {
 	e, err := Parse(sample)
 	if err != nil {

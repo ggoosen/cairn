@@ -6171,3 +6171,139 @@ user downloads is what names the tag.
 `-dirty` beside it, rather than suppressing the tag. Suppression would make
 the release workflow's guard test a condition that can no longer occur, and an
 operator hand-building with `CAIRN_VERSION` deserves to see both facts.
+
+## S8 — P2 duplicate and thread-saturation penalties (2026-08-16) — DONE
+
+`config.PenaltyCap = 0.15` had been pinned and unreferenced since M0: spec
+§9.1 describes duplicate and thread-saturation penalties, and nothing applied
+them. They now apply under both P2 profiles, as ordinary additive terms in the
+why-ranked record, with an external recompute reconciling bit-exactly.
+
+### What a duplicate is, and what was rejected
+
+§9.1 pins the cap and nothing else. It never defines "duplicate" or
+"saturated", so the definitions are a choice, and the choice was made on
+auditability rather than on recall:
+
+- **Duplicate = content-address identity.** Two results are duplicates when
+  their head revisions resolve to the same body object — the BLAKE3 address
+  the object store already keys on. Binary, so the first occurrence is free
+  and every later copy pays the full cap.
+- **Rejected: embedding near-duplicates.** "Similar enough" needs a cutoff on
+  a cosine produced by whichever embedder is provisioned. The trace could
+  print the number, but reproducing it needs the same model at the same
+  version, and Cairn's embedder is an opt-in subprocess a node may not have at
+  all (search degrades to `lexical_only` without one). R51 defines
+  reconciliation against an EXTERNAL verifier; a penalty that moves an agent's
+  results and cannot be re-derived offline is the black box §9 forbids.
+- **Saturation = the projection's own thread key**, `COALESCE(thread_id,
+  message_id)` — a root and its replies share one key, a standalone message
+  keys on itself and can never saturate against anything. Graded rather than
+  binary: `min(ahead, 3)/3`, so a thread's second result costs a third of the
+  cap and its fourth costs all of it. A thread contributing a second message
+  is normal; a thread contributing its fourth is the crowding-out §9.1 names.
+
+Both penalties are POSITIONAL — "how much of this has the agent already been
+shown?" — so they need an order to be defined against, and it cannot be the
+order they help produce. The pass runs on the BASE ordering (every candidate
+scored with both penalty terms zero, sorted by the existing total comparator),
+assigns each candidate its penalty from what precedes it there, rescores, and
+re-sorts. `TestPenaltiesAreOrderIndependent` pins that the result is a function
+of the candidate SET, not of the slice's incoming order.
+
+### Author rulings needed
+
+- **Is near-duplicate detection wanted, and on what reproducible key?** Only
+  exact content identity is penalised today, which under-penalises and never
+  over-penalises. If C3 (transcript ingest) lands, near-identical chunks will
+  slip through this definition entirely — which is the case that made S8 "the
+  item C3 drags forward" in the first place. Auditable options exist that a
+  live embedder call is not: a normalised-text hash (case/whitespace/
+  punctuation folded) or a shingle/MinHash signature recorded in the
+  explanation. Marked `// RULING-NEEDED:` in `internal/rank/penalty.go`.
+
+### Lockstep with R47/R51, which is the whole difficulty
+
+The penalties are terms, not adjustments. `DUP` and `SAT` print with the same
+`value × weight = product` shape as R/S/F/P_eff/I/N and are summed LAST, so the
+scorer's term order is exactly the order the trace describes. Their WEIGHT is
+the §9.1 cap, negative: the feature stays an ordinary [0,1] number and "capped
+at 0.15" is a property of the weight rather than a clamp hidden in the
+arithmetic. The trace also prints the EVIDENCE — how many earlier results
+shared the key, and which key — so the feature value is recomputable, not
+asserted:
+
+    DUP   1 × -0.15 = -0.15   (1 earlier result shares body b2091e85…; cap 0.15)
+    SAT   0.6666666666666666 × -0.15 = -0.09999999999999999   (2 earlier
+          results share thread 01a00c13-19d0…; full at 3; cap 0.15)
+
+Under P0 the pass is SKIPPED, not merely zero-weighted, so a P0 trace's
+`DUP 0 × 0 = 0` is true of the item as well as of the score; P0 explanation
+records stay byte-identical (the penalty fields are omitted, exactly as S/I/N
+are). Three surfaces moved in the same change: `rank_explanations`, the
+`why-ranked` renderer, and the three suite recompute helpers — plus
+`eval/internal/explain`, whose `AllTerms` is the harness's external verifier
+and would otherwise have reconciled a score no agent ever received.
+
+### Verified by recomputation on a real binary, not by inspection
+
+A Python verifier (`struct.pack` bit comparison, no Go, no shared code) parsed
+`cairn why-ranked` for every result of a live query against a real daemon,
+checked each printed product equals value×weight, summed in printed order, and
+demanded bit-exact equality with the score returned OUTSIDE the record
+(`search --json` results; `score=` in the rendered digest):
+
+    search : reconciled 11 results bit-exactly (2 duplicate-penalised, 4 saturation-penalised)
+    digest : reconciled 11 entries bit-exactly (2 duplicate-penalised, 4 saturation-penalised)
+    OK: R47/R51 holds with both penalties active, under search and digest
+
+The same corpus under P0: 22 traces, all bit-exact, **zero** penalties fired.
+
+**Mutation-tested** (break it, confirm the suite notices) — all seven caught:
+duplicate penalty disabled; saturation grading flattened to the cap; cap
+doubled to 0.30; penalties scored but omitted from the trace (the R47/R51
+defect class — caught by the pre-existing digest reconciliation, at
+0.65 vs 0.60); P0 given penalty weights; penalties summed FIRST while the
+trace still prints them last (caught at 1 ulp — R51 clause 1 doing exactly its
+job); and the re-sort dropped so the penalised order goes stale.
+
+### Golden corpus: nothing moved, and why that is not a free pass
+
+`cairn bench golden` before and after: Success@5 **0.97**, lexical-only top-10
+**0.97**, same single miss (`"zebra authentication middleware"`) — the D11
+ratchet at ≥0.96 is untouched. A finer diff than the two headline numbers was
+taken: the full top-10 ID list for all 30 queries under P0 and P2, hybrid and
+lexical-only — 120 result lists — is **byte-identical**. **No corpus case
+moved.**
+
+That is a real result and also a limitation worth stating plainly: the corpus
+has 184 messages with 184 distinct bodies and no threads, so it cannot
+exercise either penalty. It confirms no regression; it says nothing about
+whether the penalties help. Their value gets measured when there is a corpus
+with repetition in it — C3 transcripts, or E7's longitudinal dogfood — and if
+they turn out to hurt, §9.1 being wrong is a legitimate finding.
+
+### Other judgment calls
+
+- **A penalised score can go negative** (R≈0 plus two capped penalties). Scores
+  are only ever compared, never interpreted as probabilities, and nothing in
+  the tree assumes positivity; spec §9.4 itself prints `penalties −0.00`, so
+  subtraction is the intended shape. Left as is rather than clamped — a clamp
+  would make the printed arithmetic stop reconciling.
+- **`DUP 0 × -0.15 = -0`** — the trace prints negative zero for an unfired
+  penalty, which is what IEEE-754 does and what §9.4's own example shows
+  (`−0.00`). Adding it is exact identity, so reconciliation is unaffected.
+- **Calibration replay (§9.3)** carries the logged penalty as a fixed
+  per-candidate offset rather than a searchable weight: the cap is pinned by
+  §9.1, and a grid that silently dropped penalties would compare weight
+  vectors against a baseline scored under different rules. `rank-stats` reports
+  DUP/SAT distributions alongside the other terms, so an operator can see what
+  the penalties actually subtract before touching anything.
+- **`make verify`, `make test-race`, `make eval` all green.**
+- **Bookkeeping:** S8 ran concurrently with S16, and S16's D12 commit
+  (`efd75ce`) staged the whole of `internal/config/constants.go`, sweeping S8's
+  penalty constants block into it. The content is correct and in the tree; only
+  its attribution is wrong. Left alone rather than rewritten — undoing another
+  session's commit to fix an attribution is a worse trade than a note. The
+  hazard is the one the parallel-run brief names: stage your own paths, never
+  a whole shared file.

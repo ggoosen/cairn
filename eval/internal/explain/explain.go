@@ -37,9 +37,9 @@ import (
 
 // Term is one additive component of a score.
 type Term struct {
-	Name    string  // R | S | F | P_eff | I | N
-	Value   float64 // the component
-	Weight  float64 // the profile weight
+	Name    string  // R | S | F | P_eff | I | N | DUP | SAT
+	Value   float64 // the component (DUP/SAT: the penalty FEATURE, still in [0,1])
+	Weight  float64 // the profile weight (DUP/SAT: negative — the §9.1 cap)
 	Product float64 // value × weight, as Cairn printed it
 }
 
@@ -77,12 +77,18 @@ const (
 	TermPeff = "P_eff"
 	TermI    = "I"
 	TermN    = "N"
+	// S8 (spec §9.1): the duplicate and thread-saturation penalties. They are
+	// ordinary additive terms whose WEIGHT is negative and equal to the §9.1
+	// cap, so they need no special handling here — but they must be summed, and
+	// summed LAST, or the recompute stops matching the score.
+	TermDup = "DUP"
+	TermSat = "SAT"
 )
 
 // AllTerms lists every additive term in the order why-ranked prints them,
 // which is also the order rank.weightSet.score sums them (R51: the sum order
 // is load-bearing for exact reconciliation).
-var AllTerms = []string{TermR, TermS, TermF, TermPeff, TermI, TermN}
+var AllTerms = []string{TermR, TermS, TermF, TermPeff, TermI, TermN, TermDup, TermSat}
 
 // Parse reads one `cairn why-ranked` output.
 func Parse(out string) (*Explanation, error) {

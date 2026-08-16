@@ -44,7 +44,9 @@ func reconcile(t *testing.T, text string) {
 	if total == "" {
 		t.Fatalf("no total line in why-ranked output:\n%s", text)
 	}
-	for _, name := range []string{"R", "S", "F", "P_eff", "I", "N"} {
+	// S8 added DUP and SAT: R47 names penalties explicitly, so they are part of
+	// "every term must be printed" and part of the recompute below.
+	for _, name := range []string{"R", "S", "F", "P_eff", "I", "N", "DUP", "SAT"} {
 		if _, ok := comp[name]; !ok {
 			t.Fatalf("component %q missing from why-ranked output (R47: every term must be printed):\n%s", name, text)
 		}
@@ -54,7 +56,8 @@ func reconcile(t *testing.T, text string) {
 	// R51: plain IEEE recompute (explicit conversions forbid FMA), matching the
 	// external-verifier semantics the scorer now guarantees.
 	sum := float64(v("R")*w("R")) + float64(v("S")*w("S")) + float64(v("F")*w("F")) +
-		float64(v("P_eff")*w("P_eff")) + float64(v("I")*w("I")) + float64(v("N")*w("N"))
+		float64(v("P_eff")*w("P_eff")) + float64(v("I")*w("I")) + float64(v("N")*w("N")) +
+		float64(v("DUP")*w("DUP")) + float64(v("SAT")*w("SAT"))
 	if got := rank.Dec(sum); got != total {
 		t.Fatalf("R47 VIOLATION: printed components recompute to %s, returned total %s\n%s", got, total, text)
 	}
