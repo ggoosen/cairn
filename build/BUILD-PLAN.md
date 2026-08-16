@@ -31,8 +31,9 @@ two-machine rig · **[data]** needs real usage data first.
 
 The rest of this file is the specification. This part is the order to work
 it, as sprints, plus the honest reason each blocked item is blocked.
-**Sprints S2–S5 need nothing from the operator**, so an agent can start at
-S2 immediately and run through S5 without waiting on anyone. (S1, defect
+The sprints are exhaustive: **S1–S14 cover every item in Part II**, so
+finishing them is finishing the backlog. **S2–S5 and S8 need nothing from
+anyone**, so an agent can start at S2 and run without waiting. (S1, defect
 clearance — D9 session reaping and D10 ladder-vs-missing-embedder — shipped on
 2026-08-16; see PROGRESS.md.)
 
@@ -46,6 +47,11 @@ blocked work just stalls and lies about why.
 
 Run them in order. Each ships as its own commit(s) with PROGRESS.md updated,
 and `make verify` + `make test-race` green before moving on.
+
+**The sprint set is exhaustive.** Every item in Part II belongs to exactly
+one sprint — see Coverage at the end of this part — so finishing S1–S14 is
+finishing the backlog, with no separate track running alongside. S2–S5 and S8
+need nothing from anyone; the later sprints name their gate in the heading.
 
 ### S2 — Mesh integrity and scoped capabilities [ready]
 
@@ -111,12 +117,137 @@ seeded fake API key never reaches the object store.
 **Exit:** `brew install` on a clean machine yields a working `cairn` with no
 Xcode toolchain; the workflow asserts the artifact is a `sqlite_fts5` build.
 
-### Not in a sprint: the operator track
+### S8 — Ranking completeness [ready]
 
-These run in parallel and no agent can do them — E1 sign-off, corpus
-acquisition, the three §1 release blockers, C4 listings, the P3 two-machine
-pass, P2 calibration. Sprints S2–S5 are all deliberately independent of them,
-so building never waits on this track and this track never waits on building.
+- **P2 duplicate/thread-saturation penalties** (§5) — `PenaltyCap` is pinned
+  and unreferenced; spec §9.1 describes the penalties nothing applies
+
+**Exit:** penalties apply under the P2 profile and appear as why-ranked
+components, with R47/R51 external recomputation reconciling **exactly** —
+that lockstep is the whole difficulty, not the penalty arithmetic.
+
+**Watch:** this is the item C3 drags forward. If S6 lands first, S8 stops
+being optional — transcripts are highly repetitive and a scoped search
+without penalties drowns in near-identical chunks.
+
+### S9 — Mesh transport completeness [ready]
+
+- **iroh transport** (§6) — the live wire, relay self-hosting + diagnostics,
+  NAT-traversing dial-by-key; the transport seam is already in place
+- **Automatic metered/battery sensing** (§6)
+- **Mutual pairing authentication** (§6) — the handshake authenticates
+  dialer→responder only
+
+**Exit:** two nodes pair and reconcile over iroh with no Tailscale
+dependency; a metered device is detected without the manual flag; the
+pairing handshake authenticates in both directions.
+
+**Watch:** large. iroh alone is bigger than most sprints here. Split it if it
+resists — the seam exists precisely so it can land incrementally.
+
+### S10 — Hardware validation [gated: two physical machines]
+
+- **P3 two-machine live pass** (§6) — pairing / thin-role / transport /
+  remote-query on real hardware over a real tailnet
+- **Live re-audit** of pairing/trust/sync code extended since the audited
+  July commit (§6)
+
+**Exit:** the P3 mesh path is exercised between two machines, not loopback,
+and the audit certifies the current commit rather than a July one.
+
+**Why it cannot be simulated:** the July audit ran single-host, which is
+exactly the caveat the README states. Loopback cannot falsify NAT traversal,
+clock skew between hosts, or a partition.
+
+### S11 — Measurement [gated: operator sign-off, then corpora]
+
+The point of the whole EVAL section. Nothing here may report a number before
+its kill criterion is signed.
+
+- **E1 sign-off** on the 21 kill criteria (§3.4) — [operator]
+- **E3 corpus acquisition** (§3.4) — [operator]
+- **Embed venv provisioning** (§1) — so measurement runs semantic, not
+  lexical-only; a lexical-only result would measure a different product
+- **E4 + E9 run for real** — the apparatus built dark in S4, now reporting
+- **E5** extrinsic agent-in-the-loop battery (§3.4) — **the thesis**; task
+  success, rediscovery rate, budget survival, cross-model transfer
+- **E7** longitudinal dogfood with pre-registration and randomized
+  withholding (§3.4), which subsumes the bare 30-handoff evaluation in §1
+- **E8** replication artifacts (§3.4)
+- **P2 weight calibration adoption** (§5) — needs E7's episode data; the
+  §9.3 protocol requires surviving holdout
+
+**Exit:** every claim in `eval/claims.yaml` has a measured result or a stated
+reason it could not be measured, and any kill criterion that fired has been
+acted on — by changing the product or the claim, not the metric.
+
+**Watch:** this is the sprint that can go badly, by design. If E5 shows Cairn
+losing to B1 (grep over transcripts), that is a real result and the plan says
+what to do about it. Budget real money and real time.
+
+### S12 — Ruling-gated surfaces [gated: author rulings]
+
+- **D7 mutes** (§4) — spec §7.1/§4.5 versus §7.2's positive-grants-only stance
+- **D8 explore ranking profile** (§4) — needs an exploration surface first
+- **P2 ladder rungs 6–7 enforcement** (§5) — §8.2 reserved-slice versus
+  send-never-blocks
+
+**Exit:** each of the three is either built to a recorded ruling or deleted
+from the spec, with the ruling written into RULINGS.md. "Still open" is not
+an exit — an unanswered question that blocks work is itself the deliverable.
+
+### S13 — Release [gated: S1–S12 green]
+
+- **Overnight 1M-event synthetic scorecard** (§1) — includes the
+  reindex/backup/restore/RSS numbers never recorded
+- **C4 provider-directory listings** (§2) — [operator]
+- Cut the first tag
+
+**Exit:** `cairn gates` passes on a real corpus, the scorecard is recorded in
+PROGRESS, and a tagged release exists whose artifacts verify.
+
+### S14 — P4: self-organising knowledge [gated: P2 usage data]
+
+- Automated filing · embedding-clustered self-folding topic maps · salience
+  propagation · multi-human namespaces, per-topic ACLs, payload-level
+  encryption + key epochs (§7)
+
+**Exit:** per-item, once S11 has produced the usage and salience data that
+makes any of it more than guesswork.
+
+**Watch:** deliberately last and deliberately vague. P4 is evidence-gated;
+specifying it in detail before S11 reports would be inventing requirements.
+
+### Coverage
+
+**Every item in Part II belongs to exactly one sprint.** That is the property
+that makes "finish the sprints" equal "finish the backlog", and it is worth
+checking when adding work: if a new item does not fit a sprint, it needs one,
+or the sprint set is wrong.
+
+| Sprint | Part II items | Owner |
+|---|---|---|
+| S1 ✅ shipped | D9, D10 | agent |
+| S2 | D2, D3 | agent |
+| S3 | D4, D5 | agent |
+| S4 | E4 + E9 growth curve (apparatus), E6 | agent |
+| S5 | D1 | agent |
+| S6 | C3 | agent, after review |
+| S7 | D6 | agent + operator (signing) |
+| S8 | P2 penalties | agent |
+| S9 | iroh, metered sensing, mutual pairing auth | agent |
+| S10 | P3 two-machine pass, live re-audit | operator + hardware |
+| S11 | E1, E3, venv, E4/E9 reported, E5, E7, E8, P2 calibration | operator + agent |
+| S12 | D7, D8, ladder rungs 6–7 | author, then agent |
+| S13 | 1M scorecard, C4 listings, the tag | operator |
+| S14 | P4 (4 items) | agent, evidence-gated |
+
+The five open rulings in §8 are not sprint items: three are confirmations
+that block nothing, and two (mutes, §8.2 reserved-slice) are S12's input.
+
+**What "all sprints done" means:** every claim measured or explicitly
+unmeasurable, the mesh exercised on real hardware, a tagged release, and P4
+started on evidence rather than intuition. There is no hidden remainder.
 
 **Blocked, and by what:**
 
