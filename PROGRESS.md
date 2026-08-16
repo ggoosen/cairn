@@ -5573,3 +5573,104 @@ release, so four things are honestly untested:
 The operator's order of business: create the empty `ggoosen/homebrew-cairn`
 repo, run the rehearsal, then tag. README says plainly that the brew path goes
 live with the first tagged release, so nothing claims to work before it does.
+
+## P3-6 — automatic metered/battery sensing (2026-08-16) — DONE [S9, Tier 2]
+
+**Gap:** `metered` was a manual device-config flag. A laptop that walks onto a
+phone hotspot kept auto-spending data on thin-node remote query until the
+operator remembered to edit TOML — which is precisely the moment they are least
+likely to.
+
+**Build — `internal/netstate` (new package).** One rule governs it, stated at the
+top of the file and enforced by the type system:
+
+    SENSING MAY ONLY ADD CAUTION, NEVER REMOVE IT.
+
+Every probe answers a tri-state whose ZERO VALUE is Unknown, and the daemon
+combines inputs by OR and only by OR (`Daemon.meteredNow`, role.go):
+
+    effective metered = configured metered  OR  sensed metered == Yes
+
+so: an unreadable platform behaves EXACTLY as the daemon did before this
+existed; a sensed "metered" withholds spending with no operator action; a sensed
+"not metered" can never overrule an operator who declared metered — it is
+treated identically to Unknown. There is no input combination in which sensing
+makes a node spend data it would not have spent yesterday.
+
+- **Linux (best-effort):** metered from NetworkManager via `nmcli -t -f
+  GENERAL.DEVICE,GENERAL.STATE,GENERAL.METERED device show` — read through nmcli
+  rather than D-Bus so the dependency is "a binary present iff NetworkManager
+  is", not a D-Bus client in a daemon that has none. Only CONNECTED non-loopback
+  devices count; one metered connected device settles it (we cannot know which
+  interface a sync will traverse, so caution wins); a guessed-metered connection
+  — how NM marks cellular and tethering — reads as metered. Battery from sysfs
+  (`/sys/class/power_supply/*/type`, `online`, `status`), no helper process.
+- **macOS (primary):** battery from `pmset -g batt`. Metered is only PARTLY
+  available and the code says so: the signal a GUI app uses is
+  Network.framework's nw_path `expensive`/`constrained`, reachable only through
+  the framework (cgo + an Obj-C bridge), with no supported CLI read. So we sense
+  the one case macOS does expose as text — a default route over a tethered
+  iPhone/iPad/Android hardware port — and report **Unknown** for Wi-Fi, hotspot
+  and Low Data Mode rather than guessing "unmetered". That gap is real, is
+  documented at the call site, and leaves the manual flag as the operator's tool
+  for it.
+- **Everything else:** Unknown, always. No Windows (rulings §platform).
+- Readings are TTL-cached (`MeteredSenseTTL = 60s`) and each pass is bounded
+  (`MeteredSenseTimeout = 2s`), so a search path never pays for a probe and a
+  wedged platform tool can never wedge a search — it times out into Unknown.
+- `metered_sense = "off"` (new device-config key) disables probing entirely and
+  is REPORTED as off, so an operator can tell "sensing disabled" from "platform
+  unreadable". Config, not env-var-only — DEPLOY-E2's lesson.
+
+**Surfaces.** `cairn net` now prints the effective decision, which input made it,
+and the raw sensed values; the thin-node partial-search reason names the input
+too, so "I never set metered" and "the platform says I am tethered" no longer
+look identical to an agent.
+
+**Deliberately NOT done: battery keys no policy.** Battery is sensed and
+reported, but nothing behaves differently because of it. Spec §7 defines a
+metered consequence and no battery consequence; inventing one (suppress sync on
+battery?) is a product decision, not a platform one. `TestP36BatteryAloneChanges
+NoPolicy` is where a future change to that will fail first, on purpose.
+
+**Tests.** `internal/netstate`: the Linux battery probe against real fixture
+trees on disk (on battery / plugged in / battery-only / status unreadable / no
+supplies at all / unrecognised type), nmcli parsing against recorded terse
+output (unmetered, guessed-metered, explicitly metered, metered-wins-over-
+unmetered, a DISCONNECTED metered device that must NOT count, loopback ignored,
+garbage, empty), and the failure matrix — absent binary, non-zero exit, timeout,
+empty and garbage output — each of which must land on Unknown. The macOS probes
+and parsers are deliberately NOT behind the build tag (only the platform
+selector is), so `pmset`/`route`/`networksetup` parsing and the tether decision
+are compiled and tested on every host, including this Linux one. What that does
+NOT prove is that a given macOS release prints those strings — that needs a Mac,
+and is recorded here as unverified. `internal/daemon`: the policy — sensed
+metered suppresses remote query, an unreadable platform changes nothing, a
+sensed "not metered" cannot override the manual flag, battery alone changes
+nothing. `cmd/cairn`: `cairn net` reports the sensed state on the real host and
+distinguishes disabled from unreadable.
+
+**Mutation-tested:** sensing ignored → the sensed-metered test fails; Unknown
+treated as metered (fail-unsafe) → the unreadable-platform test fails; sensed
+"no" overriding the manual flag → its test fails; battery gating policy → its
+test fails; a failed probe reporting "not metered" → two netstate tests fail; a
+disconnected metered device counting → the parse test fails.
+
+**Live verification on THIS host** (release binary, real exec path):
+- Unreadable platform, which is what this container is:
+  `metered: false (not metered (metered: unknown (no NetworkManager/nmcli here —
+  exec: "nmcli": executable file not found in $PATH); battery: unknown (no power
+  supplies exposed — VM or container)))` — and a thin node with `remote_query`
+  on still attempted its remote query, exactly as before sensing existed.
+- Same node, same config, with a NetworkManager on PATH reporting a guessed-
+  metered wlan0: `metered: true (sensed: … NetworkManager: wlan0 = yes
+  (guessed))`, and the search went local + partial with
+  `remote query is configured but suppressed: the connection is metered —
+  sensed: …`. No config was edited between the two runs.
+
+`go test -race` clean on `internal/netstate`, `internal/daemon`, `cmd/cairn`.
+
+**Follow-up for the operator (not done here, deliberately):** README's "On P3"
+paragraph still lists "automatic metered/battery sensing" as deferred. README is
+being edited by a parallel sprint right now, so it is left to the reconciliation
+pass rather than edited from two sides at once.

@@ -851,6 +851,16 @@ func (d *Daemon) dispatchOp(req Request, ctx reqContext) Response {
 		d.mu.Unlock()
 		st := map[string]any{"frontiers": frs, "peers": peers, "bootstrap": d.bootstrapMode,
 			"listener": d.SyncListenState(), "transport": d.transportName, "role": d.myRole()}
+		// P3-6: metered/battery sensing. `metered` is the EFFECTIVE policy value
+		// (config OR sensed) and `metered_why` names which input decided it, so an
+		// operator can tell "not metered" from "could not tell".
+		metered, why := d.meteredNow()
+		power := d.powerState()
+		st["metered"] = metered
+		st["metered_why"] = why
+		st["metered_sensed"] = power.Metered.String()
+		st["on_battery"] = power.OnBattery.String()
+		st["power_source"] = power.Source
 		if dur, derr := d.DurabilityStatus(); derr == nil && len(dur) > 0 {
 			st["blobs"] = dur
 		}

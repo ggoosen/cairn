@@ -28,6 +28,7 @@ import (
 	"github.com/ggoosen/cairn/internal/identity"
 	cairnlog "github.com/ggoosen/cairn/internal/log"
 	"github.com/ggoosen/cairn/internal/maintenance"
+	"github.com/ggoosen/cairn/internal/netstate"
 	"github.com/ggoosen/cairn/internal/object"
 	"github.com/ggoosen/cairn/internal/peer"
 	"github.com/ggoosen/cairn/internal/projection"
@@ -45,6 +46,11 @@ type Options struct {
 	Warn     io.Writer
 	Embedder embed.Embedder // nil → embed.Detect(Dir); lexical_only if none
 	Version  string         // FIX-H7: build version string of THIS binary (stale-binary detection)
+	// PowerSense (P3-6) overrides the platform metered/battery sensor. nil =
+	// the real platform probe (or netstate.Disabled when `metered_sense = off`).
+	// Tests inject a fake so the POLICY is exercised on every OS, while the
+	// PROBES stay platform code tested against their own platform.
+	PowerSense netstate.Sensor
 }
 
 // Daemon is the single writer for one cairn.
@@ -135,6 +141,11 @@ type Daemon struct {
 	// status. Set once at Start, read-only thereafter.
 	transport     peer.Transport
 	transportName string
+
+	// power (P3-6) senses whether this device is on a metered connection or on
+	// battery. It only ever ADDS caution: see meteredNow. Never nil after Start
+	// (a disabled or unreadable sensor answers Unknown, which changes nothing).
+	power *netstate.Cached
 }
 
 // syncIdentity returns this node's peer identity for dialing. Caller holds
@@ -442,6 +453,17 @@ func Start(opts Options) (*Daemon, error) {
 		d.Close()
 		return nil, err
 	}
+	// P3-6: the metered/battery sensor. `metered_sense = "off"` reads nothing;
+	// otherwise the platform probe, TTL-cached so no search path pays for it.
+	switch {
+	case opts.PowerSense != nil:
+		d.power = netstate.NewCached(opts.PowerSense)
+	case d.loaded.Device != nil && d.loaded.Device.MeteredSense == config.MeteredSenseOff:
+		d.power = netstate.NewCached(netstate.Disabled)
+	default:
+		d.power = netstate.NewCached(netstate.Platform())
+	}
+
 	// P3-4: resolve the sync transport (P3-1 seam). An unavailable transport
 	// (iroh, deferred) disables sync LOUDLY (R45) without taking the daemon down.
 	d.transportName = config.TransportTCPTailnet

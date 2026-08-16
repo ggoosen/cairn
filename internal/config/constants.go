@@ -720,3 +720,22 @@ const (
 	// protocols or directions.
 	PairingServerHelloDomain = "cairn-pair-server-hello-v1"
 )
+
+// P3-6 — automatic metered/battery sensing (S9). Appended as its own block.
+const (
+	// MeteredSenseTTL is how long a sensed metered/battery reading is reused
+	// before the platform is asked again. A probe may exec a helper (nmcli,
+	// pmset), and the answer changes on the timescale of plugging in a cable or
+	// walking onto a hotspot — not per query. Long enough that a search path
+	// never pays for it; short enough that unplugging is noticed within a
+	// minute.
+	MeteredSenseTTL = 60 * time.Second
+	// MeteredSenseTimeout bounds one sensing pass. A wedged platform tool must
+	// never wedge a search: the probe is abandoned and the reading stays
+	// Unknown, which behaves exactly as no sensing at all.
+	MeteredSenseTimeout = 2 * time.Second
+	// MeteredSenseOff is the device-config value that disables sensing entirely
+	// (`metered_sense = "off"`), leaving the manual `metered` flag as the only
+	// input. Empty/unset means sensing is on.
+	MeteredSenseOff = "off"
+)

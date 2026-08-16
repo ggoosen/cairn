@@ -43,6 +43,15 @@ func newNetCmd(dirFlag *string) *cobra.Command {
 			} else {
 				fmt.Fprintf(out, "peers:      0 configured — nothing will replicate; add one with `cairn peer add <host:port>`\n")
 			}
+			// P3-6: the sensed device conditions. Printed even on a full node —
+			// the policy only bites on a thin one, but "why is my remote query
+			// not running" is asked from whichever node is in front of you.
+			if metered, ok := st["metered"].(bool); ok {
+				fmt.Fprintf(out, "metered:    %v (%s)\n", metered, str(st["metered_why"], "no detail"))
+				fmt.Fprintf(out, "power:      battery=%s sensed-metered=%s\n",
+					str(st["on_battery"], "unknown"), str(st["metered_sensed"], "unknown"))
+				fmt.Fprintf(out, "            %s\n", str(st["power_source"], "no sensor detail"))
+			}
 			if bootstrap, _ := st["bootstrap"].(bool); bootstrap {
 				fmt.Fprintf(out, "trust:      grant-chain bootstrap (log not yet fully replicated; R37)\n")
 			}
