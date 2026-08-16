@@ -10,10 +10,11 @@
 # stays user-owned — no /usr/local, no root.
 #
 # Requirements today: Git + Go 1.25+ — or any Go 1.21+ with GOTOOLCHAIN=auto
-# (the default), which fetches the pinned toolchain automatically. (Cairn uses
-# cgo/FTS5, so a prebuilt
-# signed/notarized binary + Homebrew tap is the planned zero-dependency path;
-# until then this builds from source). Override paths with CAIRN_PREFIX /
+# (the default), which fetches the pinned toolchain automatically. Cairn uses
+# cgo/FTS5, so this path needs a C toolchain; the zero-dependency path is the
+# Homebrew tap (`brew tap ggoosen/cairn && brew install cairn`), which installs
+# a prebuilt binary and goes live with the first tagged release — see D6 in
+# build/BUILD-PLAN.md. Override paths with CAIRN_PREFIX /
 # CAIRN_REPO / CAIRN_REF. On a machine with disk encryption OFF (FileVault
 # disabled), set CAIRN_ALLOW_UNENCRYPTED=1 to proceed anyway.
 set -eu

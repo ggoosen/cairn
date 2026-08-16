@@ -55,6 +55,51 @@ jobs:
           go-version-file: go.mod
       - run: make eval
 
+  # D6: the release path, rehearsed on every push. A release pipeline that only
+  # ever runs when someone tags is a pipeline nobody has tested — and its
+  # failure mode (a published artifact that cannot search, or a formula with a
+  # stale checksum) lands on users, not on CI. So the packaging scripts run
+  # here against a real binary: package it, verify the tarball, unpack it, run
+  # a real daemon out of the unpacked copy and search, then render and lint the
+  # Homebrew formula. Everything except the parts that need macOS, Homebrew and
+  # a GitHub release.
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make build
+      - name: Package and verify a release tarball
+        run: |
+          packaging/package.sh --binary bin/cairn --os linux --arch amd64 \
+            --version 0.0.0-ci --outdir dist
+          ( cd dist && shasum -a 256 -c checksums.txt )
+          mkdir -p dist/unpacked
+          tar xzf dist/cairn_0.0.0-ci_linux_amd64.tar.gz -C dist/unpacked
+          packaging/release-smoke.sh dist/unpacked/cairn
+      - name: Render and lint the Homebrew formula
+        run: |
+          # Two platforms have no artifact here, so their checksums are
+          # placeholders of the right SHAPE — the lint's job at this stage is
+          # the formula's structure, not these values. The real release renders
+          # from checksums of real bytes and the same lint runs again there.
+          {
+            printf '%s  cairn_0.0.0-ci_darwin_arm64.tar.gz\n' "$(printf placeholder-darwin-arm64 | shasum -a 256 | cut -d' ' -f1)"
+            grep linux_amd64 dist/checksums.txt
+            printf '%s  cairn_0.0.0-ci_linux_arm64.tar.gz\n' "$(printf placeholder-linux-arm64 | shasum -a 256 | cut -d' ' -f1)"
+          } > dist/ci-checksums.txt
+          packaging/mkformula.sh --tag v0.0.0-ci --repo "${{ github.repository }}" \
+            --checksums dist/ci-checksums.txt -o dist/cairn.rb
+          ruby packaging/formula-lint.rb dist/cairn.rb
+          # Homebrew is preinstalled on the hosted Linux runner. `brew style`
+          # is advisory here: this formula lives in a custom tap, and PolyForm
+          # Noncommercial is not a licence homebrew-core would accept anyway.
+          if command -v brew >/dev/null 2>&1; then
+            brew style dist/cairn.rb || echo "NOTE: brew style reported issues (advisory)"
+          fi
+
   lint:
     runs-on: ubuntu-latest
     steps:

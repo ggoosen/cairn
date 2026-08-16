@@ -5420,3 +5420,140 @@ received no credential); a device revoked after pairing (`SYNC REFUSED … is
 REVOKED`, and re-pairing refused).
 
 `go test -race` clean on `internal/peer`, `internal/daemon`, `cmd/cairn`.
+
+## D6 — prebuilt binaries + Homebrew tap (2026-08-16) — DONE in code, OPEN on signing
+
+Sprint S7. README promised a "planned zero-dependency path" and the only real
+path was build-from-source with a C toolchain — the largest adoption barrier a
+tool pitched as "one command" can have. What ships now: a release workflow that
+produces macOS arm64 and Linux x86_64/arm64 artifacts with checksums, and a
+Homebrew formula that points at them. Codesigning stays operator-gated, by
+design and in the open.
+
+### What was built
+
+- `.github/workflows/release.yml` — tag-triggered (`v*`), plus a
+  `workflow_dispatch` **rehearsal** mode that runs the entire pipeline and
+  publishes nothing. A release pipeline whose first execution is a real release
+  is a pipeline nobody has tested.
+- `packaging/release-smoke.sh` — the FIX-F4 guard carried from the source tree
+  to the **artifact**. It inits a throwaway mesh, starts the daemon, sends a
+  message, searches for it, and reads `cairn status`.
+- `packaging/package.sh` — packages an already-built binary into a tarball
+  (binary + LICENSE + README + the embed bootstrap script) and appends its
+  sha256 to a shared `checksums.txt`.
+- `packaging/homebrew/cairn.rb.tmpl` + `packaging/mkformula.sh` — the formula
+  and its renderer. Every placeholder must resolve or the render fails.
+- `packaging/formula-lint.rb` — evaluates a rendered formula against a stubbed
+  Homebrew DSL, once per shipped platform, and checks that each one resolved a
+  https url naming its own artifact and a real 64-hex sha256.
+- `ci.yml` gains a `packaging` job: the whole path (package → verify → unpack →
+  run a daemon out of the unpacked copy → render → lint) on **every push**, not
+  only at tag time.
+
+### Cross-compiling cgo was the central difficulty, and it was not solved — it was avoided
+
+Cairn is cgo (SQLite/FTS5), so a cross-built artifact is one nobody has ever
+executed. Each artifact is therefore built on a **native runner of its own
+architecture** (`macos-14`, `ubuntu-22.04`, `ubuntu-22.04-arm`) and run there
+before upload. Ubuntu 22.04 rather than `ubuntu-latest` is deliberate: the
+binary links glibc, so the runner's glibc silently becomes every user's floor.
+22.04 pins that floor at 2.35 and the release notes state it.
+
+### The FIX-F4 assertion, and the proof that it bites
+
+The compile-time guard proves the *source tree* refuses to build untagged; it
+says nothing about a downloaded tarball. So the assertion is made at runtime on
+the exact bytes being uploaded — a search that returns the seeded message
+cannot have happened without a working FTS5 table — and `cairn status`'s
+`vector path` line catches a stray `cairn_novec` build, which is a test
+configuration that must never ship.
+
+Verified rather than asserted: the smoke was run against a deliberately
+`cairn_novec`-built binary and **failed**, naming the reason. Against the real
+build, and against the binary unpacked from its own tarball, it passes:
+`FTS5: OK`, `sqlite-vec: OK (vector path is vec0)`, `doctor: OK`.
+
+### Signing: what is missing and what happens without it
+
+There is no Apple Developer ID, so the macOS artifact carries only the ad-hoc
+signature the Go linker applies — enough to run on Apple Silicon, and enough
+for `brew install`, which does not quarantine formula downloads. A tarball
+fetched with a **browser** is quarantined and Gatekeeper refuses it.
+
+The workflow degrades rather than blocks: the codesign step exits cleanly when
+`MACOS_CERT_P12` is unset, writes `signed=no` into the artifact, and that fact
+propagates into the release notes and the formula's caveats. Supplying
+credentials is configuration, not a rewrite. One structural limit worth
+recording: **a bare executable cannot be stapled** — `xcrun stapler` accepts
+only `.app`/`.dmg`/`.pkg`. Notarization registers the hash with Apple, so an
+online Gatekeeper check passes; an offline-verifiable ticket would need a
+signed `.pkg`, which is a packaging change and not a signing one.
+
+### Judgment calls
+
+- **Packaging is separate from building.** `package.sh` deliberately does not
+  compile. That is what lets the entire path be rehearsed on one machine, and
+  it keeps the per-runner build step down to `make build`.
+- **The formula is a custom tap, permanently.** PolyForm Noncommercial is not a
+  free/open-source licence, so homebrew-core would never accept it. `brew
+  style` is run in CI but treated as advisory for the same reason.
+- **`depends_on arch: :arm64` on macOS Intel** rather than a missing url: there
+  is no macOS x86_64 artifact and Rosetta cannot help a native cgo binary, so
+  the failure should name its reason.
+- **The formula's `test do` block runs a real mesh**, not just `--version`. It
+  is the same assertion as the release smoke, re-run on the installed binary on
+  the user's machine, which is the only place it can still be false.
+- **Packaging is byte-deterministic** (fixed mtimes, `gzip -n`): packaging the
+  same binary twice gives identical tarballs. The Go build itself is not
+  claimed to be reproducible.
+- **Release builds must not be VCS-dirty.** The workflow rejects a `-dirty` or
+  unstamped version string: an artifact built from a tree matching no commit
+  cannot be audited.
+- **`cairn --version` still prints `p1-<commit>`, not the release tag.** The
+  string is computed from build info (R11) and is not settable by `-ldflags
+  -X`; making it tag-aware means editing `cmd/cairn/main.go`, which was another
+  sprint's lane this week. The release notes state the discrepancy. Worth
+  revisiting when the version scheme is next touched.
+
+### Verified here, with real output
+
+- `packaging/release-smoke.sh bin/cairn` → PASS; against a `cairn_novec` build
+  → FAIL on the vector-path assertion, as intended.
+- Full Linux artifact path, for real: `make build` → `package.sh` →
+  `shasum -c` → unpack → smoke on the **unpacked** binary → PASS.
+- Packaging determinism: two runs, identical sha256.
+- The publish job's collect/render/lint steps executed locally against three
+  staged artifacts (one real Linux tarball, two stand-ins) — checksums verified,
+  formula rendered, `formula-lint OK`.
+- The `ci.yml` packaging job's script executed verbatim locally — green.
+- `actionlint` clean on both workflows; the release-notes step executed
+  locally to prove the heredoc renders.
+- `make verify` and `make vet` green.
+
+### Unproven here — what an operator must do
+
+This sandbox has no macOS runner, no Homebrew, no arm64 Linux and no GitHub
+release, so four things are honestly untested:
+
+1. **`brew install` on a clean machine.** Nothing here can execute it. Proof =
+   `brew tap ggoosen/cairn && brew install cairn && brew test cairn` on a Mac
+   with no Xcode CLT beyond what brew requires.
+2. **The macOS build job.** `MACOSX_DEPLOYMENT_TARGET=12.0`, the arch
+   assertion, and the ad-hoc-signature behaviour are all unrun. Proof = the
+   `workflow_dispatch` rehearsal, which builds and smokes without publishing.
+3. **The `ubuntu-22.04-arm` runner label**, which depends on account and repo
+   visibility. If it is unavailable the substitutes are a self-hosted arm64
+   runner or a cross toolchain — and a cross-built artifact cannot run the
+   smoke, so it would ship unexecuted. Prefer native.
+4. **Signing and notarization end to end.** Needs an Apple Developer ID.
+   Secrets: `MACOS_CERT_P12` (base64 .p12), `MACOS_CERT_PASSWORD`,
+   `MACOS_SIGN_IDENTITY`, `MACOS_NOTARY_APPLE_ID`, `MACOS_NOTARY_PASSWORD`
+   (app-specific), `MACOS_NOTARY_TEAM_ID`. Also `HOMEBREW_TAP_TOKEN` (a PAT
+   with contents:write on `ggoosen/homebrew-cairn`) — without it the workflow
+   attaches `cairn.rb` to the release and prints the manual landing steps
+   instead of pushing the tap.
+
+The operator's order of business: create the empty `ggoosen/homebrew-cairn`
+repo, run the rehearsal, then tag. README says plainly that the brew path goes
+live with the first tagged release, so nothing claims to work before it does.

@@ -102,7 +102,8 @@ later phases and the open design rulings — lives in one file:
 execution order and says what each blocked item is blocked *on*.
 
 Worth knowing when reading the table: some outstanding work maps to **no
-phase row at all** — deferred scaling debt (prebuilt binaries) and surfaces
+phase row at all** — deferred scaling debt (macOS codesigning for the prebuilt
+binaries, which needs an Apple Developer ID) and surfaces
 the spec describes but no milestone built (mutes, an `explore` ranking
 profile). A green phase row is not a claim that nothing is owed underneath
 it.
@@ -180,14 +181,37 @@ The design and its full decision trail — specification (v0.3), the binding bui
 
 ## Quickstart
 
-**Prerequisites.** **Go 1.25+** — or any Go 1.21+ with `GOTOOLCHAIN=auto` (the
-default) and network access, which fetches the pinned toolchain for you. You also
+**Homebrew — prebuilt binary, no toolchain** *(from the first tagged release; see
+the note below)*:
+
+```bash
+brew tap ggoosen/cairn
+brew install cairn
+cairn setup
+```
+
+Artifacts are macOS arm64 and Linux x86_64/arm64. Each one is built on a native
+runner of its own architecture and then *executed there* — a real mesh, a real
+daemon, a send and a search — before it is allowed onto a release page, so a
+binary whose SQLite lacks FTS5 cannot ship
+([`.github/workflows/release.yml`](.github/workflows/release.yml)). Checksums are
+published with every release. Two honest caveats: the macOS binary is **not
+notarized** (this project has no Apple Developer ID, so `brew install` works but
+a *browser*-downloaded tarball is quarantined by Gatekeeper), and the Linux
+binaries link glibc 2.35 (Ubuntu 22.04 and newer). `git` must be on PATH at
+runtime either way. **This path goes live with the first tagged release** — the
+pipeline is built and exercised in CI, but until a tag is pushed the tap has
+nothing in it, so use the source install below.
+
+**Prerequisites for the source install.** **Go 1.25+** — or any Go 1.21+ with
+`GOTOOLCHAIN=auto` (the default) and network access, which fetches the pinned
+toolchain for you. You also
 need **`git`** (at build time *and* at runtime, for the three-way merge in
 `cairn export ingest`) and a **C toolchain** — Cairn uses cgo for SQLite/FTS5, so
 on macOS run `xcode-select --install` if you haven't. macOS arm64 is primary;
 Linux is best-effort.
 
-**One command (recommended):**
+**One command (recommended until the tap is live):**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ggoosen/cairn/master/install.sh | sh
@@ -197,8 +221,7 @@ This builds Cairn, installs it to `~/.local/bin` (no sudo), and runs `cairn setu
 which creates your mesh, installs the resident daemon as a user service
 (launchd/systemd), and wires `cairn mcp` into every detected MCP client (Claude
 Desktop / Claude Code / Codex). Idempotent: re-run any time to upgrade. From a
-checkout, `make deploy` does the same. *(A prebuilt signed binary + Homebrew tap
-is the planned zero-dependency path.)*
+checkout, `make deploy` does the same.
 
 Then restart Claude Desktop / Claude Code so they load the tools, and:
 

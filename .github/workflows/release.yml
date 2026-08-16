@@ -1,0 +1,372 @@
+# D6 — prebuilt binaries + Homebrew tap.
+#
+# WHY THIS EXISTS. README's pitch is "one command", but the only install path
+# was build-from-source with a C toolchain, because Cairn is cgo (SQLite/FTS5).
+# That is the largest adoption barrier the project has. This workflow produces
+# the artifacts a Homebrew formula can point at.
+#
+# HOW IT BUILDS. Cross-compiling cgo means a cross toolchain per target and a
+# binary nobody has ever executed. So every artifact is built on a NATIVE
+# runner of its own architecture, and then RUN there — packaging/release-smoke.sh
+# starts a daemon, sends a message and searches for it before the bytes are
+# allowed anywhere near a release. That is the FIX-F4 guard carried to the
+# artifact: a `cairn` whose SQLite lacks FTS5 would compile and start and then
+# be useless, so the workflow asserts the property instead of assuming it.
+#
+# SIGNING. Cairn has no Apple Developer ID. The macOS steps below are written
+# so that supplying one is CONFIGURATION, not a rewrite: set the secrets named
+# in the "codesign" step and it signs and notarizes; leave them unset and it
+# emits an unsigned artifact and says so — in the release notes, in the
+# formula's caveats, and in the job log. It never pretends.
+#
+# WHAT AN OPERATOR MUST SUPPLY (all optional; each is skipped honestly):
+#   MACOS_CERT_P12          base64 of a Developer ID Application .p12
+#   MACOS_CERT_PASSWORD     its password
+#   MACOS_SIGN_IDENTITY     e.g. "Developer ID Application: Name (TEAMID)"
+#   MACOS_NOTARY_APPLE_ID   Apple ID for notarytool
+#   MACOS_NOTARY_PASSWORD   app-specific password for that Apple ID
+#   MACOS_NOTARY_TEAM_ID    Apple Developer team id
+#   HOMEBREW_TAP_TOKEN      PAT with contents:write on ggoosen/homebrew-cairn
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  # Rehearsal: run the whole pipeline — build, smoke, package, render and lint
+  # the formula — WITHOUT publishing anything. A release pipeline that has only
+  # ever been exercised by a real release is a release pipeline nobody has
+  # tested.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag to rehearse (no release is created)"
+        required: false
+        default: "v0.0.0-rehearsal"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS arm64 is the primary platform (CLAUDE.md). There is no macOS
+          # x86_64 artifact and the formula says so with a `depends_on arch:`.
+          - target: darwin_arm64
+            runs-on: macos-14
+            file_arch: arm64
+          - target: linux_amd64
+            # Deliberately NOT ubuntu-latest: the binary links glibc, so the
+            # runner's glibc becomes the floor for every user. 22.04 is 2.35;
+            # ubuntu-latest would raise that floor with no warning to anyone.
+            runs-on: ubuntu-22.04
+            file_arch: x86-64
+          - target: linux_arm64
+            # GitHub-hosted arm64 Linux. If this label is unavailable to the
+            # account, the honest substitutes are a self-hosted arm64 runner or
+            # a cross toolchain — but a cross-built artifact cannot run the
+            # smoke below, so it would ship unexecuted. Prefer native.
+            runs-on: ubuntu-22.04-arm
+            file_arch: aarch64
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the version string is derived from build info
+          # (cmd/cairn/main.go), so the VCS stamp must be present and clean.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          TAG="${{ github.event_name == 'push' && github.ref_name || inputs.tag }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "building $TAG on $(uname -sm)"
+
+      - name: Assert the FIX-F4 compile-time guard still bites
+        shell: bash
+        run: |
+          # Half of make verify, without the full suite (ci.yml already runs
+          # that on every commit). If an untagged build ever starts SUCCEEDING,
+          # the guard has rotted and a release could ship a binary with no FTS5.
+          if go build ./... 2>err.txt; then
+            echo "FAIL: untagged 'go build ./...' unexpectedly succeeded"; exit 1
+          fi
+          grep -q sqlite_fts5 err.txt || { echo "FAIL: untagged build failed without the instructive message"; cat err.txt; exit 1; }
+          echo "OK: untagged build still fails with the instructive guard"
+
+      - name: Build
+        shell: bash
+        env:
+          CGO_ENABLED: "1"
+          # Widen macOS compatibility: without this, clang targets the runner's
+          # own OS version and the artifact refuses to load on anything older.
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+        run: |
+          # `make build` is the project's build convention: -tags sqlite_fts5,
+          # no cairn_testhooks (a release binary must not be able to be told
+          # "this volume is encrypted"), and no cairn_novec.
+          make build
+          file bin/cairn
+
+      - name: Assert the artifact's architecture and build stamp
+        shell: bash
+        run: |
+          file bin/cairn | grep -q -- "${{ matrix.file_arch }}" || {
+            echo "FAIL: bin/cairn is not ${{ matrix.file_arch }}"; file bin/cairn; exit 1; }
+          # The version string carries the VCS stamp (cmd/cairn/main.go). A
+          # "-dirty" release artifact was built from a tree that does not match
+          # any commit, so nobody could ever reproduce or audit it.
+          V="$(./bin/cairn --version)"
+          case "$V" in *dirty*) echo "FAIL: release build is VCS-dirty: $V"; git status --porcelain; exit 1 ;; esac
+          case "$V" in *-dev*) echo "FAIL: release build has no VCS stamp: $V"; exit 1 ;; esac
+          echo "build stamp: $V"
+
+      # ---- macOS signing. Skipped, loudly, when no credentials are configured.
+      - name: Codesign (macOS)
+        id: codesign
+        if: startsWith(matrix.target, 'darwin')
+        shell: bash
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          if [ -z "${MACOS_CERT_P12:-}" ]; then
+            echo "signed=no" >> "$GITHUB_OUTPUT"
+            echo "NOTE: no Developer ID configured — shipping an UNSIGNED macOS binary."
+            echo "      It still carries the Go linker's ad-hoc signature, which is what"
+            echo "      lets it run at all on Apple Silicon, but Gatekeeper will refuse a"
+            echo "      browser-downloaded copy. Set MACOS_CERT_P12 / MACOS_CERT_PASSWORD /"
+            echo "      MACOS_SIGN_IDENTITY to sign. codesign -dv below shows what shipped:"
+            codesign -dv --verbose=4 bin/cairn 2>&1 || true
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/release.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 900 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/cert.p12"
+          # --options runtime (hardened runtime) is required for notarization.
+          codesign --force --timestamp --options runtime \
+            --sign "$MACOS_SIGN_IDENTITY" bin/cairn
+          codesign --verify --strict --verbose=2 bin/cairn
+          echo "signed=yes" >> "$GITHUB_OUTPUT"
+
+      - name: Notarize (macOS)
+        id: notarize
+        if: startsWith(matrix.target, 'darwin') && steps.codesign.outputs.signed == 'yes'
+        shell: bash
+        env:
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+          MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+        run: |
+          if [ -z "${MACOS_NOTARY_APPLE_ID:-}" ]; then
+            echo "signed but NOT notarized — no notary credentials configured."; exit 0
+          fi
+          ditto -c -k --keepParent bin/cairn "$RUNNER_TEMP/cairn-notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/cairn-notarize.zip" \
+            --apple-id "$MACOS_NOTARY_APPLE_ID" \
+            --password "$MACOS_NOTARY_PASSWORD" \
+            --team-id "$MACOS_NOTARY_TEAM_ID" --wait
+          # A bare executable cannot be stapled: `xcrun stapler` only accepts
+          # .app / .dmg / .pkg. Notarization still registers this binary's hash
+          # with Apple, so an ONLINE Gatekeeper check passes. An operator who
+          # needs an offline-verifiable ticket must ship a signed .pkg instead
+          # — that is a packaging change, not a signing one.
+          echo "notarized (no stapled ticket — bare executables cannot be stapled)"
+
+      # ---- The assertion that matters: run the bytes we are about to upload.
+      - name: Smoke the artifact (FIX-F4 at runtime)
+        shell: bash
+        run: packaging/release-smoke.sh bin/cairn
+
+      - name: Package
+        shell: bash
+        run: |
+          OS="${{ startsWith(matrix.target, 'darwin') && 'darwin' || 'linux' }}"
+          ARCH="${{ matrix.target }}"; ARCH="${ARCH#*_}"
+          packaging/package.sh --binary bin/cairn --os "$OS" --arch "$ARCH" \
+            --version "${{ steps.version.outputs.version }}" --outdir dist
+          # The formula's caveats must state the truth about signing, and the
+          # release job is the one that renders them, so the fact travels with
+          # the artifact rather than being re-guessed later.
+          if [ "${{ matrix.target }}" = "darwin_arm64" ]; then
+            echo "signed=${{ steps.codesign.outputs.signed || 'no' }}" > dist/signing-status.txt
+          fi
+          ls -l dist
+
+      # Verify the tarball actually contains a working binary, unpacked — not
+      # the one still sitting in bin/. A packaging bug (wrong path, lost
+      # executable bit, wrong file) is invisible until someone extracts it.
+      - name: Verify the packaged tarball
+        shell: bash
+        run: |
+          cd dist
+          shasum -a 256 -c checksums.txt
+          mkdir -p unpacked && tar xzf cairn_${{ steps.version.outputs.version }}_*.tar.gz -C unpacked
+          test -x unpacked/cairn
+          test -f unpacked/LICENSE
+          cd .. && packaging/release-smoke.sh dist/unpacked/cairn
+          rm -rf dist/unpacked
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: incoming
+          pattern: dist-*
+
+      - name: Collect artifacts and checksums
+        id: collect
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event_name == 'push' && github.ref_name || inputs.tag }}"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          mkdir -p dist
+          find incoming -name '*.tar.gz' -exec cp {} dist/ \;
+          # Each build job wrote its own one-line checksums.txt; the release
+          # publishes one file covering everything.
+          cat incoming/*/checksums.txt | sort -k2 > dist/checksums.txt
+          cp incoming/dist-darwin_arm64/signing-status.txt dist/ 2>/dev/null || echo "signed=no" > dist/signing-status.txt
+          ( cd dist && shasum -a 256 -c checksums.txt )
+          # Three platforms, three artifacts — a partially-successful matrix
+          # must not become a half-published release.
+          test "$(ls dist/*.tar.gz | wc -l)" -eq 3 || { echo "expected 3 artifacts"; ls -l dist; exit 1; }
+          grep -q "^signed=yes" dist/signing-status.txt && echo "signed=yes" >> "$GITHUB_OUTPUT" || echo "signed=no" >> "$GITHUB_OUTPUT"
+          cat dist/checksums.txt
+
+      - name: Render and lint the Homebrew formula
+        shell: bash
+        run: |
+          SIGNED_FLAG=""
+          [ "${{ steps.collect.outputs.signed }}" = "yes" ] && SIGNED_FLAG="--signed"
+          packaging/mkformula.sh --tag "${{ steps.collect.outputs.tag }}" \
+            --repo "${{ github.repository }}" --checksums dist/checksums.txt \
+            $SIGNED_FLAG -o dist/cairn.rb
+          # Homebrew is preinstalled on the hosted Linux runner, so the formula
+          # gets a real `brew style` in addition to the no-Homebrew lint that
+          # developers can run anywhere.
+          ruby packaging/formula-lint.rb dist/cairn.rb
+          if command -v brew >/dev/null 2>&1; then
+            brew style dist/cairn.rb || echo "NOTE: brew style reported issues (not fatal — this formula lives in a custom tap, and PolyForm Noncommercial is not an SPDX identifier brew-core recognises)"
+          fi
+          cat dist/cairn.rb
+
+      - name: Compose release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.collect.outputs.version }}"
+          if [ "${{ steps.collect.outputs.signed }}" = "yes" ]; then
+            SIGN_NOTE="The macOS binary is Developer ID signed (and notarized if notary credentials were configured). Bare executables cannot carry a stapled ticket, so Gatekeeper verifies it online."
+          else
+            SIGN_NOTE="**The macOS binary is NOT code signed or notarized.** This project has no Apple Developer ID. It carries only the Go linker's ad-hoc signature — enough to run on Apple Silicon, and \`brew install\` is unaffected because Homebrew does not quarantine formula downloads. A copy downloaded with a **browser** is quarantined and Gatekeeper will refuse it; clear that with \`xattr -d com.apple.quarantine ./cairn\`. Verify the checksum instead of trusting a signature."
+          fi
+          cat > notes.md <<EOF
+          ## Install
+
+          \`\`\`bash
+          brew tap ggoosen/cairn
+          brew install cairn
+          cairn setup
+          \`\`\`
+
+          Or download the tarball for your platform below, verify it, and put \`cairn\` on your PATH:
+
+          \`\`\`bash
+          shasum -a 256 -c checksums.txt
+          tar xzf cairn_${VERSION}_<platform>.tar.gz
+          \`\`\`
+
+          ## Honest notes
+
+          - $SIGN_NOTE
+          - **Linux binaries are dynamically linked against glibc 2.35** (built on Ubuntu 22.04). Older distributions must build from source. There is no musl artifact.
+          - **macOS artifact is arm64 only.** Cairn's platform rule is macOS arm64 primary, Linux best-effort, no Windows.
+          - **\`git\` must be on PATH at runtime** — \`cairn export ingest\` shells out to \`git merge-file\`.
+          - **\`cairn --version\` prints \`p1-<commit>\`, not this tag.** The version string is derived from Go build info (RULINGS.md R11) and names the milestone and the exact commit, which is the more useful fact when triaging; the tag names the release. The commit it prints is the one this release was built from.
+          - **Semantic search is opt-in.** Run \`cairn-embed-bootstrap.sh\` (shipped in the tarball, and installed under \`\$(brew --prefix)/share/cairn\`) or set \`CAIRN_EMBED_PYTHON\`. Without it retrieval is lexical-only, which works; \`cairn status\` names the mode.
+          - Every artifact was built on a native runner of its own architecture and **executed there** before upload: a real mesh, a real daemon, a send and a search (\`packaging/release-smoke.sh\`). That is the FIX-F4 guard — a build without FTS5 never reaches this page.
+          EOF
+          cat notes.md
+
+      - name: Publish the GitHub release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.collect.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --title "cairn ${{ steps.collect.outputs.tag }}" \
+            --notes-file notes.md \
+            dist/*.tar.gz dist/checksums.txt dist/cairn.rb
+
+      - name: Update the Homebrew tap
+        if: github.event_name == 'push'
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || 'ggoosen/homebrew-cairn' }}
+        run: |
+          if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            echo "No HOMEBREW_TAP_TOKEN configured — the tap was NOT updated."
+            echo "cairn.rb is attached to the release; an operator can land it by hand:"
+            echo "  git clone https://github.com/$TAP_REPO && cd \$(basename $TAP_REPO)"
+            echo "  mkdir -p Formula && curl -fsSLo Formula/cairn.rb <the cairn.rb asset URL>"
+            echo "  git commit -am 'cairn ${{ steps.collect.outputs.tag }}' && git push"
+            exit 0
+          fi
+          git clone "https://x-access-token:$HOMEBREW_TAP_TOKEN@github.com/$TAP_REPO" tap
+          mkdir -p tap/Formula
+          cp dist/cairn.rb tap/Formula/cairn.rb
+          cd tap
+          git config user.name "cairn release"
+          git config user.email "release@users.noreply.github.com"
+          git add Formula/cairn.rb
+          git commit -m "cairn ${{ steps.collect.outputs.tag }}" || { echo "tap already current"; exit 0; }
+          git push
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle
+          path: |
+            dist/*.tar.gz
+            dist/checksums.txt
+            dist/cairn.rb
+            notes.md
+          if-no-files-found: error
