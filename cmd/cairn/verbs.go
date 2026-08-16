@@ -678,6 +678,23 @@ func newExportCmd(dirFlag *string) *cobra.Command {
 			return nil
 		},
 	}
+	// D5: the bulk half. `export <id>` renders ONE message for round-trip
+	// editing (front matter and all); `export corpus` renders EVERY live
+	// message as a plain body under its topic path — the shape
+	// `cairn ingest scan` consumes, and the first step of adopting a
+	// standalone mesh into another one (scripts/cairn-adopt-standalone.sh).
+	cmd.AddCommand(&cobra.Command{
+		Use:   "corpus",
+		Short: "Export every live message as plain Markdown under its topic path (the form `cairn ingest scan` consumes)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resp, err := call(dirFlag, daemon.Request{Op: "export-corpus"})
+			if err != nil {
+				return err
+			}
+			return printJSON(cmd, resp.Status)
+		},
+	})
 	cmd.AddCommand(&cobra.Command{
 		Use:   "ingest <path>",
 		Short: "Ingest an edited export: base==head → revision; clean diff3 → machine-merged; conflict → conflicts/",

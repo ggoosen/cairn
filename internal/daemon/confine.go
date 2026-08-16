@@ -269,7 +269,11 @@ var opConfinement = map[string]confineMode{
 	// renderers, not filtering a list; `source-ref` maps an ingest path to a
 	// message id and would answer about messages outside the grant. A typed
 	// refusal is the honest answer until confining them is worth doing.
+	// `export-corpus` (D5) joins them: it writes EVERY live message to disk,
+	// which is the whole mesh by another route. Adoption is an operator
+	// ceremony, so a confined session has no business running it.
 	"map": confineRefuse, "compact": confineRefuse, "source-ref": confineRefuse,
+	"export-corpus": confineRefuse,
 
 	// Everything else is refused BY DEFAULT (confineRefuse is the zero value):
 	// structural ops (link, pin,

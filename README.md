@@ -69,6 +69,7 @@ The five commands above are the daily loop. The rest of what's built:
 - `cairn saved add council "council approvals"` / `cairn saved run council` — name the queries you run repeatedly.
 
 **Navigate instead of searching blind**
+- `scripts/cairn-adopt-standalone.sh` merges an ad-hoc **standalone mesh** into your primary one. A separate mesh has its own genesis and root, so its events cannot be merged (R34) — the procedure re-publishes the knowledge with provenance back to the original message id, verifies `cairn doctor` on both, and retires the old mesh without deleting it. It states plainly what it does not preserve. See DOGFOOD.md §16.
 - `cairn map` writes `views/<view>/map.md`, a topic/thread/pin rollup. `cairn compact` writes `compaction.md`, the log folded down to current-state entities — what things *are* now, not how they got there. `cairn peek <id>` returns sender, revision, hash, class and size without spending budget on a body.
 
 **Attachments**

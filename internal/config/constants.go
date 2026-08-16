@@ -419,6 +419,12 @@ const (
 	// everything else in the payload.
 	SearchSnippetChars = 200
 
+	// CorpusExportMaxCollisions (D5) bounds the retry when several
+	// `cairn export corpus` runs land in the same second: each export gets
+	// its own tree (corpus-<ts>, corpus-<ts>-2, …) rather than merging into
+	// one directory, and this caps the search rather than looping forever.
+	CorpusExportMaxCollisions = 100
+
 	// --- D4 token budgets -------------------------------------------------
 	//
 	// A budget is only meaningful against a NAMED tokenizer, so every

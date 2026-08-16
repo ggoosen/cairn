@@ -934,6 +934,20 @@ func (d *Daemon) dispatchOp(req Request, ctx reqContext) Response {
 		}
 		return Response{OK: true, Path: path}
 
+	case "export-corpus":
+		// D5: bulk export of every live message as Markdown, the form
+		// `cairn ingest scan` consumes. Operator tier (see capabilityFor's
+		// admin default and opConfinement's refusal): it renders the WHOLE
+		// mesh to disk.
+		root, man, err := d.ExportCorpus()
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Path: root, Status: map[string]any{
+			"root": root, "messages": man.Messages, "cairn_id": man.CairnID,
+			"skipped": len(man.Skipped), "repo_label": CorpusRepoLabel(man.CairnID),
+		}}
+
 	case "export-ingest":
 		res, err := d.IngestExport(req.Path)
 		if err != nil {

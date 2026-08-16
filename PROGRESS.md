@@ -4820,3 +4820,116 @@ evidence, and `rank.Counter` is a one-file swap. Adding a multi-megabyte
 vocabulary and a model-family assumption to a deliberately small, offline
 dependency tree without that evidence would be the larger mistake. Recorded
 here rather than decided, per the sprint brief.
+
+## D5 — adopting a standalone mesh (2026-08-16) — DONE
+
+Sprint S3, second of two, in its own commit. R34 permits either a
+`cairn adopt-standalone` verb or a documented script; the plan states a
+preference for the script, and after building it the preference is clearly
+right — so what shipped is `scripts/cairn-adopt-standalone.sh` plus DOGFOOD
+§16, **not** a verb.
+
+**Why not a command, said plainly.** The operation is rare, has a
+consequence you cannot undo in the direction that matters (you cannot
+un-publish into the primary's log), and the single most valuable thing it does
+is tell the operator what it will NOT preserve. A verb hides exactly the steps
+that need reading. The script prints the preserved/not-preserved contract
+before it does anything, stops for manifest review by default, and drives the
+same public commands the operator would type by hand — so reading the script
+teaches the procedure rather than replacing it.
+
+**One primitive was genuinely missing, and it is a verb.** Nothing in the CLI
+enumerated live messages: `search` needs a query, `map`/`compact` render
+statistics, and `cairn export <id>` is per-message and emits round-trip front
+matter that would become body TEXT in another mesh. So `cairn export corpus`
+was added — every live message's head body, verbatim, under a directory tree
+mirroring its topics, with the message id as the filename, plus a manifest.
+That is the shape `cairn ingest scan` already consumes, which is what makes
+the whole procedure reuse an existing, tested, idempotent, provenance-carrying
+import path instead of inventing a second one. It writes INSIDE the portable
+dir (`exports/corpus-<timestamp>/`), never to a caller-supplied path: the
+daemon does not gain "write anywhere on disk" for a rare batch job. It is
+`confineRefuse` in `opConfinement` and operator tier — it renders the whole
+mesh, like `map` and `compact`.
+
+**Provenance falls out of the existing path.** `source_ref` becomes
+`<label>/<topic path>/<ORIGINAL message id>.md`, so the primary can always name
+where an adopted message came from, and the default label
+(`standalone-<mesh-id prefix>`) prefixes every derived topic — an adopted note
+cannot pass for a native one. Verified in the live run: `source_refs` holds
+`standalone-01a008e537c4/roastery/hardware/01a008e5-67b3-….md`.
+
+**The N8 trap is named in three places** (script header, transcript,
+DOGFOOD §16), because it is the failure this procedure exists to prevent: S2
+established that `ingestRecords` treats any peer event at or beyond our own
+active origin's head as a device clone, so an operator who "merges" by copying
+`events/` or `.cairn/` across freezes an origin and spends the afternoon
+repairing a fork that never happened. The instruction is: re-publish, never
+transplant.
+
+**What is preserved / not preserved** is stated identically in the script
+header, on stdout at run time, in `RETIRED.md` and in DOGFOOD §16. Preserved:
+message bodies byte for byte, topic paths, provenance, and the standalone
+mesh's whole log — read, never appended to (only `exports/` and `RETIRED.md`
+are written into that directory). Not preserved: event identity, signatures,
+origins, revision history, original sender and timestamps, secondary topic
+links, threads, pins, priorities, subscriptions, attachments, and retracted
+messages — which stay retracted, because a retraction is a decision and
+carrying it across as live content would silently undo it.
+
+**Retirement keeps everything.** The script writes `RETIRED.md` into the
+standalone directory recording the date, the target, the export root and the
+label, and prints how to stop that daemon. It deletes nothing, ever. Both
+origins remain verifiable, which is what "no event loss from either side"
+means when the two logs cannot be merged.
+
+**The live rehearsal found two defects the unit path could not.** Running the
+real script over two real daemons:
+
+1. **Re-export inside the same second collided.** The export root is
+   second-resolution and stored files are immutable, so a second run in the
+   same second failed halfway through with `file already exists`. Each export
+   now gets its own tree (`corpus-<ts>`, `corpus-<ts>-2`, …) rather than
+   merging into one. This matters precisely because the person most likely to
+   re-run immediately is the one unsure it worked the first time.
+2. **The first "did the content arrive" probe passed for the wrong reason.**
+   It searched for a phrase and then looked for a *reordered* fragment of that
+   same phrase in the payload, which cannot match; the probe now names the
+   query and the exact contiguous body fragment separately.
+
+**Tests.** `cmd/cairn/adopt_standalone_test.go` runs the REAL script against
+two REAL daemons and the real binary (the `TestBackupRestoreDrillScripts`
+pattern — testing a Go re-implementation of a shell procedure tests the wrong
+thing). It asserts: `doctor: clean` and `deep doctor: clean` on BOTH origins;
+the standalone's event count is byte-identical before and after; every live
+standalone message is findable in the primary including the untopiced one; the
+retracted one is NOT resurrected; the primary's own pre-existing message
+survives; the exported files hash EXACTLY to their message body hashes
+(verbatim); the original message ids do NOT resolve in the primary (adoption
+mints new ids, it does not import foreign ones); a re-run is a no-op
+(`published: 0, skipped: 3`); and both refusals fire (a mesh into itself, a
+non-cairn directory).
+
+Four mutations were run; three fail the suite (untopiced messages dropped
+from the export; the same-mesh guard removed; exported bodies no longer
+verbatim — this one initially PASSED, which is why the verbatim hash
+assertion exists). The fourth (removing the `info.Retracted` guard) is inert
+because `DigestCandidates` already excludes retracted messages; the guard is
+kept as belt-and-braces and the property is covered end to end by the search
+probe and the manifest count.
+
+Live rehearsal, two real meshes on isolated sockets: adoption of a 4-message
+standalone (one retracted) into a 1-message primary published 3 messages under
+5 new topics, ended `doctor: clean` + `deep doctor: clean` on both origins, and
+a second run reported `"published": 0, "skipped": 3`. The `--from-export`
+two-machine path was exercised separately against the same corpus, and the
+interactive review path (answering `n`) wrote nothing to the primary.
+
+Deliberately NOT done, and why: no `cairn adopt-standalone` verb (R34 allows
+either; the script is the safer form for a rare, high-consequence operation,
+and promoting it later is a wrapper around the same commands). Secondary topic
+links, threads and attachments are not re-created — doing so means inventing a
+second import path with different semantics from `cairn ingest`, and the
+manifest records what was dropped so an operator can re-link deliberately.
+
+Green: `make verify`, `make test-race`.

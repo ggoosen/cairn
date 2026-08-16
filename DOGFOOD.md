@@ -545,3 +545,59 @@ cairn --version | grep -q "$(git rev-parse --short HEAD)" \
 
 Do this on BOTH nodes before any audit phase; never `make install` from one
 bundle and then leave the checkout on an older one.
+
+## 16. Adopting a standalone mesh into the primary one (D5, R34 — operator runbook)
+
+You started a cairn on a second machine "just to try it", it has a month of
+real notes in it, and it is a **separate mesh**: its own genesis, its own root
+key. That is a different trust domain by design, so its origin logs cannot be
+merged into your primary mesh — not "not yet", cannot: every event is signed
+under a root your primary has never admitted. Adoption **re-publishes** the
+knowledge and retires the old mesh (R34).
+
+The procedure is a script you should read before you run it, not a verb that
+hides the steps:
+
+```sh
+# both daemons running; adopting the standalone into the primary
+scripts/cairn-adopt-standalone.sh --standalone ~/cairn-laptop --primary ~/cairn
+
+# two machines: export there, copy the printed directory here, adopt from it
+cairn export corpus --dir ~/cairn                      # on the STANDALONE machine
+rsync -a <printed root>/ primary-host:/tmp/adopt/      # copy the tree across
+scripts/cairn-adopt-standalone.sh --from-export /tmp/adopt \
+  --repo standalone-<mesh-id-prefix> --primary ~/cairn # on the PRIMARY machine
+```
+
+It exports (`cairn export corpus`), plans the import (`cairn ingest scan`),
+**stops for you to read the manifest**, applies it (`cairn ingest apply`), runs
+`cairn doctor` on both meshes, and writes `RETIRED.md` into the standalone
+directory. Re-running it is a no-op — the ingest path is keyed on content
+hash — so running it twice because you were not sure it worked is safe.
+
+**Preserved:** every live message body byte for byte; its topic path, mirrored
+under one label so an adopted note never passes for a native one; provenance
+(`source_ref` records `<label>/<topic path>/<ORIGINAL message id>.md`); and the
+standalone mesh's whole log, read but never appended to, still verifiable
+(the only things written into that directory are `exports/corpus-…/` and
+`RETIRED.md`).
+
+**Not preserved:** event identity, signatures and origins (adopted content is
+new events in the primary's log); revision history (only the head body
+crosses); the original sender and timestamps (adopted messages are sent by
+`ingest`, today); secondary topic links (a multi-topic message is filed under
+one — the export manifest lists all of them); threads/replies, pins,
+priorities, subscriptions, attachments, and retracted messages, which stay
+retracted.
+
+**The trap, stated plainly.** Do NOT copy the standalone's `events/`,
+`.cairn/` or device key into the primary directory, and do NOT run
+`cairn init --adopt` over a primary mesh. Cairn reads a peer event at or beyond
+the head of its OWN active origin as a device clone (N8): the receiving node
+freezes its origin and reports an equivocation naming a clone that does not
+exist, and you spend the afternoon repairing a fork that never happened
+(§14 is for real forks, not this). Re-publish; never transplant.
+
+**Enrolment is separate.** If the standalone *machine* should also become a
+device of the primary mesh, that is the N5 ceremony in §11 — it needs the root
+key, and the script deliberately does not do it.
