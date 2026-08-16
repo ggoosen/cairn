@@ -30,36 +30,110 @@ two-machine rig · **[data]** needs real usage data first.
 # Part I — Execution order
 
 The rest of this file is the specification. This part is the order to work
-it, and the honest reason each blocked item is blocked. **Nothing in the
-first group needs anything from the operator**, so an agent can start there
-immediately.
+it, as sprints, plus the honest reason each blocked item is blocked.
+**Sprints S1–S5 need nothing from the operator**, so an agent can start at
+S1 immediately and run through S5 without waiting on anyone.
 
-**Buildable now, in this order:**
+## Sprints
 
-0. **D9 session reaping** and **D10 ladder vs missing embedder** — live
-   defects, not enhancements, so they go first. D9: `sessions.json` grows
-   without bound (2,673 records observed on the dev node), the mint path is
-   O(n) per session, and `cairn session list` has stopped being a usable kill
-   switch. D10: the degradation ladder reads "no embedder" as "behind", so an
-   idle laptop sheds summaries forever and the reported level misleads. Both
-   were found by inspection on a live node, both carry a policy question that
-   is recorded rather than blocking.
-1. **D2 origin-liveness beacon** and **D3 capability `resource_selectors`** —
-   independent of everything else, each closes a spec gap that exists today,
-   each has a two-daemon or dispatch-boundary test that proves it. Best
-   starting point: self-contained, no gate, real user-visible value. D3
-   touches the capability model (R21/R22/R23), so it belongs in its own
-   reviewable commit rather than batched with unrelated changes.
-2. **E4** (intrinsic quality: nDCG/MRR/Recall, ablations, baselines) — the
-   apparatus can be built and exercised against the sample corpus now; it
-   stays *dark* (no reported numbers) until corpora land and the kill
-   criteria are signed. Building it early is safe; reporting from it is not.
-3. **E6** (adversarial/safety: prompt-injection compliance through
-   digest/search/fetch) — needs no external corpus, only adversarial inputs
-   the harness can author, so it is unblocked in a way E4/E5 are not.
-4. **D4 `budget_tokens`** and **D5 `adopt-standalone`** — small, well-scoped.
-5. **D1 sqlite-vec** — least urgent alone, but a hard prerequisite if C3 is
-   coming, because transcript ingest walks straight off the brute-force cliff.
+Sprints are **scope-boxed, not time-boxed**: a sprint is done when its exit
+criterion holds, and a sprint contains only work that is unblocked at the
+time it starts. That is deliberate — most of what is left has a dependency on
+the operator, on hardware, or on a ruling, and a time-boxed sprint containing
+blocked work just stalls and lies about why.
+
+Run them in order. Each ships as its own commit(s) with PROGRESS.md updated,
+and `make verify` + `make test-race` green before moving on.
+
+### S1 — Defect clearance [ready]
+
+Two live defects found by inspection on a running node. Ahead of every
+enhancement, because they are wrong *now*.
+
+- **D9** session reaping (§4)
+- **D10** ladder vs missing embedder (§4)
+
+**Exit:** `sessions.json` reaches a bounded steady state and `cairn session
+prune` clears the backlog; a killed `cairn mcp` leaves no resident session; a
+daemon with no embedder reports Healthy on the backlog axis and writes
+summaries normally; `cairn status` names the cause of lexical-only. Both
+rulings recorded in PROGRESS, neither blocking.
+
+**Watch:** both fixes REMOVE behaviour, so the tests that matter are the
+negative ones — a live session is never reaped while its process lives inside
+its TTL, and a daemon with a real embedder and a real backlog still climbs the
+rungs exactly as today (existing ladder tests pass unchanged).
+
+### S2 — Mesh integrity and scoped capabilities [ready]
+
+- **D2** origin-liveness beacon (§4) — catches a peer whose frontier moved
+  backwards, which nothing catches today
+- **D3** capability `resource_selectors` (§4) — confines a session to a
+  subtree, not just an action tier
+
+**Exit:** a two-daemon test raises the beacon alarm on a stale-backup restart
+with no false positive on ordinary restart/catch-up/thin-node; a session
+granted `topic="a/*"` is refused outside it with a **typed** refusal,
+including via `thread`.
+
+**Watch:** D3 touches the capability model (R21/R22/R23) — its own reviewable
+commit, never batched. Do not let a mute sneak in as a negative selector;
+that is D7's ruling.
+
+### S3 — Small surfaces [ready]
+
+- **D4** `budget_tokens` (§4)
+- **D5** `cairn adopt-standalone` (§4)
+
+**Exit:** the budget property test runs in both char and token modes over
+every renderer and the response names the tokenizer; a standalone mesh merges
+into a primary ending `cairn doctor` clean on both origins.
+
+### S4 — Evaluation apparatus, dark [ready]
+
+Built now, reporting nothing until corpora land and criteria are signed.
+
+- **E4** intrinsic quality: ablations + baselines (§3.4)
+- **E9** recall-under-growth curve (§3.4) — T0, no agent, cheapest experiment
+  in the plan and the most likely to find a real limit; lands with E4
+- **E6** adversarial/safety (§3.4) — needs no external corpus
+
+**Exit:** every ablation and baseline runs end-to-end on the sample corpus and
+emits structured results; the growth curve runs at 10×/100×/1000× at fixed
+budget; injection compliance is measurable through digest/search/fetch. **No
+number is reported as evidence.**
+
+### S5 — Scale [ready]
+
+- **D1** sqlite-vec (§4)
+
+**Exit:** vec0 and brute force return identical top-K on a seeded corpus
+(brute force retained as the oracle); extension-absent still starts and
+serves; a corpus above the cliff answers without loading every vector.
+
+**Note:** promote S5 ahead of S3/S4 if C3 is imminent — transcript ingest
+walks straight off the brute-force cliff.
+
+### S6 — Capture [gated: crossed review of the privacy model]
+
+- **C3** session-transcript ingest (§2)
+
+**Exit:** the §2 acceptance criteria, of which the load-bearing one is that a
+seeded fake API key never reaches the object store.
+
+### S7 — Distribution [partly gated: Apple Developer ID]
+
+- **D6** prebuilt signed binary + Homebrew tap (§4)
+
+**Exit:** `brew install` on a clean machine yields a working `cairn` with no
+Xcode toolchain; the workflow asserts the artifact is a `sqlite_fts5` build.
+
+### Not in a sprint: the operator track
+
+These run in parallel and no agent can do them — E1 sign-off, corpus
+acquisition, the three §1 release blockers, C4 listings, the P3 two-machine
+pass, P2 calibration. Sprints S1–S5 are all deliberately independent of them,
+so building never waits on this track and this track never waits on building.
 
 **Blocked, and by what:**
 
