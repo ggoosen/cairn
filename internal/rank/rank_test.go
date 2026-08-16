@@ -171,7 +171,7 @@ func TestTakeWithinBudgetNeverExceeds(t *testing.T) {
 			for i := 0; i < n; i++ {
 				want += items[i]
 			}
-			if payload != want && payload != want+br.Marker && !(n == 0 && payload == "") {
+			if payload != want && payload != want+br.Marker && (n != 0 || payload != "") {
 				t.Fatalf("%s budget %d: payload is not header+prefix[+marker]: %q", mode, budget, payload)
 			}
 			if n < len(items) && n > 0 && !contains(payload, "…") {

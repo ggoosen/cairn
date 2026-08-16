@@ -297,15 +297,6 @@ func reaching(text string, markers []string) []string {
 	return out
 }
 
-func firstNonEmpty(xs ...string) string {
-	for _, x := range xs {
-		if x != "" {
-			return x
-		}
-	}
-	return ""
-}
-
 // WriteFile persists the report atomically.
 func (r *Report) WriteFile(path string) error {
 	blob, err := json.MarshalIndent(r, "", "  ")

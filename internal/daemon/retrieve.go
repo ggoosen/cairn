@@ -161,9 +161,9 @@ func fillP2Components(rec *componentsRecord, s rank.Scored, profile rank.Profile
 	w := profile.Weights()
 	rec.S, rec.I, rec.N = rank.Dec(s.S), rank.Dec(s.I), rank.Dec(s.N)
 	rec.Weights.S, rec.Weights.I, rec.Weights.N = rank.Dec(w.S), rank.Dec(w.I), rank.Dec(w.N)
-	rec.Dup, rec.Sat = rank.Dec(s.Components.Dup), rank.Dec(s.Components.Sat)
+	rec.Dup, rec.Sat = rank.Dec(s.Dup), rank.Dec(s.Sat)
 	rec.Weights.Dup, rec.Weights.Sat = rank.Dec(w.Dup), rank.Dec(w.Sat)
-	rec.DupAhead, rec.SatAhead = s.Components.DupAhead, s.Components.SatAhead
+	rec.DupAhead, rec.SatAhead = s.DupAhead, s.SatAhead
 	rec.DupKey, rec.ThreadKey = s.DupKey, s.ThreadKey
 }
 

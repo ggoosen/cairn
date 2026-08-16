@@ -86,16 +86,16 @@ func applyPenalties(scored []Scored, w weightSet) {
 		s := &scored[i]
 		if s.DupKey != "" {
 			ahead := dupSeen[s.DupKey]
-			s.Components.DupAhead = ahead
-			s.Components.Dup = duplicateFeature(ahead)
+			s.DupAhead = ahead
+			s.Dup = duplicateFeature(ahead)
 			dupSeen[s.DupKey] = ahead + 1
 		}
 		if s.ThreadKey != "" {
 			ahead := threadSeen[s.ThreadKey]
-			s.Components.SatAhead = ahead
-			s.Components.Sat = saturationFeature(ahead)
+			s.SatAhead = ahead
+			s.Sat = saturationFeature(ahead)
 			threadSeen[s.ThreadKey] = ahead + 1
 		}
-		s.Components.Score = w.score(s.Components)
+		s.Score = w.score(s.Components)
 	}
 }

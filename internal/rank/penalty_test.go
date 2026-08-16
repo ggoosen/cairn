@@ -33,22 +33,22 @@ func TestDuplicatePenaltyChargesEveryCopyAfterTheFirst(t *testing.T) {
 	// exactly one of the two identical bodies is charged, and the unique one is not
 	charged := 0
 	for _, id := range []string{"a", "b"} {
-		if byID[id].Components.Dup != 0 {
+		if byID[id].Dup != 0 {
 			charged++
-			if byID[id].Components.Dup != config.DuplicatePenaltyValue {
-				t.Fatalf("%s duplicate feature %v, want the full %v", id, byID[id].Components.Dup, config.DuplicatePenaltyValue)
+			if byID[id].Dup != config.DuplicatePenaltyValue {
+				t.Fatalf("%s duplicate feature %v, want the full %v", id, byID[id].Dup, config.DuplicatePenaltyValue)
 			}
 		}
 	}
 	if charged != 1 {
 		t.Fatalf("%d of the two identical bodies were charged, want exactly 1", charged)
 	}
-	if byID["c"].Components.Dup != 0 {
-		t.Fatalf("a body nothing else shares was charged a duplicate penalty: %v", byID["c"].Components.Dup)
+	if byID["c"].Dup != 0 {
+		t.Fatalf("a body nothing else shares was charged a duplicate penalty: %v", byID["c"].Dup)
 	}
 	// the charge is exactly the cap, subtracted
 	first, second := byID["a"], byID["b"]
-	if first.Components.Dup != 0 {
+	if first.Dup != 0 {
 		first, second = second, first
 	}
 	if diff := first.Score - second.Score; math.Abs(diff-config.PenaltyCap) > 1e-12 {
@@ -78,16 +78,16 @@ func TestThreadSaturationGradesThenStopsAtTheCap(t *testing.T) {
 	}
 	want := map[string]float64{"m1": 0, "m2": 1.0 / 3, "m3": 2.0 / 3, "m4": 1, "m5": 1}
 	for id, w := range want {
-		if math.Abs(seen[id].Components.Sat-w) > 1e-12 {
-			t.Fatalf("%s saturation feature %v, want %v", id, seen[id].Components.Sat, w)
+		if math.Abs(seen[id].Sat-w) > 1e-12 {
+			t.Fatalf("%s saturation feature %v, want %v", id, seen[id].Sat, w)
 		}
-		if p := -seen[id].Components.Sat * config.PenaltyCap; p < -config.PenaltyCap-1e-12 {
+		if p := -seen[id].Sat * config.PenaltyCap; p < -config.PenaltyCap-1e-12 {
 			t.Fatalf("%s penalty %v exceeds the cap %v", id, p, config.PenaltyCap)
 		}
 	}
 	// m4 and m5 are both at the cap: saturation is capped, not cumulative
-	if seen["m4"].Components.Sat != seen["m5"].Components.Sat {
-		t.Fatalf("saturation kept growing past the cap: m4=%v m5=%v", seen["m4"].Components.Sat, seen["m5"].Components.Sat)
+	if seen["m4"].Sat != seen["m5"].Sat {
+		t.Fatalf("saturation kept growing past the cap: m4=%v m5=%v", seen["m4"].Sat, seen["m5"].Sat)
 	}
 }
 
@@ -106,12 +106,12 @@ func TestPenaltiesAreCappedIndividually(t *testing.T) {
 	got := Rank(cands, ProfileSearchP2, now)
 	w := ProfileSearchP2.Weights()
 	for _, s := range got {
-		dup, sat := s.Components.Dup*w.Dup, s.Components.Sat*w.Sat
+		dup, sat := s.Dup*w.Dup, s.Sat*w.Sat
 		if dup < -config.PenaltyCap-1e-12 || sat < -config.PenaltyCap-1e-12 {
 			t.Fatalf("%s: penalties %v/%v breach the individual cap %v", s.MessageID, dup, sat, config.PenaltyCap)
 		}
-		if s.Components.Dup > 1 || s.Components.Sat > 1 {
-			t.Fatalf("%s: penalty feature outside [0,1]: %v/%v", s.MessageID, s.Components.Dup, s.Components.Sat)
+		if s.Dup > 1 || s.Sat > 1 {
+			t.Fatalf("%s: penalty feature outside [0,1]: %v/%v", s.MessageID, s.Dup, s.Sat)
 		}
 	}
 }
@@ -140,7 +140,7 @@ func TestP0ProfilesApplyNoPenalties(t *testing.T) {
 		withDup := Rank(dup, p, now)
 		withoutDup := Rank(clean, p, now)
 		for i := range withDup {
-			if withDup[i].Components.Dup != 0 || withDup[i].Components.Sat != 0 {
+			if withDup[i].Dup != 0 || withDup[i].Sat != 0 {
 				t.Fatalf("%s scored a penalty component: %+v", p, withDup[i].Components)
 			}
 			// same inputs but for the keys ⇒ bit-identical scores
@@ -162,7 +162,7 @@ func TestEmptyKeysAreExempt(t *testing.T) {
 		baseCand("c", "e3", "", "", now.Add(-2*time.Minute)),
 	}
 	for _, s := range Rank(cands, ProfileSearchP2, now) {
-		if s.Components.Dup != 0 || s.Components.Sat != 0 {
+		if s.Dup != 0 || s.Sat != 0 {
 			t.Fatalf("%s was penalised on an empty key: %+v", s.MessageID, s.Components)
 		}
 	}

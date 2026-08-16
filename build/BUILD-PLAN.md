@@ -32,8 +32,8 @@ two-machine rig · **[data]** needs real usage data first.
 The rest of this file is the specification. This part is the order to work
 it, as sprints, plus the honest reason each blocked item is blocked.
 The sprints are exhaustive: **S1–S14 cover every item in Part II**, so
-finishing them is finishing the backlog. **S8 needs nothing from anyone**, so
-an agent can start there and run without waiting. (S1, defect clearance — D9
+finishing them is finishing the backlog. **Every remaining sprint is gated** — on an author ruling, on operator
+sign-off, on hardware, or on a review. Nothing is runnable without you. (S1, defect clearance — D9
 session reaping and D10 ladder-vs-missing-embedder; S2, mesh integrity and
 scoped capabilities — D2 origin-liveness beacon and D3 capability
 `resource_selectors`; S3, small surfaces — D4 `budget_tokens` and D5
@@ -54,8 +54,8 @@ and `make verify` + `make test-race` green before moving on.
 
 **The sprint set is exhaustive.** Every item in Part II belongs to exactly
 one sprint — see Coverage at the end of this part — so finishing S1–S14 is
-finishing the backlog, with no separate track running alongside. S8 needs
-nothing from anyone; the later sprints name their gate in the heading.
+finishing the backlog, with no separate track running alongside. Every
+remaining sprint names its gate in the heading.
 
 ### S6 — Capture [gated: crossed review of the privacy model]
 
@@ -63,36 +63,6 @@ nothing from anyone; the later sprints name their gate in the heading.
 
 **Exit:** the §2 acceptance criteria, of which the load-bearing one is that a
 seeded fake API key never reaches the object store.
-
-### S16 — CI truth and release identity [ready — RUN THIS NEXT]
-
-Both found by reading CI rather than a local terminal, after five sprints
-reported "verify green" on Linux while macOS — the **primary** platform — had
-been failing for hours.
-
-- **D12** macOS `make verify` fails on the unix-socket path limit (§4)
-- **D13** a release binary cannot name its own version (§4)
-
-**Exit:** CI is green on macOS and ubuntu; a built artifact reports the tag it
-was released under.
-
-**Watch:** D12 is the more important of the two, and not only for the fix — a
-green Linux run has been standing in for a green build all day. Whatever the
-repair, the sprint is not done until the macOS job actually passes on a
-runner, observed, not inferred.
-
-### S8 — Ranking completeness [ready]
-
-- **P2 duplicate/thread-saturation penalties** (§5) — `PenaltyCap` is pinned
-  and unreferenced; spec §9.1 describes the penalties nothing applies
-
-**Exit:** penalties apply under the P2 profile and appear as why-ranked
-components, with R47/R51 external recomputation reconciling **exactly** —
-that lockstep is the whole difficulty, not the penalty arithmetic.
-
-**Watch:** this is the item C3 drags forward. If S6 lands first, S8 stops
-being optional — transcripts are highly repetitive and a scoped search
-without penalties drowns in near-identical chunks.
 
 ### S9 — iroh transport [gated: an author ruling on the binding]
 
@@ -206,8 +176,8 @@ or the sprint set is wrong.
 | S5 ✅ shipped | D1 | agent |
 | S6 | C3 | agent, after review |
 | S7 ✅ shipped | D6 | agent + operator (signing) |
-| S16 | D12, D13 | agent |
-| S8 | P2 penalties | agent |
+| S16 ✅ shipped | D12, D13 | agent |
+| S8 ✅ shipped | P2 penalties | agent |
 | S9 (partial) | iroh — **blocked on a ruling**; metered sensing and mutual pairing auth ✅ shipped | author, then agent |
 | S10 | P3 two-machine pass, live re-audit | operator + hardware |
 | S11 | E1, E3, venv, E4/E9 reported, E5, E7, E8, P2 calibration | operator + agent |
@@ -599,47 +569,6 @@ not implement a mute as a negative selector under D3 without that ruling.
 exists is backwards. If an exploration surface is wanted it needs its own
 design pass; until then this stays a question, not a task.
 
-### D12 — macOS `make verify` fails on the unix-socket path limit (S) [code]
-
-CI on this branch has been red on `verify (macos-latest)` since at least D1.
-Every `internal/` package passes; `cmd/cairn` fails, deterministically,
-macOS-only:
-
-```
---- FAIL: TestD5AdoptStandaloneScript
-    error: listen unix /var/folders/df/djsxfhc17x95674wsm_g8s980000gn/T/
-           cd53430871316/cairn/01a00b15-…-….sock: bind: invalid argument
-```
-
-macOS caps `sun_path` at ~104 bytes. Its `TMPDIR` alone is ~50 characters of
-`/var/folders/…`; add the test's own temp dir, the per-user socket directory,
-a 36-character UUID and `.sock`, and `bind` fails with `invalid argument`.
-Linux allows 108 bytes and has a short `/tmp`, so the same suite is green
-here. The socket-directory design (FIX-A7) explicitly claimed to respect
-"the ~104-byte path cap the code documents" — so either that reasoning was
-wrong or this path defeats it. Establish which before changing anything.
-
-**Why it matters beyond the fix.** Five sprints in a row reported "make
-verify green" truthfully, on Linux, while the primary platform was broken.
-The lesson is procedural: a local green is not a green build.
-
-**Acceptance.** `verify (macos-latest)` passes on a hosted runner — observed,
-not inferred. A test asserts the socket path stays inside the platform limit
-given a realistically long `TMPDIR`, so this cannot regress silently on a
-platform nobody develops on.
-
-### D13 — a release binary cannot name its own version (S) [code]
-
-`cairn --version` prints `p1-<commit>`, computed from build info and not
-settable via `-ldflags -X`, so a tagged release artifact cannot report the
-tag it was released under. S7's release notes state the discrepancy rather
-than hiding it, but a binary that cannot identify its own release is a
-support problem the moment anyone other than the author runs one.
-
-**Acceptance.** A binary built by the release workflow reports its tag;
-a development build still reports something honest (commit + dirty state)
-rather than claiming a tag it does not have.
-
 ### DEBT non-goals
 
 - **Reranking with an LLM** — breaks R47/R51; a model's opinion does not
@@ -655,7 +584,6 @@ rather than claiming a tag it does not have.
 | Item | Kind | Source |
 |---|---|---|
 | Weight calibration adoption: run `cairn rank-stats --calibrate` on the 30-handoff episode data, adopt weights per the §9.3 protocol (survives holdout, stays explainable) | [data] | spec §9.3–9.4 |
-| Duplicate/thread-saturation penalties (`PenaltyCap` is pinned, unreferenced). Must move in lockstep with the why-ranked record + external reconciliation (R47/R51) — its own reviewed task | [code] | spec §9.1, PROGRESS WP-G3 |
 | Degradation ladder rungs 6–7 ENFORCEMENT (currently computed + reported, fail open). Needs pre-ack reserved-capacity semantics vs send-never-blocks | [ruling] then [code] | spec §8.2, PROGRESS WP-G4 |
 
 ## §6. P3 completion (mesh built, single-host-audited)
@@ -689,4 +617,5 @@ via `RULING-NEEDED`.
 | D9 residual: should session `lastUsed` persist across a daemon restart (README promises idle revocation; the reset is documented as deliberate)? Conservative interim shipped — reap on expiry + dead pid only | nothing (confirmation) |
 | D10 residual: does an unworkable embedding backlog count as §8.2 debt? Conservative reading shipped — the axis is zeroed with no embedder | nothing (confirmation) |
 | Mutes vs "positive grants only" | §4: D7 |
+| Near-duplicate definition: exact content-address identity ships, but will not catch C3's near-identical transcript chunks. Auditable options are a normalised-text hash or a recorded shingle/MinHash signature; a live embedder is not one (R51 needs an EXTERNAL verifier) | S6/C3's usefulness, not its correctness |
 | iroh Go binding: adopt `tmc/go-iroh` (v0.0.0, days old, vendored TLS/QUIC, Go floor 1.26 per R52) vs cgo against `iroh-c-ffi` vs wait | S9: the iroh wire |

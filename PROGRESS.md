@@ -6307,3 +6307,48 @@ they turn out to hurt, §9.1 being wrong is a legitimate finding.
   session's commit to fix an attribution is a worse trade than a note. The
   hazard is the one the parallel-run brief names: stage your own paths, never
   a whole shared file.
+
+### Lint closed, and the fix that was wrong first (bookkeeping 2026-08-16)
+
+S16 correctly left the `lint` job red: its one finding was in `internal/rank/`,
+S8's lane, being edited concurrently. With both sprints landed the job is now
+green in both modules — and the closing was not as mechanical as it looked.
+
+- `internal/rank/rank_test.go`: QF1001, De Morgan. One line.
+- 23 further QF1008 findings ("could remove embedded field Components"), all
+  from S8's new penalty code. **Fixed rather than silenced.** The .golangci.yml
+  enables five linters under `default: none`; disabling a rule to reach green
+  is the pattern this branch has spent the day arguing against.
+- A blanket `s/\.Components\.//` across the three files **broke the build**:
+  in `internal/daemon/retrieve.go` two embedded structs both carry
+  `LexRank`/`VecRank`, so the qualifier is load-bearing and its removal makes
+  the selector ambiguous. staticcheck had flagged only the two lines where it
+  is genuinely redundant. Reverted and applied precisely — a reminder that
+  "the linter says it is removable" is a claim about specific lines, not a
+  pattern to apply file-wide.
+- `eval/internal/adversarial/probe.go`: one dead function (`firstNonEmpty`)
+  from S4, removed.
+
+Both modules: `golangci-lint run` 0 issues. `make verify`, `make test-race`,
+`make eval` all exit 0.
+
+### Sprint reconciliation (2026-08-16)
+
+S8 (P2 duplicate/thread-saturation penalties) and S16 (D12 macOS socket path,
+D13 release identity) shipped; sections deleted, Coverage updated.
+
+**Every remaining sprint is now gated.** S6 needs a privacy review, S9 an iroh
+binding ruling, S10 two machines, S11 operator sign-off then corpora, S12 three
+author rulings, S13 all of the above, S14 usage data. Nothing is runnable by an
+agent without an operator decision first — a real change of state worth naming.
+
+New open ruling from S8: the duplicate penalty ships on exact content-address
+identity, which by construction will NOT catch C3's near-identical transcript
+chunks — the case that made S8 "the item C3 drags forward". Recorded in the §8
+table with the two auditable alternatives.
+
+Process note: `internal/config/constants.go` has now crossed lanes twice
+(S5/S15, then S16 sweeping S8's constants into efd75ce). Both times the code
+was correct and only attribution was wrong, and both times the agent chose not
+to rewrite another session's commit. If sprints run in parallel again, that
+file should be assigned to exactly one of them.
