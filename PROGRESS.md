@@ -6017,3 +6017,97 @@ mention a model name in commits", which conflicts with the harness-mandated
 `Co-Authored-By` trailer that every commit on this branch carries. S15 flagged
 it rather than silently diverging from the convention. The trailer wins; the
 instruction was over-broad and should say "no model identifier in prose".
+
+## D12 — macOS `make verify` fails on the unix-socket path limit (2026-08-16) — DONE [S16]
+
+`verify (macos-latest)` had been red since at least D1, deterministically,
+macOS-only, in `TestD5AdoptStandaloneScript`:
+
+```
+error: listen unix /var/folders/df/djsxfhc17x95674wsm_g8s980000gn/T/
+       cd52667834331/cairn/01a00bff-…-….sock: bind: invalid argument
+```
+
+### Was FIX-A7's reasoning wrong, or did this path defeat it?
+
+**Neither half of that question was quite the right one, and the answer
+matters more than the fix.** FIX-A7 claimed its fallback respected "the
+~104-byte path cap the code documents", and for the path it described it was
+RIGHT: on macOS `XDG_RUNTIME_DIR` is unset, so `SocketDir()` returned
+`os.TempDir()/cairn-<uid>` = `/var/folders/…/T/cairn-501` (58 bytes), and the
+socket came to **100 bytes** against a 103-byte usable `sun_path`. Production
+fitted. It still fits.
+
+What FIX-A7 did wrong was subtler, in two ways:
+
+1. **It left three bytes of headroom and never checked.** A six-digit uid
+   takes the same path to 103 — exactly the edge. The bound was satisfied by
+   arithmetic nobody re-ran, in code that computed a length-critical path with
+   no length check anywhere in it.
+2. **It delegated the whole guarantee to the caller in the branch it did not
+   reason about.** When `XDG_RUNTIME_DIR` IS set, FIX-A7's comment assumes it
+   means Linux's `/run/user/<uid>` — "already private and short". Nothing
+   enforced that, and this path defeated it: `TestD5AdoptStandaloneScript`
+   exported a runtime dir from `os.MkdirTemp("", "cd5")` under a comment
+   promising "A SHORT runtime dir", citing Linux's 108-byte limit. But
+   `os.MkdirTemp("")` honors `$TMPDIR` — `/tmp` on Linux, a 48-byte
+   `/var/folders` path on macOS. **The same line of test code produced a
+   65-byte path on Linux and a 110-byte one on macOS.**
+
+And the reason five sprints missed it is NOT that Linux tolerates 110 bytes.
+It does not — a 110-byte bind fails on Linux too, four bytes later, with the
+identical bare EINVAL (verified locally while writing this). The paths
+differed, not the limits. That is the general lesson: environment-derived
+paths are where a "green on my platform" claim is worth least.
+
+### The fix
+
+Both places, because the evidence pointed at both.
+
+- `internal/daemon/ipc.go`: `socketDirCandidates()` replaces the single
+  `SocketDir()` decision, and `SocketPath` chooses against
+  `config.SocketPathMaxBytes` (103 — the macOS figure, **enforced on every
+  platform**, because a bound that only bites on the platform nobody develops
+  on is a bound nobody ever sees bite). The ladder degrades the NAME before
+  the DIRECTORY: an operator who exported `XDG_RUNTIME_DIR` chose it for
+  privacy and logout cleanup, so it keeps the directory and shortens the leaf
+  to a 16-hex BLAKE3 prefix over the FULL cairn id first — which preserves the
+  anti-collision argument the full id was there for (a UUIDv7 prefix is a
+  millisecond timestamp; the TestF3 flake). Only then does it move directory,
+  with `/tmp/cairn-<uid>` as a floor that exists on both platforms. `Serve`
+  now prepares `filepath.Dir(sock)` rather than `SocketDir()`, and
+  `checkSocketPathLength` refuses an impossible path by name, size and limit
+  instead of letting `bind` answer "invalid argument" — the error that hid
+  this for five sprints.
+- The tests that were wrong about "short": `TestD5AdoptStandaloneScript` and
+  `TestSocketDirSymlinkRefused` now root their runtime dirs at `/tmp`
+  explicitly. The symlink test needed it for a second reason — now that Serve
+  prepares the directory it will actually bind, a too-long runtime dir would
+  be skipped by the ladder and the test would quietly stop exercising the
+  refusal on macOS.
+
+### The regression guard
+
+`internal/daemon/socket_path_test.go` pins the macOS-shaped environment by
+LENGTH (`dirOfLength`, against `macOSTMPDIRBytes`) on every platform, and then
+**binds for real** — the only check a generous local `$TMPDIR` cannot fool. It
+covers the production macOS case (full id kept), the CI-breaking case (name
+degraded, directory kept), a runtime dir no leaf can rescue (directory falls
+through), a hopeless `TMPDIR` (floor at `/tmp`), and the refusal message.
+
+### Deviation / judgment calls
+
+- `SocketDir()` is kept exported and now returns the *preferred* candidate
+  only; the directory in use is `filepath.Dir(SocketPath(id))`. No caller
+  outside `ipc.go` used it.
+- 103 rather than a platform-conditional constant. Uniformity is the point.
+- The shortened leaf is a BLAKE3 prefix, not a truncated UUID, so the
+  construction does not assume the cairn id is a UUIDv7.
+
+### Not fixed — out of lane
+
+The `lint` job was ALSO red at 9bca52a, on `internal/rank/rank_test.go:174`
+(`QF1001: could apply De Morgan's law`). `internal/rank/` belongs to the
+parallel S8 sprint and was being edited while this ran, so it was left alone
+deliberately rather than risk a conflicting edit. It is a one-line change.
+

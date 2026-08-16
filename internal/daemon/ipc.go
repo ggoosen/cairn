@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ggoosen/cairn/internal/config"
+	"github.com/ggoosen/cairn/internal/object"
 	"github.com/ggoosen/cairn/internal/projection"
 	"github.com/ggoosen/cairn/internal/telemetry"
 )
@@ -155,30 +156,94 @@ type StagedAttachment struct {
 	Filename   string `json:"filename,omitempty"`
 }
 
-// SocketDir returns the per-user 0700 directory holding cairn sockets.
+// socketDirCandidates returns, in preference order, the private directories a
+// cairn socket may live in.
+//
 // FIX-A7: the socket used to sit directly in os.TempDir() with default
-// permissions — on multi-user Linux any local user could connect and,
-// with Session:"" granting the operator tier, act as the operator. A
-// 0700 parent directory is the enforceable guarantee (chmod on the
-// socket itself is not honored everywhere). XDG_RUNTIME_DIR is preferred
-// when set (Linux: /run/user/<uid>, already private and short); the
-// TempDir fallback keeps the path under the ~104-byte unix-socket cap on
-// macOS, where TempDir is per-user private anyway.
-func SocketDir() string {
+// permissions — on multi-user Linux any local user could connect and, with
+// Session:"" granting the operator tier, act as the operator. A 0700 parent
+// directory is the enforceable guarantee (chmod on the socket itself is not
+// honored everywhere), which prepareSocketDir establishes for whichever of
+// these is chosen. XDG_RUNTIME_DIR is preferred when set (Linux:
+// /run/user/<uid>, already private, tmpfs, cleaned on logout).
+//
+// D12: the list exists because ONE directory cannot satisfy both properties
+// at once. FIX-A7 reasoned correctly about its own fallback — os.TempDir() on
+// macOS is a 48-byte per-user /var/folders path, so the natural socket path
+// comes to 100 bytes and fits — but it left three bytes of headroom and
+// delegated the whole length question to whoever exports XDG_RUNTIME_DIR. A
+// runtime dir that is "short" on Linux (/tmp, 4 bytes) is 48 bytes on macOS,
+// and the path then overflows. So the choice is now made against the bound
+// rather than against an assumption; the last candidate is the shortest
+// directory that exists on every supported platform, so the ladder cannot run
+// out on a machine with a pathological TMPDIR.
+func socketDirCandidates() []string {
+	leaf := fmt.Sprintf("cairn-%d", os.Getuid())
+	var dirs []string
 	if rd := os.Getenv("XDG_RUNTIME_DIR"); rd != "" {
-		return filepath.Join(rd, "cairn")
+		dirs = append(dirs, filepath.Join(rd, "cairn"))
 	}
-	return filepath.Join(os.TempDir(), fmt.Sprintf("cairn-%d", os.Getuid()))
+	dirs = append(dirs, filepath.Join(os.TempDir(), leaf))
+	if fallback := filepath.Join("/tmp", leaf); dirs[len(dirs)-1] != fallback {
+		dirs = append(dirs, fallback)
+	}
+	return dirs
+}
+
+// SocketDir returns the PREFERRED per-user 0700 directory for cairn sockets.
+// It is the first candidate only: the directory actually in use is
+// filepath.Dir(SocketPath(id)), which may differ when the preferred one would
+// overflow the platform's socket-path bound.
+func SocketDir() string {
+	return socketDirCandidates()[0]
+}
+
+// shortSocketName is the degraded socket leaf for when the full id does not
+// fit: a BLAKE3 prefix over the WHOLE cairn id, so the identity of the leaf is
+// still derived from the whole id rather than from a millisecond timestamp.
+func shortSocketName(cairnID string) string {
+	return object.Hash([]byte(cairnID))[:config.SocketNameShortHexChars] + ".sock"
 }
 
 // SocketPath returns the daemon's unix socket location: short, deterministic
 // per cairn (unix socket path length limits rule out Application Support).
-// The FULL cairn id is required: a UUIDv7 prefix is a millisecond timestamp,
-// and two meshes created in the same millisecond would collide — one
-// daemon's startup would silently remove the other's live socket (the root
+// The FULL cairn id is used when it fits: a UUIDv7 prefix is a millisecond
+// timestamp, and two meshes created in the same millisecond would collide —
+// one daemon's startup would silently remove the other's live socket (the root
 // cause of the TestF3 flake recorded in PROGRESS.md).
+//
+// D12: the result is bounded by config.SocketPathMaxBytes. The ladder degrades
+// the NAME before it degrades the DIRECTORY — an operator who exported
+// XDG_RUNTIME_DIR chose it for a reason (privacy, logout cleanup), and a
+// hashed leaf costs only legibility, whereas silently relocating the socket
+// costs the property they asked for. If nothing fits, the natural path is
+// returned unchanged so Serve can refuse it by name; a caller must never
+// receive a path that lies about where the daemon is.
 func SocketPath(cairnID string) string {
-	return filepath.Join(SocketDir(), cairnID+".sock")
+	dirs := socketDirCandidates()
+	for _, dir := range dirs {
+		for _, leaf := range []string{cairnID + ".sock", shortSocketName(cairnID)} {
+			if p := filepath.Join(dir, leaf); len(p) <= config.SocketPathMaxBytes {
+				return p
+			}
+		}
+	}
+	return filepath.Join(dirs[0], cairnID+".sock")
+}
+
+// checkSocketPathLength refuses a path bind(2) would refuse. D12: bind's own
+// answer is a bare EINVAL — "invalid argument" — naming neither the limit nor
+// the offender, which is how a deterministic macOS failure was read as
+// something else entirely for five sprints. SocketPath only ever returns an
+// over-long path when EVERY candidate directory overflowed, which means a
+// machine configured beyond help; say exactly that, and say which knob moves.
+func checkSocketPathLength(sock string) error {
+	if len(sock) <= config.SocketPathMaxBytes {
+		return nil
+	}
+	return fmt.Errorf("socket path %s is %d bytes, over the %d-byte unix-domain limit: "+
+		"point XDG_RUNTIME_DIR or TMPDIR at a shorter directory",
+		sock, len(sock), config.SocketPathMaxBytes)
 }
 
 // prepareSocketDir creates the socket dir and refuses to serve into one
@@ -217,10 +282,13 @@ func socketPathFile(deviceDir string) string {
 
 // Serve listens on the unix socket until ctx is done.
 func (d *Daemon) Serve(ctx context.Context) error {
-	if err := prepareSocketDir(SocketDir()); err != nil {
+	sock := SocketPath(d.loaded.Portable.CairnID)
+	if err := checkSocketPathLength(sock); err != nil {
 		return err
 	}
-	sock := SocketPath(d.loaded.Portable.CairnID)
+	if err := prepareSocketDir(filepath.Dir(sock)); err != nil {
+		return err
+	}
 	os.Remove(sock) // stale socket from a dead daemon; the flock is the true owner
 	l, err := net.Listen("unix", sock)
 	if err != nil {

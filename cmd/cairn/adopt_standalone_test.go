@@ -77,10 +77,17 @@ func TestD5AdoptStandaloneScript(t *testing.T) {
 	repoRoot, _ := filepath.Abs("../..")
 	script := filepath.Join(repoRoot, "scripts", "cairn-adopt-standalone.sh")
 
-	// A SHORT runtime dir: the unix socket path is derived from it, and a
-	// deep t.TempDir() blows the 108-byte sun_path limit (the daemon then
-	// fails to bind with a bare "invalid argument").
-	runtimeDir, err := os.MkdirTemp("", "cd5")
+	// A SHORT runtime dir: the unix socket path is derived from it, and a deep
+	// t.TempDir() blows the sun_path limit (the daemon then fails to bind with
+	// a bare "invalid argument").
+	//
+	// D12: it must be short on MACOS, which is what this originally got wrong.
+	// os.MkdirTemp("", …) honors $TMPDIR — 5 bytes on Linux, 48 on macOS — so
+	// this dir was "short" only on the platform nobody ships on, and this test
+	// was the sole red job on macOS CI for five sprints. Root it at /tmp
+	// explicitly (a symlink to /private/tmp on macOS; the kernel resolves it,
+	// and sun_path counts the bytes we pass, not the bytes they resolve to).
+	runtimeDir, err := os.MkdirTemp("/tmp", "cd5")
 	if err != nil {
 		t.Fatal(err)
 	}

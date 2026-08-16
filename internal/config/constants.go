@@ -150,6 +150,35 @@ const (
 	DeclaredPriorityMax = 3
 )
 
+// S8 — P2 duplicate and thread-saturation penalties (spec §9.1). Its own block
+// so the profile weights above keep their original shape.
+//
+// Spec §9.1 pins the CAP ("each duplicate/thread-saturation penalty capped at
+// 0.15") and nothing else: it never defines what makes two results duplicates,
+// nor what counts as a saturated thread. The definitions below are the
+// conservative reading — see the RULING-NEEDED note in internal/rank/penalty.go
+// and PROGRESS.md — chosen so that an auditor can recompute every penalty from
+// values Cairn already publishes, with no model, no threshold on a similarity
+// score, and no dependence on a live embedder whose output could drift.
+const (
+	// DuplicatePenaltyValue is the [0,1] feature value carried by a result whose
+	// head-revision body hash has ALREADY appeared higher in the same ranking.
+	// Content-address identity is binary — two bodies are the same object or
+	// they are not — so the feature is 1 for every copy after the first and 0
+	// otherwise; the cap below is what turns it into a score.
+	DuplicatePenaltyValue = 1.0
+
+	// ThreadSaturationFullAt is how many earlier results from the SAME thread it
+	// takes for the saturation feature to reach 1.0 (and so the penalty to reach
+	// the cap). The feature is min(ahead, ThreadSaturationFullAt)/
+	// ThreadSaturationFullAt, so the second result from a thread is penalised a
+	// third of the cap, the third two thirds, the fourth and beyond the full
+	// cap. Graded rather than binary because a thread contributing a second
+	// message is normal and a thread contributing its fourth is crowding out
+	// everything else — the failure §9.1 names.
+	ThreadSaturationFullAt = 3.0
+)
+
 // ---------------------------------------------------------------------------
 // P2 salience inputs (spec §9.2) — LOCAL, telemetry-derived. Raw impressions
 // never leave the node; only bounded salience feeds ranking.
@@ -753,4 +782,25 @@ const (
 	// (`metered_sense = "off"`), leaving the manual `metered` flag as the only
 	// input. Empty/unset means sensing is on.
 	MeteredSenseOff = "off"
+)
+
+// D12 — the unix-domain socket path bound (S16). Appended as its own block.
+const (
+	// SocketPathMaxBytes is the longest socket path Cairn will construct. The
+	// real bound is sockaddr_un.sun_path, and it is a PLATFORM constant, not a
+	// filesystem one: macOS gives 104 bytes INCLUDING the NUL terminator (so
+	// 103 usable), Linux gives 108. Cairn holds every platform to the macOS
+	// figure deliberately — macOS arm64 is the primary platform (CLAUDE.md) and
+	// almost no development happens there, so a bound that only bites on macOS
+	// is a bound nobody ever sees bite. Exceeding it makes bind(2) fail with a
+	// bare EINVAL ("invalid argument") that names nothing, which is how a
+	// deterministic macOS CI failure survived five sprints of "verify green".
+	SocketPathMaxBytes = 103
+	// SocketNameShortHexChars is the length of the degraded socket leaf: a
+	// BLAKE3 prefix over the FULL cairn id, used only when the natural
+	// "<cairn-id>.sock" leaf does not fit. 16 hex chars = 64 bits, which keeps
+	// the collision argument the full id was there for (a UUIDv7 PREFIX is a
+	// millisecond timestamp and would collide between two meshes created in the
+	// same millisecond — the TestF3 flake) while costing 25 fewer bytes.
+	SocketNameShortHexChars = 16
 )
