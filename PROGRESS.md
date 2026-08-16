@@ -4355,8 +4355,16 @@ running agent's handle mid-session and is strictly worse than the leak:
   a back-dated evaluation run would then reap every live session. Comparing an
   identity token needs no clock at all.
 
-Everything undecidable reads as ALIVE: `Kill(pid, 0)` returning anything other
-than ESRCH/EPERM, an unreadable `/proc`, an unbound pid. Off Linux the
+**A live smoke test found one more case**, which is why it was run rather than
+trusted: a ZOMBIE — killed, but not yet reaped by its parent — answers signal 0
+exactly like a running process, so a `cairn mcp` killed by a parent that does
+not `wait()` kept its session resident. On Linux the process state is read from
+`/proc/<pid>/stat` and Z/X counts as gone. End-to-end after the fix: SIGTERM
+revokes through the new handler, SIGKILL leaves nothing resident once the sweep
+runs, and a live `cairn mcp` keeps its handle throughout.
+
+Everything else undecidable reads as ALIVE: `Kill(pid, 0)` returning anything
+other than ESRCH/EPERM, an unreadable `/proc`, an unbound pid. Off Linux the
 incarnation token is unavailable (macOS keeps the start time in a `kinfo_proc`
 that stdlib `syscall` does not expose on darwin, and this change does not add
 `golang.org/x/sys` for one refinement), so a pid there is judged on liveness

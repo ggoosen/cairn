@@ -142,3 +142,45 @@ func TestD9PidState(t *testing.T) {
 		t.Fatalf("killed child reads as %v, want procGone", got)
 	}
 }
+
+// A ZOMBIE — killed, but not yet reaped by its parent — answers signal 0
+// exactly like a running process. A live smoke test caught this: a `cairn mcp`
+// killed by a parent that does not wait() left its session resident, which is
+// the very case the sweep exists to catch.
+func TestD9ZombieIsNotAliveEnoughToHoldASession(t *testing.T) {
+	if _, ok := platformIsZombie(os.Getpid()); !ok {
+		t.Skip("no process-state source on this platform (see proc_other.go)")
+	}
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot start a helper process: %v", err)
+	}
+	pid := cmd.Process.Pid
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	// deliberately NOT reaped: no Wait() until the assertions are done
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if zombie, ok := platformIsZombie(pid); ok && zombie {
+			break
+		}
+		if time.Now().After(deadline) {
+			_, _ = cmd.Process.Wait()
+			t.Skip("the child never entered the zombie state (something reaped it first)")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := pidState(pid); got != procGone {
+		_, _ = cmd.Process.Wait()
+		t.Fatalf("zombie reads as %v — a session bound to it would survive its process", got)
+	}
+	now := time.Now()
+	s := &sessions{deviceID: "this-device", byToken: map[string]*Session{}}
+	rec := liveRecord(now, pid)
+	rec.BoundDevice = "this-device"
+	if reason, dead := s.deadLocked(rec, now); !dead || reason != "process-gone" {
+		t.Fatalf("session bound to a zombie: reason=%q dead=%v", reason, dead)
+	}
+	_, _ = cmd.Process.Wait()
+}

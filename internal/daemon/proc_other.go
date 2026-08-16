@@ -16,3 +16,9 @@ package daemon
 // out its TTL instead of being reaped early. That is the pre-D9 behaviour for
 // that one case, never a session revoked out from under a running agent.
 func platformProcIdentity(int) (string, bool) { return "", false }
+
+// Nor can it cheaply tell a zombie from a running process without the same
+// sysctl, so a process killed by a parent that never wait()s reads as alive
+// until its session's TTL runs out. Same failure direction as above: late, not
+// wrong.
+func platformIsZombie(int) (bool, bool) { return false, false }

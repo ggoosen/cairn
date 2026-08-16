@@ -13,19 +13,38 @@ import (
 	"strings"
 )
 
-func platformProcIdentity(pid int) (string, bool) {
+// platformIsZombie reports whether the pid is a process that has exited and is
+// waiting to be reaped (state Z or X in /proc/<pid>/stat). ok=false when the
+// state cannot be read, and the caller then keeps the signal-0 answer.
+func platformIsZombie(pid int) (bool, bool) {
+	state, ok := procStatFields(pid)
+	if !ok || len(state) == 0 {
+		return false, false
+	}
+	return state[0] == "Z" || state[0] == "X", true
+}
+
+// procStatFields returns the whitespace-separated fields of /proc/<pid>/stat
+// from field 3 (state) onward. The comm field (2) is parenthesised and may
+// itself contain spaces and parentheses, so counting starts at the LAST ')'.
+func procStatFields(pid int) ([]string, bool) {
 	blob, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 	if err != nil {
-		return "", false
+		return nil, false
 	}
-	// The comm field (2) is parenthesised and may itself contain spaces and
-	// parentheses, so fields are counted from the LAST ')'.
 	line := string(blob)
 	end := strings.LastIndex(line, ")")
 	if end < 0 || end+2 >= len(line) {
+		return nil, false
+	}
+	return strings.Fields(line[end+2:]), true
+}
+
+func platformProcIdentity(pid int) (string, bool) {
+	rest, ok := procStatFields(pid) // rest[0] is field 3 (state)
+	if !ok {
 		return "", false
 	}
-	rest := strings.Fields(line[end+2:]) // rest[0] is field 3 (state)
 	const startTimeField = 22
 	if len(rest) < startTimeField-2 {
 		return "", false

@@ -34,6 +34,14 @@ func pidState(pid int) procState {
 	err := syscall.Kill(pid, 0)
 	switch {
 	case err == nil:
+		// A ZOMBIE answers signal 0 exactly like a running process: it has
+		// exited but its parent has not reaped it. Found by a live smoke test
+		// — an MCP client killed by a parent that does not wait() leaves one,
+		// and judging it "alive" would defeat the whole sweep for precisely
+		// the case the sweep exists to catch.
+		if dead, ok := platformIsZombie(pid); ok && dead {
+			return procGone
+		}
 		return procAlive
 	case errors.Is(err, syscall.ESRCH):
 		return procGone
