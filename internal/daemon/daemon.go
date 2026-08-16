@@ -111,6 +111,12 @@ type Daemon struct {
 
 	forks map[cairnlog.Origin]*ForkRecord // N8: detected equivocations (guarded by d.mu)
 
+	// liveness is the D2 origin-liveness beacon: the highest (generation,
+	// sequence) ever observed per origin, plus any recorded regression. It
+	// carries its OWN lock (like durab) because it is written from the
+	// reconcile paths, which must not hold d.mu across disk I/O.
+	liveness *livenessRegistry
+
 	// admittedPairings records pairing invite_ids (and dev:<device_id>) admitted
 	// THIS session (P3-2b, guarded by d.mu), so a replay within one daemon
 	// lifetime is refused even before d.trust reflects the durable device.add
@@ -363,6 +369,7 @@ func Start(opts Options) (*Daemon, error) {
 		syncKick: make(chan struct{}, 1),
 		durab:    loadDurability(opts.FS, opts.Dir),
 		forks:    loadForks(opts.Dir),
+		liveness: loadLiveness(opts.FS, opts.Dir),
 
 		ladderThresholds: maintenance.DefaultThresholds(),
 		// DEPLOY-E2: config-file first (survives service reinstalls and

@@ -46,6 +46,22 @@ func newNetCmd(dirFlag *string) *cobra.Command {
 			if bootstrap, _ := st["bootstrap"].(bool); bootstrap {
 				fmt.Fprintf(out, "trust:      grant-chain bootstrap (log not yet fully replicated; R37)\n")
 			}
+			// D2 origin-liveness beacon: a peer whose own append chain moved
+			// BACKWARDS restored from a stale backup. Printed before the relay
+			// line because it is the only thing here that needs acting on.
+			if alarms, ok := st["liveness_alarms"].([]any); ok && len(alarms) > 0 {
+				fmt.Fprintf(out, "liveness:   %d ORIGIN REGRESSION ALARM(S) — a peer holds LESS of its own origin than it once did\n", len(alarms))
+				for _, raw := range alarms {
+					a, ok := raw.(map[string]any)
+					if !ok {
+						continue
+					}
+					fmt.Fprintf(out, "            %s\n", str(a["detail"], "(unreadable alarm record)"))
+				}
+				fmt.Fprintf(out, "            a stale-backup restore, not equivocation: nothing is frozen here, and this node still holds the\n")
+				fmt.Fprintf(out, "            events — but they do NOT replicate back on their own. Stop the restored device before it\n")
+				fmt.Fprintf(out, "            writes at those sequences; repair per DOGFOOD §14. `cairn doctor` has the durable record.\n")
+			}
 			// Relays are an iroh-transport concept; the tailnet transport has none,
 			// and iroh's live relay diagnostics are deferred (hardware-gated).
 			if transport == config.TransportIroh {

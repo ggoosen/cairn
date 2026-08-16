@@ -4483,3 +4483,85 @@ backlog should still degrade (in which case rungs 1–2 need a different
 justification, because in that state they shed achievable work permanently).
 Marker: `// RULING-NEEDED:` in `assessDegradation`,
 `internal/daemon/maintenance.go`.
+
+## D2 — origin-liveness beacon (2026-08-16) — DONE
+
+Sprint S2, first of two. Spec §13.2 deferred this in P0 for a stated reason
+("requires peers") and P1 has peers. The gap: `detectFrontierForkFromPeer`
+catches two chains that reached the SAME sequence with DIFFERENT heads, and a
+chain that simply moved BACKWARDS collides with nothing. A device restored
+from a stale backup therefore looked exactly like an ordinary lagging peer.
+
+**What is persisted:** the highest (generation, sequence) ever observed per
+origin, in `.cairn/liveness.json` beside the durability registry — derived and
+cache-class, because the floor is recomputed from our own verified log at
+every observation. Losing the file costs only the part of the watermark that
+was learned from a peer rather than held in frames.
+
+**What is compared, and why only that.** A peer advertises frontiers for every
+origin it holds, and holding less of somebody else's origin is the normal
+state of a mesh: it is what "behind" means, what a thin node is, and what
+every node looks like mid-catch-up. Only a device's own origin is a statement
+about itself — a device is the sole appender to its own chain, so it can never
+legitimately hold less of it than it once did. The beacon compares ONLY the
+frontiers a peer advertises for origins whose device id IS that peer. That one
+restriction is what makes ordinary restart, ordinary catch-up and a thin node
+*structurally* incapable of raising this alarm rather than merely unlikely to,
+and it is asserted by a mutation: dropping the restriction makes drill 1 of
+the acceptance test fail with a false positive on the very first reconcile.
+
+Third-party gossip is not evidence in either direction: another peer's claim
+about an origin neither raises that origin's watermark nor alarms about it.
+The floor rises only from frames we actually hold and from a device's
+statement about itself.
+
+**It alarms; it never quarantines**, per the plan. The check runs on BOTH
+sides of the frontier exchange (initiator and responder), because a regressed
+node may only ever dial us.
+
+**The live smoke test corrected the operator guidance, which is why it was
+run.** Two real daemons, a real stale restore: the alarm fires and `cairn net`
+/ `cairn doctor` / the daemon log all name the origin and both watermarks —
+but the reconcile does NOT repair the restored node, as first drafted. When
+the healthy node pushes the restored device its own missing events,
+`ingestRecords` treats any peer event at or beyond the head of our OWN active
+origin as a device clone (N8), so the restored node freezes its own origin and
+reports an equivocation that names a clone which does not exist. That is
+pre-existing N8 behaviour, in scope for neither this item nor this sprint, but
+it is exactly why the beacon has to live on the OTHER node: without it the
+only alarm anywhere blames the wrong thing. The message now says the events do
+not flow back on their own and points at DOGFOOD §14. The interaction is
+pinned by an assertion in drill 5, so a future change to it cannot silently
+make the guidance wrong again.
+
+**Recovered, not erased.** When an origin returns to or above its watermark
+the alarm is marked recovered and doctor demotes it from PROBLEM to note. It
+is not deleted: "it fixed itself" is precisely what an operator should still
+get to see after a backup restore.
+
+**Tests.** `liveness_test.go` is two real daemons over the N6 enrolment pair,
+six drills in deliberate order — ordinary operation, ordinary restart,
+ordinary catch-up (20 events behind), a thin node, THEN the stale restore,
+then recovery — so the one drill that must alarm is proved against a
+background of five that must not. `liveness_internal_test.go` pins what a live
+pair cannot easily stage: watermarks only rise, third-party gossip is inert, a
+vanished generation alarms with observed_seq −1, an empty or self-less
+frontier is malformed rather than evidence, and a repeat observation updates
+one record instead of duplicating it. `cmd/cairn/net_test.go` covers the two
+operator surfaces the plan names, loading a persisted alarm through the real
+daemon and rendering it. Three mutations were run against the suite (beacon
+disabled, self-origin restriction dropped, comparison neutered); each fails it.
+
+Live verification, two `cairn daemon` processes on isolated sockets: ordinary
+restart and a 30-event catch-up produced no alarm; the stale restore produced
+`liveness: 1 ORIGIN REGRESSION ALARM(S)` in `cairn net`, a nonzero `cairn
+doctor` with `PROBLEM ORIGIN LIVENESS ... watermark next_seq 16 ... now
+advertises next_seq 8 — 8 event(s) missing`, and the matching daemon-log line.
+
+Worth recording for whoever runs two nodes of one mesh on one machine: the IPC
+socket path is derived from the cairn id, so both daemons claim the SAME
+socket and every CLI call reaches whichever bound it last. Isolating
+`XDG_RUNTIME_DIR` per node is the workaround; the first smoke run was
+misleading until that was done.
+
+Green: `make verify`, `make test-race`.

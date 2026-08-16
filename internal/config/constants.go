@@ -563,6 +563,16 @@ const (
 	// P1 logs are small; the full compare is affordable and exact.
 	ForkProbeWindow = 0
 
+	// D2 origin-liveness beacon (spec §13.2; BUILD-PLAN §4 D2). The highest
+	// (generation, sequence) ever OBSERVED per origin, so a device that comes
+	// back advertising LESS of its own append chain than it once had is
+	// caught. That is data loss (a stale-backup restore), not equivocation —
+	// the fork machinery owns equivocation — so it raises an alarm and never
+	// quarantines. Derived/cache-class like the durability registry: the
+	// floor is recomputed from our own log on every observation, so a lost
+	// file costs only the part of the watermark we learned from a peer.
+	LivenessRegistry = "liveness.json" // under .cairn/
+
 	// Capability sessions (N2, RULINGS.md R23): opaque daemon-side handles,
 	// short-TTL, non-delegable, auto-revoked on exit/idle. TTL and idle
 	// window are buildpack-judgment constants, revisable from dogfood data.

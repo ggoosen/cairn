@@ -429,6 +429,10 @@ func (d *Daemon) serveSync(conn net.Conn, r *bufio.Reader, peerDevice string) {
 			if d.detectFrontierForkFromPeer(req.Frontier, peerDevice) {
 				d.kickSync()
 			}
+			// D2: the beacon runs on BOTH sides of the exchange, for the same
+			// reason the fork check does — a regressed peer may only ever dial
+			// us, and an alarm nobody raises is not an alarm.
+			d.noteOriginLiveness(req.Frontier, peerDevice)
 			// P3-3: learn the initiator's node role (durability excludes thin).
 			d.mu.Lock()
 			d.recordPeerRole(peerDevice, req.Role)
@@ -709,6 +713,11 @@ func (d *Daemon) SyncWith(addr string) (int, error) {
 	d.mu.Lock()
 	d.recordPeerRole(pc.PeerDevice, resp.Role)
 	d.mu.Unlock()
+	// D2 origin-liveness beacon: compare what the responder claims about its
+	// OWN origins against the highest position we have ever seen them at,
+	// BEFORE any pushing happens — the push is what would otherwise quietly
+	// repair (and hide) a stale-backup restore.
+	d.noteOriginLiveness(resp.Frontier, pc.PeerDevice)
 	peerFr := map[cairnlog.Origin]originFrontier{}
 	for _, f := range resp.Frontier {
 		peerFr[f.log()] = f

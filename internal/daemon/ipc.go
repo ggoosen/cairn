@@ -783,6 +783,11 @@ func (d *Daemon) dispatch(req Request) Response {
 		if dur, derr := d.DurabilityStatus(); derr == nil && len(dur) > 0 {
 			st["blobs"] = dur
 		}
+		// D2: a frontier regression is a mesh-integrity fact, so it rides the
+		// same status payload `cairn net` already reads.
+		if alarms := d.livenessAlarmStatus(); len(alarms) > 0 {
+			st["liveness_alarms"] = alarms
+		}
 		return Response{OK: true, Status: st}
 
 	case "peek":
