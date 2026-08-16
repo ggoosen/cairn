@@ -6352,3 +6352,42 @@ Process note: `internal/config/constants.go` has now crossed lanes twice
 was correct and only attribution was wrong, and both times the agent chose not
 to rewrite another session's commit. If sprints run in parallel again, that
 file should be assigned to exactly one of them.
+
+### Author rulings ANSWERED — R58 through R63 (2026-08-16)
+
+The operator worked through the outstanding decision list and agreed with the
+recommendations. Six rulings recorded in RULINGS.md; two sprints closed with
+no code written.
+
+- **R58 iroh DEFERRED.** Not blocked — deferred, with the reason stated: the
+  pure-Go binding works but is days old and vendors a quic-go fork plus a
+  patched crypto/tls into the process holding the signing key, and the need
+  is not there (iroh buys NAT traversal for nodes without a tailnet). Marker
+  cleared in `internal/peer/transport.go`.
+- **R59 mutes DELETED** from the spec. Negative grants make composition
+  ambiguous once nested, and D3's subtree confinement already delivers what
+  mutes reached for. Nothing was built, so nothing is removed.
+- **R60 explore profile CLOSED** — no surface, no profile.
+- **R61 send-never-blocks STANDS.** Ladder rung 7 refuses only when the write
+  physically cannot succeed; rung 6 stays warn-only. Ratifies shipped
+  behaviour; §8.2 is superseded on this point. No code change.
+- **R62 near-duplicate key** = normalised-text hash, when C3 needs it.
+  MinHash rejected (parameters would need reconciling under R51), live
+  embedder rejected absolutely (R51 needs an EXTERNAL verifier). Marker
+  cleared in `internal/rank/penalty.go`.
+- **R63** confirms FIX-A6, R38 and R40/R41 as implemented.
+
+Consequence: **S9 and S12 are closed** — S12 entirely by ruling, with no code
+required, which is what "an unanswered question that blocks work is itself
+the deliverable" was meant to produce.
+
+Four sprints remain and every one is gated on the operator: S6 (privacy
+review of C3), S10 (two machines), S11 (kill-criteria sign-off, then
+corpora), S13/S14 behind them. **No agent-runnable work is left in the plan.**
+
+Explicitly NOT delegated: the 21 kill criteria in `eval/claims.yaml` remain
+`signoff: pending`. They are commitments about what the author would accept
+as disproof of his own project; an agent signing them would make the register
+worthless. The recommendation stands — sign the E4/E6 group first, which
+unblocks intrinsic and safety measurement immediately, and defer E5's until
+corpora exist.

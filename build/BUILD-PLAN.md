@@ -31,15 +31,20 @@ two-machine rig · **[data]** needs real usage data first.
 
 The rest of this file is the specification. This part is the order to work
 it, as sprints, plus the honest reason each blocked item is blocked.
-The sprints are exhaustive: **S1–S14 cover every item in Part II**, so
-finishing them is finishing the backlog. **Every remaining sprint is gated** — on an author ruling, on operator
-sign-off, on hardware, or on a review. Nothing is runnable without you. (S1, defect clearance — D9
-session reaping and D10 ladder-vs-missing-embedder; S2, mesh integrity and
-scoped capabilities — D2 origin-liveness beacon and D3 capability
-`resource_selectors`; S3, small surfaces — D4 `budget_tokens` and D5
-standalone-mesh adoption; S5, scale — D1 sqlite-vec; S4, the dark evaluation
-apparatus; and S15, retrieval correctness — D11 disjunctive lexical matching —
-all shipped on 2026-08-16; see PROGRESS.md.)
+The sprints are exhaustive: **S1–S16 cover every item in Part II**, so
+finishing them is finishing the backlog.
+
+**Twelve sprints shipped or closed on 2026-08-16** — S1 defect clearance
+(D9/D10), S2 mesh integrity and scoped capabilities (D2/D3), S3 small
+surfaces (D4/D5), S4 the dark evaluation apparatus, S5 sqlite-vec, S7
+distribution, S8 ranking penalties, S9 (metered sensing + mutual pairing
+auth; iroh deferred by R58), S12 (closed by R59/R60/R61 with no code
+needed), S15 retrieval correctness (D11), S16 CI truth and release identity
+(D12/D13). See PROGRESS.md.
+
+**The four that remain are all gated on the operator**: S6 on a privacy
+review, S10 on two machines, S11 on kill-criteria sign-off then corpora, and
+S13/S14 behind those. There is no agent-runnable work left in this plan.
 
 ## Sprints
 
@@ -53,7 +58,7 @@ Run them in order. Each ships as its own commit(s) with PROGRESS.md updated,
 and `make verify` + `make test-race` green before moving on.
 
 **The sprint set is exhaustive.** Every item in Part II belongs to exactly
-one sprint — see Coverage at the end of this part — so finishing S1–S14 is
+one sprint — see Coverage at the end of this part — so finishing S1–S16 is
 finishing the backlog, with no separate track running alongside. Every
 remaining sprint names its gate in the heading.
 
@@ -63,28 +68,6 @@ remaining sprint names its gate in the heading.
 
 **Exit:** the §2 acceptance criteria, of which the load-bearing one is that a
 seeded fake API key never reaches the object store.
-
-### S9 — iroh transport [gated: an author ruling on the binding]
-
-Mutual pairing authentication and metered/battery sensing **shipped**
-(2026-08-16); only the wire itself is left, and it is now blocked on a
-dependency decision rather than on effort.
-
-- **iroh transport** (§6) — the live wire, relay self-hosting + diagnostics,
-  NAT-traversing dial-by-key
-
-**The ruling needed.** `n0-computer/iroh-ffi` ships no Go bindings.
-`github.com/tmc/go-iroh` is a pure-Go clean-room port that maps onto the
-existing transport seam almost verbatim and was demonstrated working
-(two endpoints, round trip by public key) — but it is v0.0.0, untagged,
-single-author, unaffiliated with n0, days old, vendors a quic-go fork and a
-patched `crypto/tls`, and raises Cairn's Go floor to 1.26 (an R52 decision).
-The alternatives are cgo against `iroh-c-ffi`, or uniffi-bindgen-go against
-`iroh-ffi` — both add a Rust toolchain and a per-platform static library to
-S7's packaging. Marker in `internal/peer/transport.go`; options in PROGRESS.
-
-**Exit:** two nodes pair and reconcile over iroh with no Tailscale
-dependency, on a binding the author has sanctioned.
 
 ### S10 — Hardware validation [gated: two physical machines]
 
@@ -126,18 +109,7 @@ acted on — by changing the product or the claim, not the metric.
 losing to B1 (grep over transcripts), that is a real result and the plan says
 what to do about it. Budget real money and real time.
 
-### S12 — Ruling-gated surfaces [gated: author rulings]
-
-- **D7 mutes** (§4) — spec §7.1/§4.5 versus §7.2's positive-grants-only stance
-- **D8 explore ranking profile** (§4) — needs an exploration surface first
-- **P2 ladder rungs 6–7 enforcement** (§5) — §8.2 reserved-slice versus
-  send-never-blocks
-
-**Exit:** each of the three is either built to a recorded ruling or deleted
-from the spec, with the ruling written into RULINGS.md. "Still open" is not
-an exit — an unanswered question that blocks work is itself the deliverable.
-
-### S13 — Release [gated: S1–S12 green]
+### S13 — Release [gated: S6/S10/S11]
 
 - **Overnight 1M-event synthetic scorecard** (§1) — includes the
   reindex/backup/restore/RSS numbers never recorded
@@ -178,15 +150,19 @@ or the sprint set is wrong.
 | S7 ✅ shipped | D6 | agent + operator (signing) |
 | S16 ✅ shipped | D12, D13 | agent |
 | S8 ✅ shipped | P2 penalties | agent |
-| S9 (partial) | iroh — **blocked on a ruling**; metered sensing and mutual pairing auth ✅ shipped | author, then agent |
+| S9 ✅ closed | metered sensing + mutual pairing auth shipped; iroh **deferred by R58** | agent + author |
 | S10 | P3 two-machine pass, live re-audit | operator + hardware |
 | S11 | E1, E3, venv, E4/E9 reported, E5, E7, E8, P2 calibration | operator + agent |
-| S12 | D7, D8, ladder rungs 6–7 | author, then agent |
+| S12 ✅ closed | D7 deleted (R59), D8 closed (R60), ladder ratified (R61) — no code was needed | author |
 | S13 | 1M scorecard, C4 listings, the tag | operator |
 | S14 | P4 (4 items) | agent, evidence-gated |
 
-The five open rulings in §8 are not sprint items: three are confirmations
-that block nothing, and two (mutes, §8.2 reserved-slice) are S12's input.
+§8's remaining rulings are not sprint items — both are confirmations of
+shipped conservative readings and block nothing. The rulings that DID block
+work were answered on 2026-08-16 (R58 iroh deferred, R59 mutes deleted, R60
+explore closed, R61 send-never-blocks, R62 near-duplicate key, R63 the three
+standing confirmations), which is why S9 and S12 are closed above without
+code.
 
 **What "all sprints done" means:** every claim measured or explicitly
 unmeasurable, the mesh exercised on real hardware, a tagged release, and P4
@@ -554,21 +530,6 @@ an honest note rather than block on it.
 toolchain present. The FIX-F4 guard still holds — a release artifact must be
 a `sqlite_fts5` build, and the workflow must assert that.
 
-### D7 — mutes [ruling] then S/M
-
-**Blocked, deliberately.** Spec §7.1/§4.5 list `mute(...)`; §7.2's stance is
-positive grants only. No event, op or verb exists. These cannot both be
-right, and the resolution changes the capability model rather than adding to
-it. Record the answer in RULINGS.md, then build or delete the spec text. Do
-not implement a mute as a negative selector under D3 without that ruling.
-
-### D8 — third ranking profile for `explore()` [ruling] then M
-
-**Blocked, deliberately.** Spec §13.4 raises it as an open question and no
-`explore` surface exists to profile. Deciding weights before the surface
-exists is backwards. If an exploration surface is wanted it needs its own
-design pass; until then this stays a question, not a task.
-
 ### DEBT non-goals
 
 - **Reranking with an LLM** — breaks R47/R51; a model's opinion does not
@@ -584,7 +545,6 @@ design pass; until then this stays a question, not a task.
 | Item | Kind | Source |
 |---|---|---|
 | Weight calibration adoption: run `cairn rank-stats --calibrate` on the 30-handoff episode data, adopt weights per the §9.3 protocol (survives holdout, stays explainable) | [data] | spec §9.3–9.4 |
-| Degradation ladder rungs 6–7 ENFORCEMENT (currently computed + reported, fail open). Needs pre-ack reserved-capacity semantics vs send-never-blocks | [ruling] then [code] | spec §8.2, PROGRESS WP-G4 |
 
 ## §6. P3 completion (mesh built, single-host-audited)
 
@@ -592,7 +552,6 @@ design pass; until then this stays a question, not a task.
 |---|---|---|
 | Two-machine live pass: pairing / thin-role / transport / remote-query on real hardware over a real tailnet (the July audit ran loopback single-host for P3's additions) | [hardware] | README "On P3", PROGRESS P3 close |
 | Live re-audit of pairing/trust/sync code extended SINCE the audited July commit | [hardware] | README Status caveat |
-| iroh transport: the live wire, relay self-hosting + diagnostics, NAT-traversing dial-by-key (transport seam already in place) | [code, large] | spec §12 P3, `internal/peer/transport.go` |
 
 ## §7. P4 — self-organising knowledge (evidence-gated, needs P2 usage data)
 
@@ -610,12 +569,5 @@ via `RULING-NEEDED`.
 
 | Ruling | Blocks |
 |---|---|
-| FIX-A6 residual: what to report when a link append fails AFTER publish is durable (conservative error-return implemented) | nothing (confirmation) |
-| R38 bootstrap-trust retention breadth (`internal/daemon/daemon.go`) | nothing (confirmation) |
-| R40/R41 backfill confirmation (fork-repair revoke bundling) | nothing (confirmation) |
-| §8.2 reserved-slice vs send-never-blocks | §5: ladder rungs 6–7 |
 | D9 residual: should session `lastUsed` persist across a daemon restart (README promises idle revocation; the reset is documented as deliberate)? Conservative interim shipped — reap on expiry + dead pid only | nothing (confirmation) |
 | D10 residual: does an unworkable embedding backlog count as §8.2 debt? Conservative reading shipped — the axis is zeroed with no embedder | nothing (confirmation) |
-| Mutes vs "positive grants only" | §4: D7 |
-| Near-duplicate definition: exact content-address identity ships, but will not catch C3's near-identical transcript chunks. Auditable options are a normalised-text hash or a recorded shingle/MinHash signature; a live embedder is not one (R51 needs an EXTERNAL verifier) | S6/C3's usefulness, not its correctness |
-| iroh Go binding: adopt `tmc/go-iroh` (v0.0.0, days old, vendored TLS/QUIC, Go floor 1.26 per R52) vs cgo against `iroh-c-ffi` vs wait | S9: the iroh wire |

@@ -20,11 +20,16 @@ package rank
 //     is precisely the black box §9 exists to forbid — and R51 is explicit that
 //     reconciliation is defined against an EXTERNAL recompute.
 //
-// RULING-NEEDED: whether near-duplicate detection is wanted at all, and if so
-// on what reproducible key (a normalised-text hash and a shingle/MinHash
-// signature are both auditable options, unlike a live embedding call). Recorded
-// in PROGRESS.md under "Author rulings needed"; until it is answered, only exact
-// content identity is penalised, which under-penalises and never over-penalises.
+// RESOLVED by R62 (2026-08-16): when near-duplicate detection is needed, the
+// key is a NORMALISED-TEXT hash (lowercase, collapse whitespace, strip
+// markdown), recorded in the explanation so an external verifier reproduces it.
+// MinHash was rejected — its shingle-size and permutation parameters would
+// themselves need recording and reconciling under R51, for a penalty capped at
+// 0.15 — and a live embedder cosine absolutely, since R51 defines
+// reconciliation against an EXTERNAL verifier. R62 also says WHEN: with CAPTURE
+// C3, not before, because exact identity is what today's corpus can exercise.
+// Until then only exact content identity is penalised, which under-penalises
+// and never over-penalises.
 //
 // Thread saturation is the same shape: the thread key is the projection's own
 // thread id (a root message keys on its own id), and the feature grades with the

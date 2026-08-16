@@ -1115,3 +1115,99 @@ expiry (`PairingInviteTTL`) is anchored in the root-signed cert's
 issued_at (unforgeable); arrival consumption is hard single-use (replays
 refused, including within one daemon lifetime via the admitted-pairings
 set). Treat an unexpired unconsumed token like a credential.
+
+## R58 — The iroh wire is DEFERRED, not blocked (operator-ruled 2026-08-16)
+
+Do not adopt a Go iroh binding now. The transport seam in
+`internal/peer/transport.go` stays, and Tailscale remains the shipped wire.
+
+Rejected explicitly, with the reason: `github.com/tmc/go-iroh` is a pure-Go
+port that maps onto the seam almost verbatim and was demonstrated working
+(two endpoints, round trip by public key, in a sandbox). It is nevertheless
+refused for now because it is v0.0.0, untagged, single-author, unaffiliated
+with n0, days old, and vendors a quic-go fork plus a patched `crypto/tls`
+into the process that holds the device signing key — and because it moves
+Cairn's Go floor to 1.26, which R52 makes a recorded decision rather than a
+side effect.
+
+The decisive point is need, not risk tolerance: iroh buys NAT traversal for
+nodes WITHOUT a tailnet, which is a distribution problem Cairn does not yet
+have. Waiting costs nothing because the seam already exists and a second
+transport is exercised in the test suite.
+
+Revisit when the binding has tags and adopters, or when n0 ships Go bindings
+in `iroh-ffi`. Until then `cairn net` must keep saying plainly that the iroh
+transport is not built, and must not imply it is merely hardware-gated.
+
+## R59 — Mutes are DELETED from the spec; positive grants only stands (operator-ruled 2026-08-16)
+
+Spec §7.1/§4.5 list a `mute(...)` verb; spec §7.2 says grants are positive
+only. Those cannot both hold, and the resolution is to drop the mute.
+
+Reasoning: negative grants make composition ambiguous the moment they nest
+(grant `a/*`, mute `a/b/*`, grant `a/b/c` — which wins, and can an auditor
+predict it?), and D3's capability `resource_selectors` already deliver what
+mutes were reaching for: confinement to a subtree, positively expressed,
+with typed refusals. No event, op or verb was ever built, so nothing is
+removed from the running system.
+
+Consequence: no negative selector may be added under D3's grammar. The
+selector charset stays topic-name-plus-`*`, and `!a/*` remains refused at
+mint (already tested).
+
+## R60 — No third ranking profile until an exploration surface exists (operator-ruled 2026-08-16)
+
+Spec §13.4 asks whether `explore()`-style traversal needs its own ranking
+profile. Closed: there is no `explore` surface, and weighting a traversal
+that does not exist is backwards. Reopen only if such a surface is designed,
+at which point the profile is part of that design rather than a prerequisite
+to it.
+
+## R61 — Send never blocks; ladder rungs 6–7 do not reject pre-ack (operator-ruled 2026-08-16)
+
+Spec §8.2's degradation ladder and the "send never blocks" guarantee pull in
+opposite directions at rungs 6–7. The guarantee wins.
+
+- **Rung 7** refuses a write only when the write physically cannot succeed.
+  That is reality reporting itself, not a policy decision, and it needs no
+  reserved-capacity accounting.
+- **Rung 6** stays warn-only: computed, reported, fail-open.
+
+Reasoning: an agent hits disk pressure at exactly the moment it most needs
+to record something, and a pre-ack rejection under reserved-capacity
+accounting would break the product's central promise precisely then. The
+emergency reserve (rulings §11) already exists for the genuinely-full case
+and is released by explicit operator command, which is the right shape for a
+decision with that consequence.
+
+This ratifies the shipped behaviour; no code change is required. The §8.2
+text is superseded on this point.
+
+## R62 — Near-duplicate identity is a NORMALISED-TEXT hash when it is needed (operator-ruled 2026-08-16)
+
+S8's duplicate penalty ships on exact content-address identity (same BLAKE3
+body object), which by construction cannot catch the near-identical chunks
+CAPTURE C3 would produce. When that gap needs closing, close it with a
+**normalised-text hash** — lowercase, collapse whitespace, strip markdown —
+recorded in the explanation so an external verifier reproduces it.
+
+Rejected: shingle/MinHash signatures, which add shingle-size and permutation
+parameters that must themselves be recorded and reconciled under R51, for a
+penalty capped at 0.15. Rejected absolutely: a live embedder cosine — R51
+requires reconciliation by an EXTERNAL verifier, and reproducing a cosine
+needs that model at that version on a node whose embedder is optional.
+
+Not urgent: implement with C3, not before.
+
+## R63 — The three standing confirmations are CONFIRMED as implemented (operator-ruled 2026-08-16)
+
+Three questions had conservative implementations in place and blocked
+nothing. All three are confirmed as shipped, closing them:
+
+- **FIX-A6 residual** — when a link append fails AFTER the publish is
+  durable, the conservative error-return stands. Cairn never claims success
+  for an incomplete request, and the residual window is documented.
+- **R38** — bootstrap-trust retention breadth as implemented.
+- **R40/R41** — the fork-repair revoke-bundling backfill as implemented.
+
+Confirmation, not redesign: each ratifies behaviour already under test.

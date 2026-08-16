@@ -51,24 +51,21 @@ var DefaultTransport Transport = tcpTransport{}
 // deferral pattern. The P3-1 Transport interface is the seam it drops into with
 // no caller change once a binding is CHOSEN.
 //
-// RULING-NEEDED (P3-4c, recorded 2026-08-16 — PROGRESS.md "Author rulings
-// needed — P3-4c iroh binding"): spec §12 names "iroh 1.x" as the P3 transport,
-// but iroh is Rust and there is no official Go binding. The three ways to get
-// one are NOT equivalent choices for this project, and each trades away
-// something the rulings currently protect:
+// RESOLVED by R58 (2026-08-16): DEFERRED, not blocked. No Go iroh binding is
+// adopted. github.com/tmc/go-iroh maps onto this interface almost verbatim and
+// was demonstrated working (two endpoints, round trip by public key), but it is
+// v0.0.0, days old, single-author, unaffiliated with n0, and vendors a quic-go
+// fork plus a patched crypto/tls into the process holding the device signing
+// key — and it moves the Go floor to 1.26, an R52 decision. The n0 routes
+// (iroh-ffi via uniffi-bindgen-go, or iroh-c-ffi) each add cgo, a Rust
+// toolchain and a per-platform static library to the release path.
 //
-//   - Rust FFI (n0's own iroh-ffi via uniffi-bindgen-go, or the hand-written C
-//     API in n0-computer/iroh-c-ffi): the upstream, n0-maintained code — at the
-//     cost of cgo plus a Rust toolchain and a per-platform static library in
-//     every build, which is not what "single binary `cairn`" has meant so far.
-//   - A pure-Go reimplementation (github.com/tmc/go-iroh — clean-room, MIT,
-//     unaffiliated with n0): no cgo, satisfies this interface directly, and it
-//     WORKS — a two-endpoint round trip was exercised during the P3-4c
-//     investigation. But it is an untagged v0.0.0 module by a single author
-//     that vendors a quic-go fork and a patched crypto/tls, and it raises
-//     cairn's Go floor to 1.26 (R52 governs that line).
-//   - Neither: keep the tailnet transport and drop iroh from the spec.
-//
+// The decisive point is need: iroh buys NAT traversal for nodes WITHOUT a
+// tailnet, which is a distribution problem Cairn does not yet have. Waiting
+// costs nothing because this seam exists and a second transport is already
+// exercised in the tests. Revisit when the binding has tags and adopters, or
+// when n0 ships Go bindings.
+
 // Deciding that is a dependency-and-spec call for the author, not an
 // implementation detail, so this stays refused until it is ruled on. The
 // conservative reading is the one in force: refuse, and keep the mesh on the
