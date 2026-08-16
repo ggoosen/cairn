@@ -4292,3 +4292,22 @@ as written rather than rewritten after the fact.
 Maintenance rule, restated because it is what failed: new planned work gets a
 section in BUILD-PLAN.md; shipped work moves here and its section is deleted.
 Do not start a new plan document.
+
+### Author rulings needed — D9 session idle-across-restart (raised 2026-08-15)
+
+`loadSessions` (internal/daemon/session.go:215) resets `sess.lastUsed = now`
+on every daemon start, with a comment saying the restart of the idle window
+is deliberate. The README promises capability sessions are "auto-revoked on
+exit or idle". Those cannot both hold: a daemon restart currently grants every
+stale token a fresh 6-hour idle window, so idle revocation never retires a
+session across a restart.
+
+Question: should `lastUsed` be persisted, making the documented promise true,
+or is the reset the intended semantics and the README wrong?
+
+Conservative interim (implement this if the ruling has not landed): reap on
+expiry and on dead bound-pid — neither of which is in question — and leave
+the `lastUsed` reset as written, marked `// RULING-NEEDED:`.
+
+Full defect writeup, including the upstream leak in cmd/cairn/mcp.go:67 where
+a `defer`red revoke cannot run on signal termination: build/BUILD-PLAN.md §4 D9.

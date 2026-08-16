@@ -36,6 +36,10 @@ immediately.
 
 **Buildable now, in this order:**
 
+0. **D9 session reaping** — a live defect, not an enhancement, so it goes
+   first: `sessions.json` grows without bound (2,673 records observed on the
+   dev node), the mint path is O(n) per session, and `cairn session list` has
+   stopped being a usable kill switch. Carries one question for the author.
 1. **D2 origin-liveness beacon** and **D3 capability `resource_selectors`** —
    independent of everything else, each closes a spec gap that exists today,
    each has a two-daemon or dispatch-boundary test that proves it. Best
@@ -520,6 +524,77 @@ not implement a mute as a negative selector under D3 without that ruling.
 `explore` surface exists to profile. Deciding weights before the surface
 exists is backwards. If an exploration surface is wanted it needs its own
 design pass; until then this stays a question, not a task.
+
+### D9 — capability sessions are never reaped (M) [code] + [ruling]
+
+**A live defect, observed on the dev node:** `cairn session list` returns
+2,673 sessions accumulated since 2026-07-16, all named `mcp`, all
+`agent-standard` — 1,149 unexpired and 1,524 expired but still resident.
+`sessions.json` is 772 KB and growing at roughly two records per 90s while
+any MCP client runs.
+
+**Severity is operational, not a breach**, and saying so plainly matters:
+the daemon already treats a no-handle local caller as operator and the file
+is 0600 device-local, so 1,149 live `agent-standard` tokens grant nothing an
+attacker could not get more cheaply. This is consistent with the documented
+"confines agents, not attackers" posture. The real costs are unbounded
+growth, a quadratic mint path, and a kill switch nobody can read.
+
+Four compounding defects, each verified in the code:
+
+1. **Expiry is lazy via an unreachable path.** Expired records are deleted
+   only inside `resolve()` (session.go:280–289) — that is, only when someone
+   presents that exact token *after* it expired. A dead MCP client never
+   presents its token again, so its record is immortal. There is no
+   background sweep anywhere in `internal/daemon`.
+2. **`loadSessions` does not filter on load** (session.go:214–217), which is
+   the natural reaping point. It rehydrates every stored session verbatim and
+   sets `sess.lastUsed = now`, restarting the idle window on every daemon
+   restart — so idle revocation can never retire a session across a restart.
+3. **`persist()` rewrites the entire sorted array on every mutation**
+   (session.go:221). Minting one session is O(n) in all sessions ever
+   minted; cost grows quadratically over the mesh's life.
+4. **The leak has a source, upstream of session.go.** `cairn mcp` mints a
+   session per process and releases it with `defer` (cmd/cairn/mcp.go:67).
+   A deferred revoke does not run when the process is killed by a signal —
+   exactly how MCP clients tear down stdio servers — so every respawn leaks
+   precisely one record. Fixing only the reaping would leave the leak intact
+   and merely bound its backlog at the 24h TTL.
+
+**`BoundPID` is the fix, not a footnote.** It is recorded (session.go:254)
+and printed (session.go:312) and read **nowhere** in non-test code, so the
+pid binding is decorative and a token is valid for its full TTL regardless
+of whether its process still exists. A pid-liveness check is the honest
+implementation of the README's "auto-revoked on exit", reaps the leak at
+source rather than waiting out the TTL, and restores `session list` as a
+kill switch. Guard pid reuse: trust the pid only for sessions bound on this
+device, and pair it with `CreatedAt` so a recycled pid cannot resurrect a
+record.
+
+**What.** Drop expired entries in `loadSessions`; filter them in `list()`;
+sweep on create; reap sessions whose bound pid is gone; handle SIGTERM/SIGINT
+in `cairn mcp` so the revoke actually runs; add `cairn session prune` for the
+existing backlog. If the mint path stays O(n), bound it — an append-only
+journal with periodic compaction, or persisting only on a dirty flag.
+
+**RULING NEEDED — what should idle mean across a restart?** The README
+promises sessions are "auto-revoked on exit or idle". The code keeps that
+promise only within a single daemon lifetime, because `lastUsed` resets on
+load, and a comment says that reset is deliberate. Persisting `lastUsed`
+would make the user-facing promise true and stop a daemon restart from
+granting every stale token a fresh idle window — but it changes documented-
+as-intentional behaviour, so it needs an author ruling rather than a
+unilateral flip. Conservative interim: reap on expiry and dead-pid (neither
+of which is in question), leave the `lastUsed` reset alone, and mark it
+`// RULING-NEEDED:`.
+
+**Acceptance.** A daemon restarted with a `sessions.json` full of expired and
+dead-pid records loads a bounded set and rewrites the file smaller. `cairn
+session prune` retires the 2,673-record backlog and reports what it removed.
+A killed `cairn mcp` process leaves no resident session once the sweep runs.
+Minting the 1000th session costs no more than the 10th. A live session is
+never reaped while its process is alive and inside its TTL — the test that
+matters most, because over-reaping breaks running agents.
 
 ### DEBT non-goals
 
