@@ -5540,7 +5540,9 @@ signed `.pkg`, which is a packaging change and not a signing one.
   block. Two of the three are now carried in the template header, matching what
   homebrew-core's own formulas do; `typed: strict` is left unsatisfied
   deliberately, since a sigil claiming strict typing on a file nothing
-  type-checks would be a decoration.
+  type-checks would be a decoration. The CI run after that change reports
+  exactly what it should: `1 file inspected, 1 offense detected` —
+  `Sorbet/StrictSigil: Sorbet sigil should be at least strict got true`.
 - `actionlint` clean on both workflows; the release-notes step executed
   locally to prove the heredoc renders.
 - `make verify` and `make vet` green.
