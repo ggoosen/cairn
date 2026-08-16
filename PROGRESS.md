@@ -5303,3 +5303,28 @@ records every evaluated candidate as an observation — a top-K index cannot
 serve that. Changing it is a ranking-semantics decision, not an indexing one.
 In practice it is bounded by a subscription's hard topic filters, and it runs
 at digest time rather than per search. Noted in the code at the function.
+
+### D11 raised — lexical search is conjunctive (found 2026-08-16, S4 fallout)
+
+S4's evaluation apparatus ran its six sample queries against a real daemon and
+`cairn search` returned ZERO results for every one, while B1 (grep over raw
+transcripts) returned hits for the same queries. Reproduced by hand on a
+one-message mesh afterwards:
+
+    cairn search "council approved"                            -> 1 result
+    cairn search "what did the council decide about approval"  -> "results": null
+
+Cause: `FTSQuery` (internal/projection/search.go:35-45) quotes each term and
+joins them with a space, which FTS5 reads as AND, so a document must contain
+every query term.
+
+Recorded as BUILD-PLAN §4 D11 and sprint S15, placed ahead of every other
+ready sprint. The reason it outranks them: §3.6's central competitive kill
+criterion is "Cairn does not beat B1 (grep) on task success", and today Cairn
+does not answer natural-language queries at all — so every intrinsic number
+S11 would produce measures this defect rather than the retrieval design.
+
+Not fixed here. It is a ranking-semantics change (R47/R51 reconciliation, the
+budget property tests and a golden corpus that is expected to MOVE are its
+guard rails), not a one-line loosening, and it deserves its own reviewed
+sprint rather than being folded into the plan-maintenance commit that found it.

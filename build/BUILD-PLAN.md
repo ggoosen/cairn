@@ -31,14 +31,14 @@ two-machine rig · **[data]** needs real usage data first.
 
 The rest of this file is the specification. This part is the order to work
 it, as sprints, plus the honest reason each blocked item is blocked.
-The sprints are exhaustive: **S1–S14 cover every item in Part II**, so
-finishing them is finishing the backlog. **S4 and S8 need nothing from
-anyone**, so an agent can start at S4 and run without waiting. (S1, defect
+The sprints are exhaustive: **S1–S15 cover every item in Part II**, so
+finishing them is finishing the backlog. **S15 and S8 need nothing from
+anyone**, so an agent can start at S15 and run without waiting. (S1, defect
 clearance — D9 session reaping and D10 ladder-vs-missing-embedder; S2, mesh
 integrity and scoped capabilities — D2 origin-liveness beacon and D3
 capability `resource_selectors`; S3, small surfaces — D4 `budget_tokens` and
-D5 standalone-mesh adoption; and S5, scale — D1 sqlite-vec — all shipped on
-2026-08-16; see PROGRESS.md.)
+D5 standalone-mesh adoption; S5, scale — D1 sqlite-vec; and S4, the dark
+evaluation apparatus — all shipped on 2026-08-16; see PROGRESS.md.)
 
 ## Sprints
 
@@ -52,23 +52,28 @@ Run them in order. Each ships as its own commit(s) with PROGRESS.md updated,
 and `make verify` + `make test-race` green before moving on.
 
 **The sprint set is exhaustive.** Every item in Part II belongs to exactly
-one sprint — see Coverage at the end of this part — so finishing S1–S14 is
-finishing the backlog, with no separate track running alongside. S4 and S8
+one sprint — see Coverage at the end of this part — so finishing S1–S15 is
+finishing the backlog, with no separate track running alongside. S15 and S8
 need nothing from anyone; the later sprints name their gate in the heading.
 
-### S4 — Evaluation apparatus, dark [ready]
+### S15 — Retrieval correctness [ready — RUN THIS NEXT]
 
-Built now, reporting nothing until corpora land and criteria are signed.
+Found by S4's apparatus on its first run against a real daemon, then
+reproduced by hand. It outranks everything else that is ready.
 
-- **E4** intrinsic quality: ablations + baselines (§3.4)
-- **E9** recall-under-growth curve (§3.4) — T0, no agent, cheapest experiment
-  in the plan and the most likely to find a real limit; lands with E4
-- **E6** adversarial/safety (§3.4) — needs no external corpus
+- **D11** conjunctive lexical search returns nothing for natural-language
+  queries (§4)
 
-**Exit:** every ablation and baseline runs end-to-end on the sample corpus and
-emits structured results; the growth curve runs at 10×/100×/1000× at fixed
-budget; injection compliance is measurable through digest/search/fetch. **No
-number is reported as evidence.**
+**Exit:** a multi-term natural-language query returns the relevant document
+that a single-term query already finds; the change is visible in `why-ranked`
+arithmetic; the E4 baseline comparison against B1 (grep) becomes meaningful
+rather than a comparison against zero.
+
+**Watch:** this is a **ranking-semantics change**, not a bug fix in the small.
+Loosening the AND changes what every query matches, so R47/R51 reconciliation
+and the budget property tests are the guard rails, and the golden corpus is a
+regression gate that is *expected* to move — read the movement, do not
+silently re-baseline it.
 
 ### S6 — Capture [gated: crossed review of the privacy model]
 
@@ -197,7 +202,8 @@ or the sprint set is wrong.
 | S1 ✅ shipped | D9, D10 | agent |
 | S2 ✅ shipped | D2, D3 | agent |
 | S3 ✅ shipped | D4, D5 | agent |
-| S4 | E4 + E9 growth curve (apparatus), E6 | agent |
+| S4 ✅ shipped | E4 + E9 growth curve (apparatus), E6 | agent |
+| S15 | D11 | agent |
 | S5 ✅ shipped | D1 | agent |
 | S6 | C3 | agent, after review |
 | S7 | D6 | agent + operator (signing) |
@@ -592,6 +598,67 @@ not implement a mute as a negative selector under D3 without that ruling.
 `explore` surface exists to profile. Deciding weights before the surface
 exists is backwards. If an exploration surface is wanted it needs its own
 design pass; until then this stays a question, not a task.
+
+### D11 — lexical search is conjunctive, so natural-language queries return nothing (M) [code]
+
+**A live defect, found by S4's own apparatus on its first real run and then
+reproduced by hand.** `FTSQuery` (`internal/projection/search.go:35-45`)
+quotes each whitespace-separated term and joins them with a space, which in
+FTS5 is an implicit **AND**. A document must therefore contain *every* term
+of the query.
+
+Reproduced on a one-message mesh:
+
+```
+cairn search "council approved"                            → 1 result
+cairn search "what did the council decide about approval"  → "results": null
+```
+
+The second query names the right document's subject in the way an agent
+actually writes. It returns nothing at all.
+
+**Why this outranks everything else ready.** S4's harness ran all six sample
+queries against a real daemon: `cairn search` returned **zero results for
+every one**, while B1 — grep over raw transcripts, the "zero-effort baseline"
+§3.6 names as the one Cairn must beat — returned hits for the same queries.
+The central competitive claim is currently false in the most literal way
+available: on natural-language queries Cairn does not lose to grep on
+ranking, it loses by not answering. Every intrinsic measurement in S11 would
+be measuring this defect rather than the retrieval design.
+
+It also silently disables the vector half's usefulness in exactly the case
+hybrid retrieval exists for: different-terminology queries are precisely
+where RRF fusion should earn its keep, and today the lexical arm contributes
+an empty list rather than a weak one.
+
+**What.** Make multi-term queries disjunctive-with-preference rather than
+strictly conjunctive — an OR over terms, with documents matching more terms
+ranking above those matching fewer, so precision comes from *ranking* rather
+than from *refusing to answer*. FTS5 offers more than one way to express
+this; pick the one that keeps `why-ranked` reconcilable. The trigram
+companion index (C2) already unions in as a second candidate source and
+should keep its current behaviour.
+
+**Watch — this is a ranking-semantics change, not a small fix.** Loosening
+the AND changes what every query matches, so:
+- R47/R51 exact reconciliation must still hold — a query that now matches
+  more documents must still print arithmetic an external recomputation
+  reproduces exactly.
+- The hard-budget property tests are the second guard rail: more candidates
+  must not mean a budget overrun.
+- The golden corpus is a regression gate that is **expected to move**. Read
+  the movement and explain it; do not silently re-baseline it. A wholesale
+  re-record of expected results would erase the only signal there is.
+- Stopword-heavy queries ("what did the ... about ...") must not drag in
+  every document that happens to contain "the". If that shows up, it is a
+  ranking problem to solve visibly, not a reason to restore the AND.
+
+**Acceptance.** The reproduction above returns the document for both queries.
+A query whose terms appear in no document still returns nothing (an OR must
+not become a match-anything). `why-ranked` reconciles exactly for a
+multi-term query under both profiles. The golden-corpus deltas are recorded
+in PROGRESS with an explanation per moved case. E4's B1-versus-B5 comparison
+runs against a Cairn that answers.
 
 ### DEBT non-goals
 
