@@ -31,7 +31,7 @@ two-machine rig · **[data]** needs real usage data first.
 
 The rest of this file is the specification. This part is the order to work
 it, as sprints, plus the honest reason each blocked item is blocked.
-The sprints are exhaustive: **S1–S16 cover every item in Part II**, so
+The sprints are exhaustive: **S1–S17 cover every item in Part II**, so
 finishing them is finishing the backlog.
 
 **Twelve sprints shipped or closed on 2026-08-16** — S1 defect clearance
@@ -42,9 +42,10 @@ auth; iroh deferred by R58), S12 (closed by R59/R60/R61 with no code
 needed), S15 retrieval correctness (D11), S16 CI truth and release identity
 (D12/D13). See PROGRESS.md.
 
-**The four that remain are all gated on the operator**: S6 on a privacy
+**Five remain.** S17 (search latency at scale) is ready and needs nothing
+from anyone. The other four are gated on the operator: S6 on a privacy
 review, S10 on two machines, S11 on kill-criteria sign-off then corpora, and
-S13/S14 behind those. There is no agent-runnable work left in this plan.
+S13/S14 behind those.
 
 ## Sprints
 
@@ -58,9 +59,25 @@ Run them in order. Each ships as its own commit(s) with PROGRESS.md updated,
 and `make verify` + `make test-race` green before moving on.
 
 **The sprint set is exhaustive.** Every item in Part II belongs to exactly
-one sprint — see Coverage at the end of this part — so finishing S1–S16 is
+one sprint — see Coverage at the end of this part — so finishing S1–S17 is
 finishing the backlog, with no separate track running alongside. Every
 remaining sprint names its gate in the heading.
+
+### S17 — Search latency at scale [ready — RUN THIS NEXT]
+
+Found by the extended scorecard, which is the first time these numbers have
+been recorded at all.
+
+- **D14** the D11 term-discrimination probe costs O(corpus) per query (§4)
+
+**Exit:** search P50 is flat, or near-flat, across 2k → 20k → 100k on the
+scorecard; the term-discrimination decision is unchanged for every query in
+the golden corpus, verified against the current implementation rather than
+assumed.
+
+**Watch:** this must not change WHICH terms are judged common — only how that
+judgement is computed. If the answers differ, D11's semantics have moved and
+the golden corpus and the ≥0.96 ratchet are the guard rails.
 
 ### S6 — Capture [gated: crossed review of the privacy model]
 
@@ -146,6 +163,7 @@ or the sprint set is wrong.
 | S4 ✅ shipped | E4 + E9 growth curve (apparatus), E6 | agent |
 | S15 ✅ shipped | D11 | agent |
 | S5 ✅ shipped | D1 | agent |
+| S17 | D14 | agent |
 | S6 | C3 | agent, after review |
 | S7 ✅ shipped | D6 | agent + operator (signing) |
 | S16 ✅ shipped | D12, D13 | agent |
@@ -529,6 +547,44 @@ an honest note rather than block on it.
 `brew install` on a clean machine yields a working `cairn` with no Xcode
 toolchain present. The FIX-F4 guard still holds — a release artifact must be
 a `sqlite_fts5` build, and the workflow must assert that.
+
+### D14 — the term-discrimination probe is O(corpus) per query (M) [code]
+
+D11 drops query terms the index reports as non-discriminating. The decision
+is right and the measured effect was large (golden lexical-only top-10
+0.80 → 0.97). The probe that makes it is not:
+
+```go
+// internal/projection/search.go
+cutoff := int(float64(n)*config.FTSNonDiscriminatingDocFraction) + 1   // n/2
+df, err := p.termDocs(idx, ftsDisjunction([]string{f}), cutoff)
+// SELECT count(*) FROM (SELECT rowid FROM fts WHERE fts MATCH ? LIMIT ?)
+```
+
+`LIMIT cutoff` looks like a bound, but the bound is **half the corpus**. For
+a term present in most documents the probe enumerates ~n/2 rows on every
+query, and a query carrying one such term pays it every time.
+
+**Measured on the extended scorecard** (search P50, same query shape at each
+scale): 2k → **3.5 ms**, 20k → **14.8 ms**, 100k → **57.1 ms**. Linear in
+corpus size. The scorecard's bodies all contain "routine", so every query has
+exactly one common term — which is the ordinary case for natural language,
+not a pathological one.
+
+**What.** FTS5 already knows document frequency: an `fts5vocab` companion in
+`'row'` mode exposes `(term, doc, cnt)` per term, so `df` becomes an indexed
+lookup instead of a partial scan. Keep `indexedDocs` as it is — it is already
+O(1) (`max(rowid)` on the map table). The cutoff arithmetic, the single-doc
+floor and the all-common fallback are unchanged; only the source of `df`
+moves.
+
+**Acceptance.** Search P50 flat or near-flat across the three scorecard
+scales. For every query in the golden corpus, the set of terms judged common
+is **identical** to the current implementation — assert it against the old
+probe directly, because this is a change to how a ranking-affecting decision
+is computed and R47/R51 reconciliation depends on that decision being stable.
+Golden corpus and the ≥0.96 ratchet unchanged. A projection schema bump is
+expected; the auto-rebuild path must be exercised, not assumed.
 
 ### DEBT non-goals
 

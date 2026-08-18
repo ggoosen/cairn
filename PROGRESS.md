@@ -6391,3 +6391,56 @@ as disproof of his own project; an agent signing them would make the register
 worthless. The recommendation stands — sign the E4/E6 group first, which
 unblocks intrinsic and safety measurement immediately, and defer E5's until
 corpora exist.
+
+### Engineering scorecard RECORDED at 100k (2026-08-16) — TESTING.md §5
+
+First full scorecard the project has: nine quantities, all of them, at 100k
+synthetic events. Run in-process with `BagOfWords`, on the dev container.
+
+    append total          3m47.3s   (2.27 ms/event)
+    send-ack P50 / P95    2.073ms / 3.413ms
+    ack→lexical-visible P95  1.718ms    GATE < 200ms — passes by ~116x
+    search P50 / P95      57.121ms / 82.162ms
+    cold recovery         35.5s
+    reindex --lexical     2m6.8s
+    reindex --semantic    1m22.3s   (BagOfWords — pipeline, NOT a model benchmark)
+    backup size           747.9 MB  (portable dir; 7.66 KB/event)
+    restore time          52.7s     (copy 14.3s + verified open 38.3s)
+    process RSS           77.7 MB   (in-process daemon + harness)
+
+Corpus growth is affine, not proportional: measured at 2k (78.2 MB) and 20k
+(201.4 MB), fixed cost is ~64 MB and marginal cost 6.84 KB/event. So 1M
+projects to ~7.5 GB steady and ~15 GB PEAK, because measuring restore copies
+the whole tree while the original still exists.
+
+**The 1M run is deliberately deferred** until D14 lands. It would spend ~90
+minutes recording a search number that is about to change, and the search
+number is the one finding worth having.
+
+### D14 raised — the term-discrimination probe is O(corpus) (2026-08-16)
+
+The scorecard's search column, same query shape at each scale:
+
+    2,000 events    ->  3.5 ms P50
+    20,000 events   -> 14.8 ms P50
+    100,000 events  -> 57.1 ms P50
+
+Linear in corpus size. Mechanism, from `internal/projection/search.go`:
+`cutoff` is `n * FTSNonDiscriminatingDocFraction + 1` — half the corpus — and
+`termDocs` counts rows under `LIMIT cutoff`. The LIMIT looks like a bound but
+grows with n, so a term present in most documents costs a ~n/2 partial scan
+on every query. The scorecard's bodies all contain "routine", so every query
+carries exactly one such term — the ordinary case for natural language, not a
+pathological one.
+
+D11's DECISION is not in question (it moved golden lexical-only top-10 from
+0.80 to 0.97). Only how `df` is obtained is: FTS5 publishes it directly
+through an `fts5vocab` companion, turning a partial scan into an indexed
+lookup. Recorded as §4 D14 and sprint S17, ahead of every gated sprint,
+because it is the only ready work left.
+
+Note for whoever builds it: the acceptance criterion is that the set of terms
+judged common stays IDENTICAL to today's for every golden-corpus query,
+asserted against the current probe rather than assumed. This changes how a
+ranking-affecting decision is computed, and R47/R51 reconciliation depends on
+that decision being stable.
