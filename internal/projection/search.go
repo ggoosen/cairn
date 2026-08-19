@@ -92,15 +92,16 @@ type LexicalPlan struct {
 	AllCommon bool `json:"all_terms_common,omitempty"`
 }
 
-// ftsIndex names one FTS5 index and the rowid map that holds its document
-// population. The two values below are the only ones; their names are
+// ftsIndex names one FTS5 index, the rowid map that holds its document
+// population, and its fts5vocab companion (D14: the document-frequency
+// source). The two values below are the only ones; their names are
 // compile-time constants (they are interpolated into SQL) and never caller
 // input.
-type ftsIndex struct{ table, mapTable string }
+type ftsIndex struct{ table, mapTable, vocabTable string }
 
 var (
-	ftsRevisionsIndex   = ftsIndex{"fts_revisions", "fts_map"}
-	ftsDerivativesIndex = ftsIndex{"fts_derivatives", "fts_derivatives_map"}
+	ftsRevisionsIndex   = ftsIndex{"fts_revisions", "fts_map", "fts_revisions_vocab"}
+	ftsDerivativesIndex = ftsIndex{"fts_derivatives", "fts_derivatives_map", "fts_derivatives_vocab"}
 )
 
 // indexedDocs is the FTS index's document count — the N in bm25's idf.
@@ -118,15 +119,124 @@ func (p *Projection) indexedDocs(idx ftsIndex) (int, error) {
 	return int(n.Int64), nil
 }
 
-// termDocs counts documents containing one term, stopping at limit. The
-// early exit is what bounds the cost: a term is only ever scanned as far as
-// the point where it stops being discriminating, so the expensive terms are
-// exactly the ones whose answer we already know once the limit is reached.
+// termDocs counts documents containing one term by enumerating matching
+// rowids, stopping at limit. This was D11's probe and is now D14's FALLBACK
+// and its test oracle (the way brute-force cosine remains the vector index's
+// oracle — rulings §7): it answers for the terms termDF cannot fold, and the
+// differential test drives lexicalMatch through it to prove the vocab path
+// decides identically.
+//
+// Its cost is why D14 exists. `limit` is the D11 cutoff — HALF the indexed
+// corpus — so a term present in most documents is scanned ~n/2 rows deep on
+// every query: a bound that looks constant and is a function of corpus size.
+// Measured on the 100k scorecard corpus: 2.5 ms for a term in every document,
+// 0.09 ms for a term in 1%.
 func (p *Projection) termDocs(idx ftsIndex, quotedTerm string, limit int) (int, error) {
 	var n int
 	err := p.db.QueryRow(`SELECT count(*) FROM (SELECT rowid FROM `+idx.table+
 		` WHERE `+idx.table+` MATCH ? LIMIT ?)`, quotedTerm, limit).Scan(&n)
 	return n, err
+}
+
+// dfSource answers "how many indexed documents contain this raw query term?"
+// for one index, given the D11 cutoff (which a bounded implementation may use
+// to stop early). The seam exists so the production source and the D11 probe
+// that preceded it can be driven through the SAME rule — see lexicalMatchWith.
+type dfSource func(idx ftsIndex, term string, limit int) (int, error)
+
+// termDF reports how many indexed documents contain one raw query term (D14).
+//
+// It asks the index's fts5vocab companion, which publishes (term, doc, cnt)
+// per term and seeks to a term rather than enumerating the documents that
+// match it. The count it returns is the FULL df, where termDocs returns
+// min(df, limit); the two are interchangeable here because lexicalMatch only
+// ever asks two questions of the answer — is it zero, and is it at or above
+// the cutoff — and neither can distinguish a capped count from an uncapped one.
+//
+// Honest about what this buys: fts5vocab is a view over the index's own
+// b-tree, and `doc` is computed by walking the term's doclist, so this is a
+// cheaper O(df), not O(1). Measured on the same 100k corpus: 1.9 ms against
+// 2.5 ms for a term in every document, 0.04 ms against 0.09 ms for a term in
+// 1%. FTS5 stores no document count per term anywhere, so an O(1) answer
+// would need a df table of our own, maintained on the append path by
+// tokenizing bodies in Go — which buys a millisecond by putting a second,
+// divergence-prone tokenizer in front of the durability path. Not taken.
+//
+// Terms it cannot fold fall back to termDocs rather than guess: see
+// indexToken. A term whose folded form is absent from the vocabulary also
+// falls back, because "absent" is ambiguous — either the corpus has never
+// seen the term (the probe agrees, and costs nothing to say so) or our
+// folding disagrees with the tokenizer's (the probe is the authority).
+func (p *Projection) termDF(idx ftsIndex, term string, limit int) (int, error) {
+	if tok, ok := indexToken(term); ok {
+		var doc sql.NullInt64
+		err := p.db.QueryRow(`SELECT doc FROM `+idx.vocabTable+` WHERE term = ?`, tok).Scan(&doc)
+		switch {
+		case err == nil:
+			return int(doc.Int64), nil
+		case errors.Is(err, sql.ErrNoRows):
+			// ambiguous — fall through to the probe
+		default:
+			return 0, err
+		}
+	}
+	return p.termDocs(idx, ftsDisjunction([]string{term}), limit)
+}
+
+// indexToken folds one raw query term the way `unicode61 tokenchars '_-#@'`
+// (config.FTSTokenize) folded the documents, so it can be looked up in the
+// fts5vocab companion — which stores terms exactly as the tokenizer emitted
+// them. ok=false means "do not use the vocabulary for this term"; the caller
+// falls back to the bounded probe, which asks SQLite's own tokenizer by
+// construction.
+//
+// Deliberately ASCII-only, and that is the whole safety argument. For ASCII
+// the fold is exactly reproducible — A–Z lowercase, letters/digits and the
+// four tokenchars are token bytes, everything else separates — with no
+// dependence on which Unicode version SQLite's alphanumeric and case-folding
+// tables were built from, and no dependence on `remove_diacritics`, which is
+// a no-op on ASCII. A non-ASCII term is handed to the probe instead of folded
+// on a guess: mis-folding would look up a DIFFERENT term's df and silently
+// move a ranking decision, which is exactly what D14 must not do. The cost of
+// that conservatism is that a non-ASCII query term keeps D11's old probe cost;
+// the common terms that make the probe expensive in a Latin-script corpus
+// ("the", "and", a project's name) are ASCII.
+//
+// A term that produces no token, or more than one, is also refused: an empty
+// phrase matches nothing, and a multi-token phrase's df is a property of the
+// tokens' ADJACENCY that no per-term vocabulary can answer.
+func indexToken(term string) (string, bool) {
+	var tok, cur []byte
+	found := 0
+	flush := func() {
+		if len(cur) > 0 {
+			found++
+			if found == 1 {
+				tok = cur
+			}
+			cur = nil
+		}
+	}
+	for i := 0; i < len(term); i++ {
+		c := term[i]
+		if c >= utf8.RuneSelf {
+			return "", false // non-ASCII: the tokenizer is the authority
+		}
+		switch {
+		case c >= 'A' && c <= 'Z':
+			cur = append(cur, c+('a'-'A'))
+		case (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+			strings.IndexByte(config.FTSTokenChars, c) >= 0:
+			cur = append(cur, c)
+		default:
+			flush()
+		}
+	}
+	flush()
+	if found != 1 {
+		return "", false
+	}
+	return string(tok), true
 }
 
 // lexicalMatch builds the MATCH expression for a raw query against one index,
@@ -138,12 +248,22 @@ func (p *Projection) termDocs(idx ftsIndex, quotedTerm string, limit int) (int, 
 // document a candidate, and then ranking is deciding between the whole corpus
 // on the strength of the one or two terms that meant something.
 //
-// Cost: one O(log N) count plus one early-exited probe per distinct term.
-// Single-term queries skip the probes entirely, which is a pure saving: with
-// one term the filter can only reach the all-common fallback (searching that
-// term) or drop it as unmatched (matching nothing, which searching it also
-// does), so the expression is the same either way.
+// Cost: one O(log N) count plus one df lookup per distinct term (D14 —
+// termDF). Single-term queries skip the lookups entirely, which is a pure
+// saving: with one term the filter can only reach the all-common fallback
+// (searching that term) or drop it as unmatched (matching nothing, which
+// searching it also does), so the expression is the same either way.
 func (p *Projection) lexicalMatch(idx ftsIndex, raw string) (string, LexicalPlan, error) {
+	return p.lexicalMatchWith(idx, raw, p.termDF)
+}
+
+// lexicalMatchWith is lexicalMatch parameterised by its document-frequency
+// source. Production passes termDF (D14); the differential test passes the
+// D11 probe as an oracle and asserts the two plans are identical, because
+// this decision selects the candidate pool and therefore every ranking
+// explanation reconciled under R47/R51. The RULE lives here exactly once, so
+// the oracle can only differ in where df came from.
+func (p *Projection) lexicalMatchWith(idx ftsIndex, raw string, df dfSource) (string, LexicalPlan, error) {
 	fields := dedupeFields(strings.Fields(raw))
 	if len(fields) <= 1 {
 		return ftsDisjunction(fields), LexicalPlan{Terms: fields}, nil
@@ -168,14 +288,14 @@ func (p *Projection) lexicalMatch(idx ftsIndex, raw string) (string, LexicalPlan
 	var plan LexicalPlan
 	var common []string
 	for _, f := range fields {
-		df, err := p.termDocs(idx, ftsDisjunction([]string{f}), cutoff)
+		docs, err := df(idx, f, cutoff)
 		if err != nil {
 			return "", LexicalPlan{}, err
 		}
 		switch {
-		case df == 0:
+		case docs == 0:
 			plan.Unmatched = append(plan.Unmatched, f)
-		case df >= cutoff:
+		case docs >= cutoff:
 			common = append(common, f)
 		default:
 			plan.Terms = append(plan.Terms, f)
@@ -201,6 +321,35 @@ func (p *Projection) lexicalMatch(idx ftsIndex, raw string) (string, LexicalPlan
 	// not answered on the strength of the leftovers.
 	return ftsDisjunction(plan.Terms), plan, nil
 }
+
+// LexicalPlansForTest computes the D11 term-discrimination plan for a raw
+// query BOTH ways — through D14's fts5vocab lookup and through the bounded
+// probe that preceded it — so a test can assert the two decide identically.
+// Exported for the same reason VectorTopKBruteForce is: the superseded
+// implementation is the new one's oracle, and an oracle that cannot be
+// addressed from a test is not an oracle. `derivatives` selects the
+// attachment-text index instead of the revisions index.
+func (p *Projection) LexicalPlansForTest(raw string, derivatives bool) (vocab, probe LexicalPlan, err error) {
+	idx := ftsRevisionsIndex
+	if derivatives {
+		idx = ftsDerivativesIndex
+	}
+	_, vocab, err = p.lexicalMatchWith(idx, raw, p.termDF)
+	if err != nil {
+		return LexicalPlan{}, LexicalPlan{}, err
+	}
+	_, probe, err = p.lexicalMatchWith(idx, raw, func(i ftsIndex, term string, limit int) (int, error) {
+		return p.termDocs(i, ftsDisjunction([]string{term}), limit)
+	})
+	if err != nil {
+		return LexicalPlan{}, LexicalPlan{}, err
+	}
+	return vocab, probe, nil
+}
+
+// IndexTokenForTest exposes the query-term fold (D14) so its ASCII-only
+// contract can be pinned directly, not only through its effect on a plan.
+func IndexTokenForTest(term string) (string, bool) { return indexToken(term) }
 
 // dedupeFields keeps the first occurrence of each term: a repeated term costs
 // an extra df probe and tells bm25 nothing new.

@@ -150,6 +150,16 @@ CREATE TABLE fts_map (
   rowid INTEGER PRIMARY KEY,
   revision_id TEXT NOT NULL UNIQUE
 );
+
+-- D14: fts5vocab companion in 'row' mode — (term, doc, cnt) per indexed term,
+-- where `doc` is the number of documents containing the term. It is the D11
+-- term-discrimination probe's document-frequency source: asking the index for
+-- df, rather than counting matching rowids up to a LIMIT that is itself half
+-- the corpus. Nothing is stored — fts5vocab is a VIEW over the FTS index's own
+-- b-tree — so it costs no space, cannot drift from the index it reads, and
+-- reports terms exactly as the tokenizer emitted them (folded, tokenchars
+-- applied), which is why query terms are folded in Go before lookup.
+CREATE VIRTUAL TABLE fts_revisions_vocab USING fts5vocab('fts_revisions', 'row');
 -- CAPTURE C2 companion index over the SAME body text, sharing fts_map's
 -- rowid so ONE insert feeds both indexes in one transaction. unicode61
 -- splits on word boundaries and can never match INSIDE a token, which is
@@ -281,6 +291,11 @@ CREATE TABLE fts_derivatives_map (
   rowid INTEGER PRIMARY KEY,
   derivative_id TEXT NOT NULL UNIQUE
 );
+
+-- D14: the derivatives index gets the same df source, against its OWN
+-- document population (a term common in bodies may be rare in extracted
+-- attachment text).
+CREATE VIRTUAL TABLE fts_derivatives_vocab USING fts5vocab('fts_derivatives', 'row');
 
 -- Receiver summary topical-consistency check (P1 N4; spec §8.4).
 -- sender_summary is event-derived (untrusted claim); the check columns are

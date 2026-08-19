@@ -31,7 +31,7 @@ two-machine rig · **[data]** needs real usage data first.
 
 The rest of this file is the specification. This part is the order to work
 it, as sprints, plus the honest reason each blocked item is blocked.
-The sprints are exhaustive: **S1–S17 cover every item in Part II**, so
+The sprints are exhaustive: **S1–S18 cover every item in Part II**, so
 finishing them is finishing the backlog.
 
 **Twelve sprints shipped or closed on 2026-08-16** — S1 defect clearance
@@ -40,12 +40,15 @@ surfaces (D4/D5), S4 the dark evaluation apparatus, S5 sqlite-vec, S7
 distribution, S8 ranking penalties, S9 (metered sensing + mutual pairing
 auth; iroh deferred by R58), S12 (closed by R59/R60/R61 with no code
 needed), S15 retrieval correctness (D11), S16 CI truth and release identity
-(D12/D13). See PROGRESS.md.
+(D12/D13). **S17 (search latency at scale, D14) shipped 2026-08-19** — search
+P50 at 100k fell 62.2 ms → 14.3 ms with byte-identical results, and it raised
+D15 for the residual. See PROGRESS.md.
 
-**Five remain.** S17 (search latency at scale) is ready and needs nothing
-from anyone. The other four are gated on the operator: S6 on a privacy
-review, S10 on two machines, S11 on kill-criteria sign-off then corpora, and
-S13/S14 behind those.
+**Five remain.** S18 (D15, the remaining search-latency headroom) is ready,
+needs nothing from anyone, and breaches no gate — it is headroom, not a
+defect. The other four are gated on the operator: S6 on a privacy review,
+S10 on two machines, S11 on kill-criteria sign-off then corpora, and S13/S14
+behind those.
 
 ## Sprints
 
@@ -59,25 +62,27 @@ Run them in order. Each ships as its own commit(s) with PROGRESS.md updated,
 and `make verify` + `make test-race` green before moving on.
 
 **The sprint set is exhaustive.** Every item in Part II belongs to exactly
-one sprint — see Coverage at the end of this part — so finishing S1–S17 is
+one sprint — see Coverage at the end of this part — so finishing S1–S18 is
 finishing the backlog, with no separate track running alongside. Every
 remaining sprint names its gate in the heading.
 
-### S17 — Search latency at scale [ready — RUN THIS NEXT]
+### S18 — Search latency: the residual after D14 [ready — RUN THIS NEXT]
 
-Found by the extended scorecard, which is the first time these numbers have
-been recorded at all.
+What S17 measured but did not fix. No gate is breached (the <200 ms
+visibility gate passes by 100×), so this is headroom, and it is ready work
+rather than urgent work.
 
-- **D14** the D11 term-discrimination probe costs O(corpus) per query (§4)
+- **D15** search cost is O(matching documents), and the term probe is still
+  O(df) (§4)
 
-**Exit:** search P50 is flat, or near-flat, across 2k → 20k → 100k on the
-scorecard; the term-discrimination decision is unchanged for every query in
-the golden corpus, verified against the current implementation rather than
-assumed.
+**Exit:** a stated, measured account of where a 100k search spends its
+milliseconds, and either a reduction in the per-match cost or a recorded
+decision that it is the floor for ranking. Results identical, verified the
+way D14 verified them.
 
-**Watch:** this must not change WHICH terms are judged common — only how that
-judgement is computed. If the answers differ, D11's semantics have moved and
-the golden corpus and the ≥0.96 ratchet are the guard rails.
+**Watch:** the same trap twice over. D14 was raised believing an O(corpus)
+probe was the cost; it was 4% of it. Profile before changing anything, and
+distrust any structure that merely LOOKS like a constant-time lookup.
 
 ### S6 — Capture [gated: crossed review of the privacy model]
 
@@ -163,7 +168,8 @@ or the sprint set is wrong.
 | S4 ✅ shipped | E4 + E9 growth curve (apparatus), E6 | agent |
 | S15 ✅ shipped | D11 | agent |
 | S5 ✅ shipped | D1 | agent |
-| S17 | D14 | agent |
+| S17 ✅ shipped | D14 | agent |
+| S18 | D15 | agent |
 | S6 | C3 | agent, after review |
 | S7 ✅ shipped | D6 | agent + operator (signing) |
 | S16 ✅ shipped | D12, D13 | agent |
@@ -548,43 +554,41 @@ an honest note rather than block on it.
 toolchain present. The FIX-F4 guard still holds — a release artifact must be
 a `sqlite_fts5` build, and the workflow must assert that.
 
-### D14 — the term-discrimination probe is O(corpus) per query (M) [code]
+### D15 — search cost is O(matching documents) (S) [code]
 
-D11 drops query terms the index reports as non-discriminating. The decision
-is right and the measured effect was large (golden lexical-only top-10
-0.80 → 0.97). The probe that makes it is not:
+What is left of search latency after D14 (S17), measured on the same corpus at
+the same three scales: **2k 3.4 ms → 20k 4.7 ms → 100k 14.3 ms** P50, against
+3.5 / 14.9 / 62.2 before. Better by 4.3× at 100k and still growing, but growing
+in a different quantity: D11's probe scanned half the corpus however few
+documents a query matched, while the residual scales with the number of
+documents the query MATCHES — 21, 207 and 1031 at the three scales, because the
+scorecard's query shape matches 1% of the corpus by construction.
 
-```go
-// internal/projection/search.go
-cutoff := int(float64(n)*config.FTSNonDiscriminatingDocFraction) + 1   // n/2
-df, err := p.termDocs(idx, ftsDisjunction([]string{f}), cutoff)
-// SELECT count(*) FROM (SELECT rowid FROM fts WHERE fts MATCH ? LIMIT ?)
-```
+The 100k breakdown after D14:
 
-`LIMIT cutoff` looks like a bound, but the bound is **half the corpus**. For
-a term present in most documents the probe enumerates ~n/2 rows on every
-query, and a query carrying one such term pays it every time.
+    full d.Search                    15.0 ms
+      main word FTS query             9.4 ms   <- 1031 matches × (3 index seeks + bm25)
+      term-discrimination probe       2.0 ms   <- O(df); fts5vocab is a doclist walk
+      everything else (vec0, joins)   3.6 ms
 
-**Measured on the extended scorecard** (search P50, same query shape at each
-scale): 2k → **3.5 ms**, 20k → **14.8 ms**, 100k → **57.1 ms**. Linear in
-corpus size. The scorecard's bodies all contain "routine", so every query has
-exactly one common term — which is the ordinary case for natural language,
-not a pathological one.
+**Two candidates, neither obviously worth it.**
 
-**What.** FTS5 already knows document frequency: an `fts5vocab` companion in
-`'row'` mode exposes `(term, doc, cnt)` per term, so `df` becomes an indexed
-lookup instead of a partial scan. Keep `indexedDocs` as it is — it is already
-O(1) (`max(rowid)` on the map table). The cutoff arithmetic, the single-doc
-floor and the all-common fallback are unchanged; only the source of `df`
-moves.
+1. **Per-match cost.** Each matching row is joined fts → revisions → messages
+   to test `head_revision_id` and `retracted` before bm25 ordering cuts to k.
+   A head/retracted flag carried in the FTS row's own table would remove two
+   seeks per match; it also duplicates state the projection already holds, and
+   duplicated state that can drift is how supersession bugs start.
+2. **A memoised df with monotone bounds.** FTS rows are only ever inserted, so
+   a cached (df, n) pair bounds the true df in [df, df + growth] and decides
+   `df ≥ cutoff` exactly, without re-reading, for as long as the bound holds.
+   Exact, and it would flatten the probe — at the cost of cached state behind a
+   ranking-affecting decision, for ~2 ms of a 14 ms search.
 
-**Acceptance.** Search P50 flat or near-flat across the three scorecard
-scales. For every query in the golden corpus, the set of terms judged common
-is **identical** to the current implementation — assert it against the old
-probe directly, because this is a change to how a ranking-affecting decision
-is computed and R47/R51 reconciliation depends on that decision being stable.
-Golden corpus and the ≥0.96 ratchet unchanged. A projection schema bump is
-expected; the auto-rebuild path must be exercised, not assumed.
+**Acceptance.** Same as D14's: identical results, asserted against the current
+implementation as an oracle, golden corpus and the ≥0.96 ratchet unchanged, and
+the three scorecard scales quoted before and after. A recorded "this is the
+floor" is an acceptable outcome — ranking cannot rank what it has not scored —
+provided the arithmetic is shown.
 
 ### DEBT non-goals
 

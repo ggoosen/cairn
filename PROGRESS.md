@@ -6444,3 +6444,208 @@ judged common stays IDENTICAL to today's for every golden-corpus query,
 asserted against the current probe rather than assumed. This changes how a
 ranking-affecting decision is computed, and R47/R51 reconciliation depends on
 that decision being stable.
+
+## D14 — the term-discrimination probe at scale (2026-08-19) — DONE [S17]
+
+D14 was raised from the 100k scorecard: search P50 grows linearly (2k 3.5 ms →
+20k 14.8 ms → 100k 57.1 ms) and the named mechanism was D11's document-frequency
+probe, whose `LIMIT cutoff` is half the corpus. The probe is real and it is
+fixed. It was also **4% of the number** — measured before touching anything,
+which is the only reason the sprint found the other 86%.
+
+### What the profile said, at 100k, before any change
+
+    full d.Search                      66.1 ms
+      LexicalTopKPlan                  60.8 ms
+        term probe (both query terms)   2.6 ms   <- D14 as diagnosed
+        main word FTS query             9.4 ms
+        trigram companion query        53.6 ms   <- never used at this scale
+      VectorTopK (sqlite-vec)          0.014 ms
+      DerivativeMessageHits            0.049 ms
+
+The vector path — the usual suspect for "slow at scale", and the one this
+project has spent two sprints on — costs 14 MICROseconds, because D1's vec0
+index does the work. The cost was in the lexical path, and mostly in the C2
+trigram companion, which runs the RAW query (D11's filter never applied to it)
+and so scans doclists for a term present in every document.
+
+### Two changes, one of them the one the plan asked for
+
+**1. df comes from fts5vocab (the D14 item).** Schema v9 adds
+`fts_revisions_vocab` and `fts_derivatives_vocab`, `fts5vocab(...,'row')`
+companions publishing `(term, doc, cnt)`; `termDF` seeks a term instead of
+counting matching rowids up to a corpus-proportional LIMIT. `indexedDocs` is
+untouched (already O(1)), as are the cutoff arithmetic, the single-document
+floor, the all-common fallback and the unmatched-term asymmetry. Only the
+source of df moved.
+
+**2. A union that cannot contribute is not run.** `LexicalTopKPlan` unions the
+word index with the derivative index and the C2 trigram index through
+`appendUnseen`, which stops at k — so when the word index has already returned
+k candidates, both companions' results are discarded in full. They were still
+being computed. The guard is `if len(out) < k`, and it cannot change an answer:
+the discarded work is discarded by the pre-existing loop condition.
+
+### The finding that matters: fts5vocab is NOT an O(1) lookup
+
+The build plan said the vocab companion "turns the probe into an indexed
+lookup". It seeks to the term in O(log V) and then computes `doc` by **walking
+that term's doclist** — so it is O(df), and for a term the probe would call
+common, df ≥ n/2 by definition. Measured on the scorecard corpus, one term:
+
+    corpus     probe (D11)   vocab (D14)     whole 2-term plan: probe → vocab
+    2,000        68 µs         51 µs           98 µs →  71 µs
+    20,000      604 µs        592 µs          618 µs → 619 µs
+    100,000    2.451 ms      1.849 ms        2.649 ms → 2.041 ms
+
+Never slower, up to 1.4× faster on the common term and 2.2× on a rare one, and
+structurally right — asking the index for df rather than enumerating rows. But
+it does not change the asymptotics, and anyone reading "indexed lookup" as
+"constant time" would be repeating the exact mistake D14 was raised for: a
+bound that looks constant and is a function of corpus size. FTS5 stores no
+per-term document count anywhere, so there is no O(1) answer to buy.
+
+### Folding a query term, and why it is ASCII-only
+
+fts5vocab stores terms as the tokenizer emitted them, so a raw query term has
+to be folded the way `unicode61 tokenchars '_-#@'` folded the documents before
+it can be looked up. `indexToken` does that for ASCII and **refuses everything
+else**, handing the term to the old probe instead:
+
+- For ASCII the fold is exactly reproducible — A–Z lowercase, `[0-9A-Za-z]`
+  plus the four tokenchars are token bytes, everything else separates — with no
+  dependence on which Unicode version SQLite's tables were built from and none
+  on `remove_diacritics`, which is a no-op on ASCII.
+- A mis-fold does not fail loudly: it reads a DIFFERENT term's document
+  frequency and moves a ranking decision silently. That is the one new failure
+  mode this change could introduce, so the non-ASCII case is not guessed at.
+- Cost of the conservatism: a non-ASCII query term keeps D11's probe cost. In a
+  Latin-script corpus the terms that make the probe expensive ("the", "and", a
+  project name) are ASCII; a CJK corpus gets no speed-up at all. Stated rather
+  than hidden.
+- A term producing no token, or more than one ("foo.bar", "don't"), also falls
+  back: an empty phrase matches nothing, and a multi-token phrase's df is a
+  property of ADJACENCY that no per-term vocabulary can answer.
+
+`TestD14FoldMatchesTheTokenizer` is the guard, and it asks SQLite rather than
+arguing: for 412 terms — every ASCII byte alone, leading, and inside a word,
+plus accents, ß, CJK, ligatures, an astral-plane letter — whenever the fold
+claims one token, a real fts5 table with the same tokenizer must produce
+exactly that token. 272 folded; 140 refused. `config.FTSTokenChars` is the
+single source, and a test pins it against the DDL, which cannot interpolate a
+Go constant.
+
+### The acceptance criterion: are the terms judged common identical?
+
+**Yes — established against the old probe directly, not against a transcript.**
+`lexicalMatch` is now parameterised by its df source, so the rule exists once
+and the superseded probe is driven through it as an oracle (the way brute-force
+cosine remains the vector index's oracle, rulings §7).
+`LexicalPlansForTest(query, derivatives)` returns both plans and every
+differential asserts `reflect.DeepEqual` over the whole plan — Terms, Common,
+Unmatched and AllCommon, in order.
+
+- **Golden corpus, all 30 queries:** identical. And a finding: the golden corpus
+  judges **no** term common — 184 diverse messages, cutoff 93, and no query term
+  reaches it. 10 of 30 queries drop an unmatched term. So the golden corpus
+  alone cannot witness the branch D14 changes, and the test says so instead of
+  looking thorough; a separate scorecard-shaped corpus (400 bodies, "routine"
+  in every one) carries the common branch for all 97 query shapes plus the
+  all-common fallback.
+- **Randomized differential:** 25 corpora × 12 queries over an alphabet built to
+  straddle every fold boundary, fixed seed.
+- **Awkward terms and degenerate corpus sizes:** punctuation, apostrophes,
+  separators, every tokenchar, uppercase, CJK, a 500-character term, the
+  one-document floor, a two-document mesh.
+- **Derivative index:** its own vocabulary, its own population, its own plans —
+  identical, over a corpus of real PDF attachments through the derive pipeline.
+- **End to end:** the ordered top-10 corpus keys for all 30 golden queries under
+  P0 and P2, hybrid and lexical-only — 120 result lists, with each query's plan
+  printed beside them — are **byte-identical** to the same harness run on the
+  parent commit. `cairn bench golden`: Success@5 0.97, lexical-only top-10 0.97,
+  same single miss. The ≥0.96 ratchet is untouched.
+
+### Measured effect (dev container, same machine, before and after)
+
+`TestScorecard` at each scale, search P50 / P95:
+
+    corpus     before              after
+    2,000      3.477 / 4.539 ms    3.442 / 4.333 ms
+    20,000    14.885 / 19.635 ms   4.718 / 5.628 ms
+    100,000   62.219 / 89.641 ms  14.333 / 16.634 ms
+
+100k component profile after the change: full search 15.0 ms, of which the term
+plan is ~2.0 ms and the main word FTS query ~9.4 ms; the trigram query, which
+would still cost 55.7 ms, is not run. Every other scorecard quantity is
+unchanged within run-to-run noise (append 2.38 ms/event, ack→visible P95
+1.85 ms, cold recovery 35.7 s, backup 748.0 MB).
+
+### The exit criterion is NOT met, and this is why
+
+S17's exit was "search P50 flat, or near-flat, across 2k → 20k → 100k". It is
+3.4 → 4.7 → 14.3 ms: 4.3× better at 100k, and still growing. The growth that
+remains is a different quantity from the one D14 named. The old probe scanned
+n/2 rows **however few documents the query actually matched**; what is left
+scales with the number of MATCHING documents — 21 at 2k, 207 at 20k, 1031 at
+100k for the scorecard's query shape, because "topic-N" cycles over 97 topics
+so matches are 1% of the corpus by construction. Per match the query does three
+index seeks (fts row → revision → head-revision check) and bm25 scores it, and
+a ranking cannot rank what it has not scored. Two of the three scales are now
+under 5 ms; the <200 ms visibility gate passes by 100×.
+
+That residual is recorded as **§4 D15** rather than smuggled into this entry as
+a success: it is real, it is measurable, and it is not what D14 was.
+
+### Mutation-tested (break it, confirm the suite notices)
+
+Ten mutants, nine caught: `cnt` (instances) for `doc` (documents); df off by
+one; folding non-ASCII with a naive lowercase; accepting a multi-token term by
+taking its first token; dropping the tokenchars so `-` separates; deleting the
+probe fallback entirely; removing the vocab DDL from the schema; skipping the
+trigram union unconditionally; running both unions when the pool is full (the
+pre-D14 shape); and — the one that first survived — guarding with `len(out) <
+k-1`, which silently drops the last slot's trigram hit. That mutant is what
+added the boundary case with exactly one free slot; the union counters
+(`UnionQueriesForTest`) exist so a skip is asserted as a skip rather than
+inferred from a timing.
+
+**The tenth mutant survives and is equivalent.** Returning 0 instead of falling
+back to the probe when the vocabulary has no row for a folded term is
+undetectable: with an ASCII-only fold proven exact, "absent from the
+vocabulary" means "absent from the corpus", and both paths answer 0. The branch
+is insurance against a future widening of the fold, not a live path, and
+`TestD14FoldMatchesTheTokenizer` is what actually holds the invariant. Recorded
+rather than papered over with a test that only appears to cover it.
+
+### Rejected, with reasons
+
+- **A df table maintained on the append path.** The only structure that gives
+  an O(1) df. It requires tokenizing every body in Go at index time — a second
+  tokenizer, divergence-prone, in front of the durability path — and adds an
+  upsert per distinct token to an ack that is currently 2.2 ms. Buying ~2 ms of
+  query time with that is a bad trade twice over.
+- **A memoised df with monotone bounds.** FTS rows are only ever inserted
+  (retraction and supersession filter at query time), so a cached (df, n) pair
+  bounds the true df in [df, df + growth] and can often decide `df ≥ cutoff`
+  exactly without re-reading anything — genuinely exact, and it would flatten
+  the probe. Not taken now: it is ~2 ms of a 14 ms search, it puts cached state
+  behind a ranking-affecting decision, and the residual it would not touch is
+  larger. Noted in D15 as the option if the probe ever dominates again.
+- **Applying D11's term filter to the trigram companion.** It would cut the
+  trigram query's cost when the companion actually runs, but C2's whole purpose
+  is substring matching, where "this term cannot order results" is a claim
+  about tokens, not substrings. That is a C2 semantics change and needs its own
+  acceptance work; skipping a query whose results are discarded needs none.
+
+### Schema v9, and the rebuild exercised rather than assumed
+
+`ProjectionSchemaVersion` 8 → 9. The projection is derived, so the daemon
+deletes and replays it on drift; that path was exercised twice — once on a
+purpose-built fixture whose vocab tables were dropped and version stamped back
+to 8 (asserting the warning, the rebuilt companions, and that the probe then
+decides identically), and once for real on the 100k corpus left over from the
+profiling run: `found 8, want 9 — rebuilding the derived projection from the
+log`, 2m25s to replay 100,000 events, correct answers afterwards.
+
+`make verify` (including `test-novec`), `make test-race` and `make eval` all
+green.

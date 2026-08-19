@@ -314,10 +314,22 @@ const (
 // ---------------------------------------------------------------------------
 
 const (
-	ProjectionSchemaVersion = 8 // v8: vec_map, the rowid bridge to the sqlite-vec index (D1); v7: fts_revisions_trigram companion index (CAPTURE C2); v6: parked_events.retryable (R49/FIX-J1); v5: attachment durability class (N7); v4: derivatives+summaries (N4); v3: subscriptions (N3); v2: parked_events
+	ProjectionSchemaVersion = 9 // v9: fts5vocab companions, the document-frequency source for the D11 term probe (D14); v8: vec_map, the rowid bridge to the sqlite-vec index (D1); v7: fts_revisions_trigram companion index (CAPTURE C2); v6: parked_events.retryable (R49/FIX-J1); v5: attachment durability class (N7); v4: derivatives+summaries (N4); v3: subscriptions (N3); v2: parked_events
 
-	// FTSTokenize: unicode61 with tokenchars `_ - # @` (rulings §6).
+	// FTSTokenize: unicode61 with tokenchars `_ - # @` (rulings §6). The DDL
+	// carries this string literally (schema.sql cannot interpolate a Go
+	// constant), and TestFTSTokenizeMatchesSchema asserts the two agree —
+	// D14 folds query terms in Go against FTSTokenChars below, so a schema
+	// that drifted from this constant would silently fold them wrongly.
 	FTSTokenize = "unicode61 tokenchars '_-#@'"
+
+	// FTSTokenChars are the characters unicode61 treats as part of a token
+	// ON TOP OF the alphanumerics it already knows — the `tokenchars` clause
+	// of FTSTokenize, split out so Go code can fold a query term the way the
+	// index folded the document. D14 uses it to look a term up in the
+	// fts5vocab companion, which stores terms exactly as the tokenizer
+	// emitted them.
+	FTSTokenChars = "_-#@"
 
 	// FTSTrigramTokenize is the CAPTURE C2 companion index's tokenizer. It
 	// takes no options: trigram tokenization is fixed-width and already

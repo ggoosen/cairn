@@ -6,7 +6,24 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync/atomic"
 )
+
+// unionCounters count the companion-index queries LexicalTopKPlan actually
+// ran (D14). They exist so the "skip a union whose results would be
+// discarded" guard can be asserted as a skip rather than inferred from a
+// timing; two atomic increments per search buy a test that cannot pass by
+// accident.
+type unionCounters struct {
+	derivative atomic.Int64
+	trigram    atomic.Int64
+}
+
+// UnionQueriesForTest reports how many derivative and trigram companion
+// queries this projection has run.
+func (p *Projection) UnionQueriesForTest() (derivative, trigram int64) {
+	return p.unions.derivative.Load(), p.unions.trigram.Load()
+}
 
 // Rank-support queries (M6). All ordering is deterministic.
 
@@ -50,22 +67,6 @@ func (p *Projection) LexicalTopKPlan(query string, k int, includeRetracted bool)
 	if err := rows.Err(); err != nil {
 		return nil, plan, err
 	}
-	// N4: attachments are searchable via their derivatives — union hits from
-	// derivative text (body hits rank first; derivative hits append after,
-	// deduplicated). Provenance stays inspectable via `cairn derivative list`.
-	derivHits, err := p.DerivativeMessageHits(raw, k, includeRetracted)
-	if err != nil {
-		return nil, plan, err
-	}
-	// C2: same union, one source further out — the trigram companion index
-	// answers the substring/identifier queries the word index is structurally
-	// blind to. It goes LAST because it is the least precise source: it only
-	// ever fills slots the exact indexes left empty, so adding it cannot
-	// displace a word hit or reorder what an agent already receives.
-	triHits, err := p.TrigramMessageHits(raw, k, includeRetracted)
-	if err != nil {
-		return nil, plan, err
-	}
 	seen := map[string]bool{}
 	for _, id := range out {
 		seen[id] = true
@@ -79,8 +80,39 @@ func (p *Projection) LexicalTopKPlan(query string, k int, includeRetracted bool)
 			out = append(out, id)
 		}
 	}
-	appendUnseen(derivHits)
-	appendUnseen(triHits)
+	// N4: attachments are searchable via their derivatives — union hits from
+	// derivative text (body hits rank first; derivative hits append after,
+	// deduplicated). Provenance stays inspectable via `cairn derivative list`.
+	//
+	// D14: both unions can only FILL slots the word index left empty —
+	// appendUnseen stops at k — so once the word index has returned k
+	// candidates their results are discarded in full, and running them is
+	// pure cost. The guards below make that skip explicit; they change no
+	// answer, because a query whose pool is already full ignored these hits
+	// before the guards existed. The saving is not small: on the 100k
+	// scorecard corpus the trigram query alone was 53 ms of a 62 ms search,
+	// every millisecond of it thrown away.
+	if len(out) < k {
+		p.unions.derivative.Add(1)
+		derivHits, err := p.DerivativeMessageHits(raw, k, includeRetracted)
+		if err != nil {
+			return nil, plan, err
+		}
+		appendUnseen(derivHits)
+	}
+	// C2: same union, one source further out — the trigram companion index
+	// answers the substring/identifier queries the word index is structurally
+	// blind to. It goes LAST because it is the least precise source: it only
+	// ever fills slots the exact indexes left empty, so adding it cannot
+	// displace a word hit or reorder what an agent already receives.
+	if len(out) < k {
+		p.unions.trigram.Add(1)
+		triHits, err := p.TrigramMessageHits(raw, k, includeRetracted)
+		if err != nil {
+			return nil, plan, err
+		}
+		appendUnseen(triHits)
+	}
 	return out, plan, nil
 }
 

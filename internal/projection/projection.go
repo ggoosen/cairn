@@ -45,6 +45,7 @@ type Projection struct {
 	bodyFetch  BodyFetch
 	parkLogger func(ParkedEvent) // FIX-F8.3: invoked AT park time (loudness)
 	vec        vecState          // D1: sqlite-vec capability + derived-index state
+	unions     unionCounters     // D14: companion-index queries actually run
 }
 
 // SetParkLogger registers the loud-park callback (RULINGS.md R4.3): the
