@@ -1,6 +1,6 @@
 # CAPTURE C3 — session-transcript ingest: design note (DESIGN ONLY, pre-review)
 
-Status: **design, not sanctioned to build.** `build/CAPTURE-PLAN.md` requires
+Status: **design, not sanctioned to build.** `build/BUILD-PLAN.md` §2 requires
 the privacy/redaction design to get a crossed adversarial review — the same
 treatment R56 got — BEFORE any code, because capture is a trust-surface
 change. Nothing here is implemented. This note exists to give that review
@@ -8,7 +8,7 @@ something concrete to attack, and to record what reading the shipped code
 already settles.
 
 Precedence: RULINGS.md > `docs/rulings-v0.3.1.md` > `docs/spec-v0.3.md` >
-`build/CAPTURE-PLAN.md` > this note.
+`build/BUILD-PLAN.md` > this note.
 
 ---
 

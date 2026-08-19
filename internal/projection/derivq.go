@@ -135,7 +135,13 @@ func (p *Projection) AttachmentBlobs() ([]DurableBlob, error) {
 // owning messages (attachment join). Provenance flows: message → attachment
 // blob_hash → derivative (extractor+version) → text_hash.
 func (p *Projection) DerivativeMessageHits(query string, k int, includeRetracted bool) ([]string, error) {
-	query = FTSQuery(query)
+	// D11: the derivative index gets the same disjunctive treatment, against
+	// its OWN document population — a term that is common in message bodies may
+	// be rare in extracted attachment text, and vice versa.
+	query, _, err := p.lexicalMatch(ftsDerivativesIndex, query)
+	if err != nil {
+		return nil, fmt.Errorf("derivative search: %w", err)
+	}
 	rows, err := p.db.Query(`
 		SELECT DISTINCT m.message_id
 		FROM fts_derivatives

@@ -123,7 +123,7 @@ func TestThreadExpansion(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	out, err := d.Thread(root.MessageID, 4000, "")
+	out, err := d.Thread(daemon.ThreadOptions{ThreadID: root.MessageID, BudgetChars: 4000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestThreadExpansion(t *testing.T) {
 		t.Fatal("thread bodies must be quoted (untrusted content)")
 	}
 
-	if _, err := d.Thread("0190a1b2-c3d4-7e5f-8901-000000000000", 1000, ""); err == nil {
+	if _, err := d.Thread(daemon.ThreadOptions{ThreadID: "0190a1b2-c3d4-7e5f-8901-000000000000", BudgetChars: 1000}); err == nil {
 		t.Fatal("unknown thread should error")
 	}
 }

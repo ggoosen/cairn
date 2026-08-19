@@ -36,7 +36,7 @@
   ],
   "checksum": "2857c4f301727333ce0c4bbcebde6ad2642efcab6d98df9fc74670e093e61d00",
   "notes": [
-    "NOT EVIDENCE. Six documents and six questions written by the project author: exactly the circularity EVAL-PLAN §2.2 exists to break.",
+    "NOT EVIDENCE. Six documents and six questions written by the project author: exactly the circularity BUILD-PLAN §3.2 exists to break.",
     "Its only job is to give the corpus format, the checksum verification and the harness loader something to chew on offline.",
     "Real corpora are MINED (github-duplicate-issues, stackoverflow-duplicates, doc-cross-references) and are acquired by the operator, not committed here."
   ]

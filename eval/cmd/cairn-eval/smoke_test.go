@@ -56,7 +56,7 @@ func TestSmokeRefusesStubs(t *testing.T) {
 // The E3 loader must be reachable from the harness — and must REFUSE to run
 // an independent corpus through it. Pushing mined human ground truth through
 // the backends is the first half of a measurement, and measurement waits for
-// the operator signoffs in eval/claims.yaml (EVAL-PLAN §5-E1).
+// the operator signoffs in eval/claims.yaml (BUILD-PLAN §5-E1).
 func TestSmokeAcceptsTheSampleCorpusAndRefusesIndependentOnes(t *testing.T) {
 	sample, err := filepath.Abs(filepath.Join("..", "..", "corpora", "sample-plumbing-v1"))
 	if err != nil {

@@ -43,8 +43,33 @@ func newNetCmd(dirFlag *string) *cobra.Command {
 			} else {
 				fmt.Fprintf(out, "peers:      0 configured — nothing will replicate; add one with `cairn peer add <host:port>`\n")
 			}
+			// P3-6: the sensed device conditions. Printed even on a full node —
+			// the policy only bites on a thin one, but "why is my remote query
+			// not running" is asked from whichever node is in front of you.
+			if metered, ok := st["metered"].(bool); ok {
+				fmt.Fprintf(out, "metered:    %v (%s)\n", metered, str(st["metered_why"], "no detail"))
+				fmt.Fprintf(out, "power:      battery=%s sensed-metered=%s\n",
+					str(st["on_battery"], "unknown"), str(st["metered_sensed"], "unknown"))
+				fmt.Fprintf(out, "            %s\n", str(st["power_source"], "no sensor detail"))
+			}
 			if bootstrap, _ := st["bootstrap"].(bool); bootstrap {
 				fmt.Fprintf(out, "trust:      grant-chain bootstrap (log not yet fully replicated; R37)\n")
+			}
+			// D2 origin-liveness beacon: a peer whose own append chain moved
+			// BACKWARDS restored from a stale backup. Printed before the relay
+			// line because it is the only thing here that needs acting on.
+			if alarms, ok := st["liveness_alarms"].([]any); ok && len(alarms) > 0 {
+				fmt.Fprintf(out, "liveness:   %d ORIGIN REGRESSION ALARM(S) — a peer holds LESS of its own origin than it once did\n", len(alarms))
+				for _, raw := range alarms {
+					a, ok := raw.(map[string]any)
+					if !ok {
+						continue
+					}
+					fmt.Fprintf(out, "            %s\n", str(a["detail"], "(unreadable alarm record)"))
+				}
+				fmt.Fprintf(out, "            a stale-backup restore, not equivocation: nothing is frozen here, and this node still holds the\n")
+				fmt.Fprintf(out, "            events — but they do NOT replicate back on their own. Stop the restored device before it\n")
+				fmt.Fprintf(out, "            writes at those sequences; repair per DOGFOOD §14. `cairn doctor` has the durable record.\n")
 			}
 			// Relays are an iroh-transport concept; the tailnet transport has none,
 			// and iroh's live relay diagnostics are deferred (hardware-gated).

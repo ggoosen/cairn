@@ -28,6 +28,7 @@ import (
 	"github.com/ggoosen/cairn/internal/identity"
 	cairnlog "github.com/ggoosen/cairn/internal/log"
 	"github.com/ggoosen/cairn/internal/maintenance"
+	"github.com/ggoosen/cairn/internal/netstate"
 	"github.com/ggoosen/cairn/internal/object"
 	"github.com/ggoosen/cairn/internal/peer"
 	"github.com/ggoosen/cairn/internal/projection"
@@ -45,6 +46,11 @@ type Options struct {
 	Warn     io.Writer
 	Embedder embed.Embedder // nil → embed.Detect(Dir); lexical_only if none
 	Version  string         // FIX-H7: build version string of THIS binary (stale-binary detection)
+	// PowerSense (P3-6) overrides the platform metered/battery sensor. nil =
+	// the real platform probe (or netstate.Disabled when `metered_sense = off`).
+	// Tests inject a fake so the POLICY is exercised on every OS, while the
+	// PROBES stay platform code tested against their own platform.
+	PowerSense netstate.Sensor
 }
 
 // Daemon is the single writer for one cairn.
@@ -62,8 +68,15 @@ type Daemon struct {
 	// worker I/O internally.
 	embMu    sync.RWMutex
 	embedder embed.Embedder
-	trust    *identity.Trust
-	lg       *cairnlog.Log
+	// D10: the last outcome of an actual Embed call, so `cairn status` can
+	// tell "no embedder configured" from "an embedder that is failing" —
+	// today both show up only as lexical-only results, and the remedies are
+	// nothing alike. Guarded by embMu with the pointer it describes.
+	embLastOK   time.Time
+	embLastFail time.Time
+	embLastErr  string
+	trust       *identity.Trust
+	lg          *cairnlog.Log
 	// logs holds append handles for FOREIGN origins (N6 replication ingest +
 	// frontier). The active origin is d.lg; the map excludes it.
 	logs          map[cairnlog.Origin]*cairnlog.Log
@@ -104,6 +117,12 @@ type Daemon struct {
 
 	forks map[cairnlog.Origin]*ForkRecord // N8: detected equivocations (guarded by d.mu)
 
+	// liveness is the D2 origin-liveness beacon: the highest (generation,
+	// sequence) ever observed per origin, plus any recorded regression. It
+	// carries its OWN lock (like durab) because it is written from the
+	// reconcile paths, which must not hold d.mu across disk I/O.
+	liveness *livenessRegistry
+
 	// admittedPairings records pairing invite_ids (and dev:<device_id>) admitted
 	// THIS session (P3-2b, guarded by d.mu), so a replay within one daemon
 	// lifetime is refused even before d.trust reflects the durable device.add
@@ -122,6 +141,11 @@ type Daemon struct {
 	// status. Set once at Start, read-only thereafter.
 	transport     peer.Transport
 	transportName string
+
+	// power (P3-6) senses whether this device is on a metered connection or on
+	// battery. It only ever ADDS caution: see meteredNow. Never nil after Start
+	// (a disabled or unreadable sensor answers Unknown, which changes nothing).
+	power *netstate.Cached
 }
 
 // syncIdentity returns this node's peer identity for dialing. Caller holds
@@ -356,6 +380,7 @@ func Start(opts Options) (*Daemon, error) {
 		syncKick: make(chan struct{}, 1),
 		durab:    loadDurability(opts.FS, opts.Dir),
 		forks:    loadForks(opts.Dir),
+		liveness: loadLiveness(opts.FS, opts.Dir),
 
 		ladderThresholds: maintenance.DefaultThresholds(),
 		// DEPLOY-E2: config-file first (survives service reinstalls and
@@ -402,7 +427,15 @@ func Start(opts Options) (*Daemon, error) {
 		d.Close()
 		return nil, err
 	}
-	sess, err := loadSessions(lockDir, profiles, d.now())
+	// D9: the device id lets the session table decide whether a recorded pid
+	// names a LOCAL process. A portable-only restore (R9 read-only) has no
+	// device identity at all, and an empty id means "trust no pid binding" —
+	// such a daemon reaps on expiry alone.
+	deviceID := ""
+	if loaded.Device != nil {
+		deviceID = loaded.Device.DeviceID
+	}
+	sess, err := loadSessions(lockDir, deviceID, profiles, d.now())
 	if err != nil {
 		d.Close()
 		return nil, err
@@ -420,6 +453,17 @@ func Start(opts Options) (*Daemon, error) {
 		d.Close()
 		return nil, err
 	}
+	// P3-6: the metered/battery sensor. `metered_sense = "off"` reads nothing;
+	// otherwise the platform probe, TTL-cached so no search path pays for it.
+	switch {
+	case opts.PowerSense != nil:
+		d.power = netstate.NewCached(opts.PowerSense)
+	case d.loaded.Device != nil && d.loaded.Device.MeteredSense == config.MeteredSenseOff:
+		d.power = netstate.NewCached(netstate.Disabled)
+	default:
+		d.power = netstate.NewCached(netstate.Platform())
+	}
+
 	// P3-4: resolve the sync transport (P3-1 seam). An unavailable transport
 	// (iroh, deferred) disables sync LOUDLY (R45) without taking the daemon down.
 	d.transportName = config.TransportTCPTailnet

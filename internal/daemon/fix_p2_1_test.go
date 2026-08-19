@@ -46,7 +46,7 @@ func parseTrace(t *testing.T, text string) (comp map[string][2]string, total str
 }
 
 // reconcileAgainstReturned recomputes the score from the printed components and
-// weights ALONE (scorer term order: R, S, F, P_eff, I, N) and asserts exact
+// weights ALONE (scorer term order: R, S, F, P_eff, I, N, DUP, SAT) and asserts exact
 // equality with the RETURNED score — the number the agent actually saw, sourced
 // outside the explanation record. Any scored term missing from the trace (or
 // traced as the wrong value) breaks this equality.
@@ -56,7 +56,7 @@ func reconcileAgainstReturned(t *testing.T, text string, returned float64) map[s
 	if total == "" {
 		t.Fatalf("no total line in why-ranked output:\n%s", text)
 	}
-	for _, name := range []string{"R", "S", "F", "P_eff", "I", "N"} {
+	for _, name := range []string{"R", "S", "F", "P_eff", "I", "N", "DUP", "SAT"} {
 		if _, ok := comp[name]; !ok {
 			t.Fatalf("scored term %q missing from why-ranked trace (every scored term must be printed):\n%s", name, text)
 		}
@@ -69,7 +69,8 @@ func reconcileAgainstReturned(t *testing.T, text string, returned float64) map[s
 	// returned score must be reproducible by it, not only by a Go expression
 	// that happens to fuse the same way the scorer did.
 	sum := float64(v("R")*w("R")) + float64(v("S")*w("S")) + float64(v("F")*w("F")) +
-		float64(v("P_eff")*w("P_eff")) + float64(v("I")*w("I")) + float64(v("N")*w("N"))
+		float64(v("P_eff")*w("P_eff")) + float64(v("I")*w("I")) + float64(v("N")*w("N")) +
+		float64(v("DUP")*w("DUP")) + float64(v("SAT")*w("SAT"))
 	if got, want := rank.Dec(sum), rank.Dec(returned); got != want {
 		t.Fatalf("trace does not reconcile with the RETURNED score: printed components recompute to %s, returned score is %s\n%s", got, want, text)
 	}

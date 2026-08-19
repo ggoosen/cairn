@@ -144,7 +144,7 @@ type SearchOptions struct {
 	Thread      string
 }
 
-// Search runs the hybrid search surface — EVAL-PLAN §9.1's MEMORY surface,
+// Search runs the hybrid search surface — BUILD-PLAN §3.4 E9's MEMORY surface,
 // the one that is not allowed to forget.
 func (i *Instance) Search(ctx context.Context, opts SearchOptions) (*SearchResult, error) {
 	args := []string{"search", opts.Query}
@@ -183,7 +183,7 @@ type DigestResult struct {
 	Raw     string
 }
 
-// Digest generates the ranked, budget-capped digest for a view — EVAL-PLAN
+// Digest generates the ranked, budget-capped digest for a view — BUILD-PLAN
 // §9.1's WORKING-SET surface, which is allowed to forget.
 func (i *Instance) Digest(ctx context.Context, view string, budgetChars int) (*DigestResult, error) {
 	if view == "" {
@@ -231,6 +231,20 @@ func (i *Instance) Peek(ctx context.Context, messageID string) (*MessageInfo, er
 	return &res, nil
 }
 
+// WhyRanked returns the EXACT stored ranking arithmetic for one result of a
+// prior interaction — every additive term with its value, its weight and their
+// product, plus the lexical and vector candidate ranks behind R.
+//
+// This is the harness's only black-box route to an ablation. eval/ is a
+// separate module and cannot reach into internal/rank; Cairn exposes no CLI
+// switch for ±freshness or ±priority. But R47/R51 guarantee that an external
+// recompute of this trace reconciles exactly, which means the same published
+// surface an auditor would use is enough to re-rank with a term removed. See
+// internal/explain for the parse and for what that can and cannot show.
+func (i *Instance) WhyRanked(ctx context.Context, interactionID, messageID string) (string, error) {
+	return i.Run(ctx, "why-ranked", interactionID, messageID)
+}
+
 // Outcome records a retrieval outcome (found | not_found | manual_workaround)
 // against an interaction, binding it to a message where the verb allows.
 // E7's telemetry substrate runs through here.
@@ -241,6 +255,53 @@ func (i *Instance) Outcome(ctx context.Context, kind, interactionID, messageID s
 	}
 	_, err := i.Run(ctx, args...)
 	return err
+}
+
+// OnboardingResult is `cairn onboarding show` output. Verified/Refusal are the
+// R56 authorship gate's answer, and they are the fields E6 exists to check: a
+// record from a non-operator writer must come back Verified=false with a
+// refusal that names the reason, and must change nothing.
+type OnboardingResult struct {
+	Found      bool   `json:"found"`
+	Topic      string `json:"topic,omitempty"`
+	MessageID  string `json:"message_id,omitempty"`
+	RevisionID string `json:"revision_id,omitempty"`
+	Sender     string `json:"sender,omitempty"`
+	Verified   bool   `json:"verified"`
+	Refusal    string `json:"refusal,omitempty"`
+	Config     *struct {
+		View          string   `json:"view"`
+		InterestQuery string   `json:"interest_query,omitempty"`
+		Topics        []string `json:"topics,omitempty"`
+		DigestBudget  int      `json:"digest_budget,omitempty"`
+	} `json:"config,omitempty"`
+	Raw string `json:"-"`
+}
+
+// OnboardingShow fetches and verifies the onboarding record for a view.
+func (i *Instance) OnboardingShow(ctx context.Context, view string) (*OnboardingResult, error) {
+	out, err := i.Run(ctx, "onboarding", "show", "--view", view)
+	if err != nil {
+		return nil, err
+	}
+	var res OnboardingResult
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		return nil, fmt.Errorf("parsing onboarding show output: %w\n%s", err, out)
+	}
+	res.Raw = out
+	return &res, nil
+}
+
+// OnboardingApply runs `cairn onboarding apply` against an instructions file
+// and returns whatever it printed. The verb is deliberately driven for real
+// rather than simulated: R56's claim is about what APPLY does end to end, and
+// the file on disk afterwards is the evidence.
+func (i *Instance) OnboardingApply(ctx context.Context, view, instructionsPath string) (string, error) {
+	args := []string{"onboarding", "apply", "--view", view}
+	if instructionsPath != "" {
+		args = append(args, "--instructions", instructionsPath)
+	}
+	return i.Run(ctx, args...)
 }
 
 // Status returns the daemon's one-shot health JSON.

@@ -50,7 +50,12 @@ python3 -m venv ~/cairn/.cairn/embed-venv
 
 If no venv is provisioned, the daemon now says so LOUDLY at every startup
 (R45): `embeddings: no embed venv found (semantic search disabled ...)`. A
-node running lexical-only is never a silent surprise again.
+node running lexical-only is never a silent surprise again. `cairn status`
+names the CAUSE — no embedder configured, the degradation ladder shedding the
+vector query, or a configured embedder that is failing — because the remedy
+differs in each case. With no embedder configured the unembedded backlog is
+NOT counted as degradation debt: nothing can work it off, so shedding
+summaries and auto-links would buy nothing and never end.
 
 ## 3. Wire the three agent surfaces
 
@@ -67,7 +72,7 @@ Per surface:
     decisions/findings for other sessions, write a `.md` file into
     `~/cairn/views/<view>/outbox/` (front-matter optional:
     `action/text_class/declared_priority/topic_ids`). To retrieve, run
-    `cairn search "<query>" --budget 4000` and `cairn fetch <message-id>
+    `cairn search "<query>" --budget 4000` (or `--budget-tokens`) and `cairn fetch <message-id>
     --view <view>`; fetched bodies land in `views/<view>/fetched/`.
     Before ending a session, publish ONE handoff note — decisions and
     their reasons, unfinished work, surprises — with `cairn send --topic
@@ -112,8 +117,15 @@ the capability profile.
 
 Every content-bearing result arrives in the untrusted-content envelope
 (`trust: "untrusted"` + full provenance); budgets default to 1500 chars
-(digest) / 2000 (search) and are tunable per call. There is no
-force-class or topic auto-creation from MCP, by ruling (R20/R21).
+(digest) / 2000 (search) and are tunable per call. A caller that thinks in
+tokens can pass `budget_tokens` instead of `budget_chars` — exactly one of
+the two; both together is refused rather than silently resolved — and every
+budgeted response carries a `budget` block naming the mode, the limit, the
+**tokenizer** and what the payload cost. Today's token counter is
+`cairn-approx-v1`, a deliberate OVER-estimate rather than a BPE tokenizer,
+and it flags itself `approximate: true`; size a real context window with
+`budget_chars` if you need an exact number. There is no force-class or topic
+auto-creation from MCP, by ruling (R20/R21).
 
 **N1 acceptance leg (operator):** in Claude Desktop against the live mesh,
 run one full round-trip — digest → search → fetch → send → outcome — and
@@ -130,6 +142,7 @@ cairn run --profile agent-standard --name claude-code-a -- claude
 cairn run --profile read-only --name viewer -- some-tool
 cairn session list          # live handles (token prefixes only)
 cairn session revoke <tok>  # end one immediately
+cairn session prune         # reap expired/dead-process handles now
 ```
 
 `cairn run` mints a 24h session handle, exports it as `CAIRN_SESSION`, and
@@ -139,6 +152,32 @@ outcome; no retract/topics/pins/admin — the MCP default), `read-only`.
 Custom profiles: `profiles.toml` next to the device key (capabilities from
 `read, send, signal, outcome, admin`). `cairn mcp` is never tier-1 (R21):
 it uses the handle it was launched under or mints one from `--profile`.
+
+**Resource selectors (D3, spec §7.2)** narrow a handle to a *subtree* as
+well as a tier — the grant an operator actually wants for a narrow agent:
+
+```sh
+cairn run --profile agent-standard --name narrow \
+  --topic 'project/x/*' --max-budget-chars 1500 -- claude
+```
+
+Grants are **positive only** (there is no "everything except"; mutes are a
+separate, still-open question). `*` spans `/`, so `project/x/*` is the whole
+subtree — and it does *not* include the bare parent topic `project/x`; pass
+both if you mean both. Inside the grant everything works normally; outside
+it every op is a **typed refusal** carrying `out_of_scope`, never an empty
+result, so an agent can tell "nothing matched" from "you may not ask". That
+includes `thread`, which crosses topics by construction: out-of-scope
+messages are withheld and counted, and a wholly out-of-scope thread is
+refused. Whole-mesh renderings (`cairn map`, `cairn compact`) are refused
+outright under a topic grant. `--max-budget-chars` clamps every retrieval and
+the clamp is reported in the response — never applied silently. A session
+capped in characters may still budget in TOKENS: the cap then applies as a
+second hard ceiling beside the token budget (both are reported) rather than
+being converted, because there is no honest characters-per-token rate to
+convert it by. `cairn
+session list` shows each handle's grant, so an audit distinguishes
+"read-only" from "read-only inside project/x".
 
 **Isolation honesty (R22):** everything runs as your OS user. Profiles
 prevent *accidents* — a confined agent structurally cannot retract or
@@ -506,3 +545,59 @@ cairn --version | grep -q "$(git rev-parse --short HEAD)" \
 
 Do this on BOTH nodes before any audit phase; never `make install` from one
 bundle and then leave the checkout on an older one.
+
+## 16. Adopting a standalone mesh into the primary one (D5, R34 — operator runbook)
+
+You started a cairn on a second machine "just to try it", it has a month of
+real notes in it, and it is a **separate mesh**: its own genesis, its own root
+key. That is a different trust domain by design, so its origin logs cannot be
+merged into your primary mesh — not "not yet", cannot: every event is signed
+under a root your primary has never admitted. Adoption **re-publishes** the
+knowledge and retires the old mesh (R34).
+
+The procedure is a script you should read before you run it, not a verb that
+hides the steps:
+
+```sh
+# both daemons running; adopting the standalone into the primary
+scripts/cairn-adopt-standalone.sh --standalone ~/cairn-laptop --primary ~/cairn
+
+# two machines: export there, copy the printed directory here, adopt from it
+cairn export corpus --dir ~/cairn                      # on the STANDALONE machine
+rsync -a <printed root>/ primary-host:/tmp/adopt/      # copy the tree across
+scripts/cairn-adopt-standalone.sh --from-export /tmp/adopt \
+  --repo standalone-<mesh-id-prefix> --primary ~/cairn # on the PRIMARY machine
+```
+
+It exports (`cairn export corpus`), plans the import (`cairn ingest scan`),
+**stops for you to read the manifest**, applies it (`cairn ingest apply`), runs
+`cairn doctor` on both meshes, and writes `RETIRED.md` into the standalone
+directory. Re-running it is a no-op — the ingest path is keyed on content
+hash — so running it twice because you were not sure it worked is safe.
+
+**Preserved:** every live message body byte for byte; its topic path, mirrored
+under one label so an adopted note never passes for a native one; provenance
+(`source_ref` records `<label>/<topic path>/<ORIGINAL message id>.md`); and the
+standalone mesh's whole log, read but never appended to, still verifiable
+(the only things written into that directory are `exports/corpus-…/` and
+`RETIRED.md`).
+
+**Not preserved:** event identity, signatures and origins (adopted content is
+new events in the primary's log); revision history (only the head body
+crosses); the original sender and timestamps (adopted messages are sent by
+`ingest`, today); secondary topic links (a multi-topic message is filed under
+one — the export manifest lists all of them); threads/replies, pins,
+priorities, subscriptions, attachments, and retracted messages, which stay
+retracted.
+
+**The trap, stated plainly.** Do NOT copy the standalone's `events/`,
+`.cairn/` or device key into the primary directory, and do NOT run
+`cairn init --adopt` over a primary mesh. Cairn reads a peer event at or beyond
+the head of its OWN active origin as a device clone (N8): the receiving node
+freezes its origin and reports an equivocation naming a clone that does not
+exist, and you spend the afternoon repairing a fork that never happened
+(§14 is for real forks, not this). Re-publish; never transplant.
+
+**Enrolment is separate.** If the standalone *machine* should also become a
+device of the primary mesh, that is the N5 ceremony in §11 — it needs the root
+key, and the script deliberately does not do it.

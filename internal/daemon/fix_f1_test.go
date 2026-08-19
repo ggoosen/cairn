@@ -164,8 +164,11 @@ func TestF1UnprojectableEventIsParkedNotFatal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// D11: matching is disjunctive, so "before the poison" is a legitimate
+	// (worse) hit for this query too — the assertion is that the event after the
+	// poison PROJECTED and is the best match, never that nothing else matched.
 	hits, err := d.Projection().SearchLexical("after the poison", 10, false)
-	if err != nil || len(hits) != 1 || hits[0].MessageID != after.MessageID {
+	if err != nil || len(hits) == 0 || hits[0].MessageID != after.MessageID {
 		t.Fatalf("event after poison not projected: %v %v", hits, err)
 	}
 	parked, err := d.Projection().ParkedEvents()
@@ -187,7 +190,7 @@ func TestF1UnprojectableEventIsParkedNotFatal(t *testing.T) {
 		t.Fatalf("restart over parked event: %v", err)
 	}
 	hits, _ = d2.Projection().SearchLexical("after the poison", 10, false)
-	if len(hits) != 1 {
+	if len(hits) == 0 || hits[0].MessageID != after.MessageID {
 		t.Fatal("post-restart projection incomplete")
 	}
 	d2.Close()

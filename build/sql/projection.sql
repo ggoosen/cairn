@@ -51,6 +51,11 @@ CREATE TABLE messages (
 );
 CREATE INDEX idx_messages_thread ON messages(thread_id);
 CREATE INDEX idx_messages_created ON messages(created_at);
+-- D1: every vector query joins head_revision_id → revision, on both the vec0
+-- and the brute-force path. Without this SQLite builds a transient automatic
+-- index for that join on EVERY query, which is exactly the per-query O(corpus)
+-- cost the vector index exists to remove.
+CREATE INDEX idx_messages_head ON messages(head_revision_id);
 
 CREATE TABLE revisions (
   revision_id TEXT PRIMARY KEY,
@@ -145,6 +150,16 @@ CREATE TABLE fts_map (
   rowid INTEGER PRIMARY KEY,
   revision_id TEXT NOT NULL UNIQUE
 );
+
+-- D14: fts5vocab companion in 'row' mode — (term, doc, cnt) per indexed term,
+-- where `doc` is the number of documents containing the term. It is the D11
+-- term-discrimination probe's document-frequency source: asking the index for
+-- df, rather than counting matching rowids up to a LIMIT that is itself half
+-- the corpus. Nothing is stored — fts5vocab is a VIEW over the FTS index's own
+-- b-tree — so it costs no space, cannot drift from the index it reads, and
+-- reports terms exactly as the tokenizer emitted them (folded, tokenchars
+-- applied), which is why query terms are folded in Go before lookup.
+CREATE VIRTUAL TABLE fts_revisions_vocab USING fts5vocab('fts_revisions', 'row');
 -- CAPTURE C2 companion index over the SAME body text, sharing fts_map's
 -- rowid so ONE insert feeds both indexes in one transaction. unicode61
 -- splits on word boundaries and can never match INSIDE a token, which is
@@ -159,14 +174,29 @@ CREATE VIRTUAL TABLE fts_revisions_trigram USING fts5(
 );
 
 -- Vectors: one row per (revision, model). Never compare across models.
--- If sqlite-vec is available this becomes a vec0 virtual table; otherwise
--- this plain table + in-process brute-force cosine (<5k candidates).
+-- This table is the SOURCE OF TRUTH for embeddings and the brute-force
+-- oracle's input; it is written whether or not sqlite-vec is available
+-- (D1). The vec0 virtual table below is a derived INDEX over it.
 CREATE TABLE vectors (
   revision_id TEXT NOT NULL,
   embedding_model_id TEXT NOT NULL,
   dim INTEGER NOT NULL,
   vec BLOB NOT NULL,                  -- float32 little-endian
   PRIMARY KEY (revision_id, embedding_model_id)
+);
+
+-- D1: rowid bridge to the sqlite-vec index. vec0 virtual tables are keyed by
+-- INTEGER rowid, our vectors by revision_id, so one stable mapping lives here
+-- (same shape as fts_map, and for the same reason). The vec0 table itself is
+-- created LAZILY, in internal/projection/vec.go, because its dimension is not
+-- known until the first vector arrives and because the extension may not be
+-- present at all — when it is absent this table simply stays empty and the
+-- brute-force scan over `vectors` answers, which is the sanctioned fallback
+-- (rulings §7). Rebuilt from `vectors` whenever the two disagree, so the vec0
+-- index is as derived as everything else here.
+CREATE TABLE vec_map (
+  rowid INTEGER PRIMARY KEY,
+  revision_id TEXT NOT NULL UNIQUE
 );
 
 -- Enrichment state for retrieval_mode + reindex --semantic backfill.
@@ -261,6 +291,11 @@ CREATE TABLE fts_derivatives_map (
   rowid INTEGER PRIMARY KEY,
   derivative_id TEXT NOT NULL UNIQUE
 );
+
+-- D14: the derivatives index gets the same df source, against its OWN
+-- document population (a term common in bodies may be rare in extracted
+-- attachment text).
+CREATE VIRTUAL TABLE fts_derivatives_vocab USING fts5vocab('fts_derivatives', 'row');
 
 -- Receiver summary topical-consistency check (P1 N4; spec §8.4).
 -- sender_summary is event-derived (untrusted claim); the check columns are

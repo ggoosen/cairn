@@ -6,54 +6,128 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync/atomic"
 )
+
+// unionCounters count the companion-index queries LexicalTopKPlan actually
+// ran (D14). They exist so the "skip a union whose results would be
+// discarded" guard can be asserted as a skip rather than inferred from a
+// timing; two atomic increments per search buy a test that cannot pass by
+// accident.
+type unionCounters struct {
+	derivative atomic.Int64
+	trigram    atomic.Int64
+}
+
+// UnionQueriesForTest reports how many derivative and trigram companion
+// queries this projection has run.
+func (p *Projection) UnionQueriesForTest() (derivative, trigram int64) {
+	return p.unions.derivative.Load(), p.unions.trigram.Load()
+}
 
 // Rank-support queries (M6). All ordering is deterministic.
 
 // LexicalTopK returns message IDs of HEAD-revision FTS matches in bm25
 // order (ties by message_id) — the lexical candidate list for RRF fusion.
 func (p *Projection) LexicalTopK(query string, k int, includeRetracted bool) ([]string, error) {
-	raw := query
-	query = FTSQuery(query)
+	ids, _, err := p.LexicalTopKPlan(query, k, includeRetracted)
+	return ids, err
+}
+
+// headFilter is how a matched FTS row becomes the message id of a live HEAD
+// revision — the per-match work of every candidate query, and after D14 the
+// largest single cost in a search (D15).
+//
+// Both forms below select exactly the same rows; they differ only in how many
+// index seeks they spend per MATCHING document, and the pool is cut to k only
+// AFTER the filter has run, so the work is paid on every match rather than on
+// the k that survive. The value is SQL: a compile-time constant, never caller
+// input.
+type headFilter string
+
+const (
+	// headJoinDirect asks the ONE question the candidate query needs: is there
+	// a message whose head revision is this indexed revision? A revision_id is
+	// a primary key, so it belongs to exactly one message, and a message's
+	// head_revision_id is only ever set to a revision inserted for that same
+	// message in the same transaction (see applyPayload: publish sets it beside
+	// the revisions INSERT, revise_body sets it to the last revision it just
+	// inserted). Naming the head therefore names the owner, and the revisions
+	// hop that used to sit in the middle re-derived a fact the messages row had
+	// already stated. idx_messages_head indexes it — the index D1 added for the
+	// vector path, which has joined this way since (see vec.go).
+	headJoinDirect headFilter = `JOIN messages m ON m.head_revision_id = map.revision_id`
+	// headJoinViaRevisions is the pre-D15 shape: rowid → revision → message,
+	// testing ownership and headness separately. Kept as the ORACLE the
+	// differential drives (rulings §7, the way brute-force cosine remains the
+	// vector index's oracle and D11's probe remains D14's), because dropping a
+	// join from a filter is a claim about supersession and retraction, and a
+	// claim of that kind is asserted against the superseded code, not argued.
+	headJoinViaRevisions headFilter = `JOIN revisions r ON r.revision_id = map.revision_id
+		JOIN messages m ON m.message_id = r.message_id AND m.head_revision_id = r.revision_id`
+)
+
+// headMessageHits runs one candidate query: FTS match over `table`, filtered to
+// live head revisions by hf, in bm25 order with a deterministic tie-break
+// (rulings §7). `table` and hf are compile-time constants; the match expression
+// and k are bound parameters.
+func (p *Projection) headMessageHits(table string, hf headFilter, match string, k int, includeRetracted bool) ([]string, error) {
 	rows, err := p.db.Query(`
 		SELECT m.message_id
-		FROM fts_revisions
-		JOIN fts_map map ON fts_revisions.rowid = map.rowid
-		JOIN revisions r ON r.revision_id = map.revision_id
-		JOIN messages m ON m.message_id = r.message_id AND m.head_revision_id = r.revision_id
-		WHERE fts_revisions MATCH ? AND (m.retracted = 0 OR ?)
-		ORDER BY bm25(fts_revisions), m.message_id
-		LIMIT ?`, query, boolInt(includeRetracted), k)
+		FROM `+table+`
+		JOIN fts_map map ON `+table+`.rowid = map.rowid
+		`+string(hf)+`
+		WHERE `+table+` MATCH ? AND (m.retracted = 0 OR ?)
+		ORDER BY bm25(`+table+`), m.message_id
+		LIMIT ?`, match, boolInt(includeRetracted), k)
 	if err != nil {
-		return nil, fmt.Errorf("lexical candidates: %w", err)
+		return nil, err
 	}
 	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out = append(out, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	// N4: attachments are searchable via their derivatives — union hits from
-	// derivative text (body hits rank first; derivative hits append after,
-	// deduplicated). Provenance stays inspectable via `cairn derivative list`.
-	derivHits, err := p.DerivativeMessageHits(raw, k, includeRetracted)
+	return scanIDs(rows)
+}
+
+// LexicalCandidatesForTest runs the word-index candidate query BOTH ways — the
+// production filter and the pre-D15 three-join oracle — so a differential can
+// assert they return the same ids in the same order. Exported for the same
+// reason LexicalPlansForTest is: an oracle a test cannot address is not one.
+func (p *Projection) LexicalCandidatesForTest(query string, k int, includeRetracted bool) (direct, viaRevisions []string, err error) {
+	match, _, err := p.lexicalMatch(ftsRevisionsIndex, query)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	// C2: same union, one source further out — the trigram companion index
-	// answers the substring/identifier queries the word index is structurally
-	// blind to. It goes LAST because it is the least precise source: it only
-	// ever fills slots the exact indexes left empty, so adding it cannot
-	// displace a word hit or reorder what an agent already receives.
-	triHits, err := p.TrigramMessageHits(raw, k, includeRetracted)
+	if direct, err = p.headMessageHits(ftsRevisionsIndex.table, headJoinDirect, match, k, includeRetracted); err != nil {
+		return nil, nil, err
+	}
+	viaRevisions, err = p.headMessageHits(ftsRevisionsIndex.table, headJoinViaRevisions, match, k, includeRetracted)
+	return direct, viaRevisions, err
+}
+
+// TrigramCandidatesForTest is LexicalCandidatesForTest for the C2 companion.
+func (p *Projection) TrigramCandidatesForTest(query string, k int, includeRetracted bool) (direct, viaRevisions []string, err error) {
+	q := FTSTrigramQuery(query)
+	if q == "" {
+		return nil, nil, nil
+	}
+	if direct, err = p.headMessageHits(ftsTrigramTable, headJoinDirect, q, k, includeRetracted); err != nil {
+		return nil, nil, err
+	}
+	viaRevisions, err = p.headMessageHits(ftsTrigramTable, headJoinViaRevisions, q, k, includeRetracted)
+	return direct, viaRevisions, err
+}
+
+// LexicalTopKPlan is LexicalTopK plus the D11 term plan — which query terms
+// formed the disjunction, and which the index reported as carrying no ordering
+// information. Search reports it, so widened matching stays inspectable.
+func (p *Projection) LexicalTopKPlan(query string, k int, includeRetracted bool) ([]string, LexicalPlan, error) {
+	raw := query
+	query, plan, err := p.lexicalMatch(ftsRevisionsIndex, query)
 	if err != nil {
-		return nil, err
+		return nil, plan, fmt.Errorf("lexical candidates: %w", err)
+	}
+	out, err := p.headMessageHits(ftsRevisionsIndex.table, headJoinDirect, query, k, includeRetracted)
+	if err != nil {
+		return nil, plan, fmt.Errorf("lexical candidates: %w", err)
 	}
 	seen := map[string]bool{}
 	for _, id := range out {
@@ -68,9 +142,40 @@ func (p *Projection) LexicalTopK(query string, k int, includeRetracted bool) ([]
 			out = append(out, id)
 		}
 	}
-	appendUnseen(derivHits)
-	appendUnseen(triHits)
-	return out, nil
+	// N4: attachments are searchable via their derivatives — union hits from
+	// derivative text (body hits rank first; derivative hits append after,
+	// deduplicated). Provenance stays inspectable via `cairn derivative list`.
+	//
+	// D14: both unions can only FILL slots the word index left empty —
+	// appendUnseen stops at k — so once the word index has returned k
+	// candidates their results are discarded in full, and running them is
+	// pure cost. The guards below make that skip explicit; they change no
+	// answer, because a query whose pool is already full ignored these hits
+	// before the guards existed. The saving is not small: on the 100k
+	// scorecard corpus the trigram query alone was 53 ms of a 62 ms search,
+	// every millisecond of it thrown away.
+	if len(out) < k {
+		p.unions.derivative.Add(1)
+		derivHits, err := p.DerivativeMessageHits(raw, k, includeRetracted)
+		if err != nil {
+			return nil, plan, err
+		}
+		appendUnseen(derivHits)
+	}
+	// C2: same union, one source further out — the trigram companion index
+	// answers the substring/identifier queries the word index is structurally
+	// blind to. It goes LAST because it is the least precise source: it only
+	// ever fills slots the exact indexes left empty, so adding it cannot
+	// displace a word hit or reorder what an agent already receives.
+	if len(out) < k {
+		p.unions.trigram.Add(1)
+		triHits, err := p.TrigramMessageHits(raw, k, includeRetracted)
+		if err != nil {
+			return nil, plan, err
+		}
+		appendUnseen(triHits)
+	}
+	return out, plan, nil
 }
 
 // TrigramMessageHits returns HEAD-revision message IDs from the C2 trigram
@@ -82,20 +187,11 @@ func (p *Projection) TrigramMessageHits(query string, k int, includeRetracted bo
 	if q == "" {
 		return nil, nil
 	}
-	rows, err := p.db.Query(`
-		SELECT m.message_id
-		FROM fts_revisions_trigram
-		JOIN fts_map map ON fts_revisions_trigram.rowid = map.rowid
-		JOIN revisions r ON r.revision_id = map.revision_id
-		JOIN messages m ON m.message_id = r.message_id AND m.head_revision_id = r.revision_id
-		WHERE fts_revisions_trigram MATCH ? AND (m.retracted = 0 OR ?)
-		ORDER BY bm25(fts_revisions_trigram), m.message_id
-		LIMIT ?`, q, boolInt(includeRetracted), k)
+	out, err := p.headMessageHits(ftsTrigramTable, headJoinDirect, q, k, includeRetracted)
 	if err != nil {
 		return nil, fmt.Errorf("trigram candidates: %w", err)
 	}
-	defer rows.Close()
-	return scanIDs(rows)
+	return out, nil
 }
 
 // VecBlob encodes float32 little-endian (the DDL's vectors.vec format).
@@ -118,14 +214,22 @@ func blobVec(b []byte) []float32 {
 // InsertVector stores one revision embedding and marks enrichment done —
 // one transaction, idempotent (INSERT OR REPLACE by PK). Also pins the
 // projection-wide embedding model id in meta.
+//
+// D1: the sqlite-vec mirror is written in the SAME transaction. One writer,
+// one commit — the derived index cannot be ahead of, or behind, the vector it
+// indexes, which is the same invariant the projection checkpoint holds.
 func (p *Projection) InsertVector(revisionID, modelID string, vec []float32) error {
 	tx, err := p.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	blob := VecBlob(vec)
 	if _, err := tx.Exec(`INSERT OR REPLACE INTO vectors(revision_id, embedding_model_id, dim, vec) VALUES (?,?,?,?)`,
-		revisionID, modelID, len(vec), VecBlob(vec)); err != nil {
+		revisionID, modelID, len(vec), blob); err != nil {
+		return err
+	}
+	if err := p.vecInsertTx(tx, revisionID, modelID, blob, len(vec)); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`INSERT INTO enrichment(revision_id, lexical_indexed, embedded)
@@ -158,6 +262,9 @@ func (p *Projection) InvalidateVectors() error {
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(`DELETE FROM vectors`); err != nil {
+		return err
+	}
+	if err := p.vecClearTx(tx); err != nil { // D1: the derived index goes with it
 		return err
 	}
 	if _, err := tx.Exec(`UPDATE enrichment SET embedded=0`); err != nil {
@@ -341,9 +448,24 @@ func (p *Projection) SignalObservations() ([]SignalRow, error) {
 	return out, rows.Err()
 }
 
-// HeadVectors returns message_id → head-revision vector for one model
-// (brute-force cosine happens in the caller; P0 candidate sets ≪ 5k —
-// rulings §7 sanctions the fallback).
+// HasVectors reports whether any vector for this model is stored — the cheap
+// question "is this corpus embedded at all?", used to distinguish a hybrid
+// retrieval that found nothing from a lexical-only one.
+func (p *Projection) HasVectors(modelID string) (bool, error) {
+	var n int
+	err := p.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM vectors WHERE embedding_model_id=?)`, modelID).Scan(&n)
+	return n == 1, err
+}
+
+// HeadVectors returns message_id → head-revision vector for one model.
+//
+// D1 residual: this is the last caller-side full scan. Search and digest now
+// route through VectorTopK, but subscription matching (R24) needs the WHOLE
+// similarity distribution — it calibrates a threshold against it and records
+// every evaluated candidate as an observation — so a top-K index cannot serve
+// it. That is a ranking-semantics problem, not an indexing one; it stays
+// brute force until someone changes R24's calibration, and is bounded in
+// practice by a subscription's hard topic filters.
 func (p *Projection) HeadVectors(modelID string, includeRetracted bool) (map[string][]float32, error) {
 	rows, err := p.db.Query(`
 		SELECT m.message_id, v.vec
@@ -378,6 +500,13 @@ type RankRow struct {
 	Recipient      bool // explicit recipient of the requesting agent view
 	PinActive      bool // active pin on the head body object
 	PriorityConf   bool // signal.emit(priority_confirm) exists
+	// ThreadKey identifies the conversation for the S8 thread-saturation
+	// penalty. A ROOT message carries no thread_id — the thread emerges at the
+	// first reply and takes the root's id (see ThreadMessages) — so the key is
+	// COALESCE(thread_id, message_id): a root and its replies share one key, and
+	// a message that is nobody's root and nobody's reply keys uniquely on itself
+	// and can never saturate against anything.
+	ThreadKey string
 }
 
 // RankRows fetches rank inputs for a set of message IDs (agentView drives
@@ -396,7 +525,7 @@ func (p *Projection) RankRows(messageIDs []string, agentView string) (map[string
 	}
 	rows, err := p.db.Query(`
 		SELECT m.message_id, m.head_revision_id, r.body_hash, m.text_class, m.declared_priority,
-		       r.created_at, m.created_event_id,
+		       r.created_at, m.created_event_id, COALESCE(m.thread_id, m.message_id),
 		       EXISTS(SELECT 1 FROM recipients rc WHERE rc.message_id = m.message_id AND rc.agent_view = ?),
 		       EXISTS(SELECT 1 FROM pins pn WHERE pn.object_hash = r.body_hash AND pn.removed = 0),
 		       EXISTS(SELECT 1 FROM signals s WHERE s.message_id = m.message_id AND s.kind = 'priority_confirm')
@@ -410,7 +539,7 @@ func (p *Projection) RankRows(messageIDs []string, agentView string) (map[string
 		var rr RankRow
 		var recip, pin, pc int
 		if err := rows.Scan(&rr.MessageID, &rr.HeadRevisionID, &rr.BodyHash, &rr.TextClass, &rr.Priority,
-			&rr.CreatedAt, &rr.CreatedEventID, &recip, &pin, &pc); err != nil {
+			&rr.CreatedAt, &rr.CreatedEventID, &rr.ThreadKey, &recip, &pin, &pc); err != nil {
 			return nil, err
 		}
 		rr.Recipient, rr.PinActive, rr.PriorityConf = recip == 1, pin == 1, pc == 1

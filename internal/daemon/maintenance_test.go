@@ -1,20 +1,29 @@
 package daemon_test
 
-// P2-1: the degradation ladder wired into the daemon. With no embedder (the
-// test default), every published revision is a pending embedding, so a low
-// threshold trips the ladder deterministically. Asserts the level rises with
-// the backlog, gates enrichment rungs in order, and is reported by `status`.
+// P2-1: the degradation ladder wired into the daemon. An embedder is
+// configured but nothing runs the enricher (Serve is never called), so every
+// published revision is a real pending embedding and a low threshold trips the
+// ladder deterministically. Asserts the level rises with the backlog, gates
+// enrichment rungs in order, and is reported by `status`.
+//
+// D10 CHANGED ONE LINE HERE, deliberately and visibly: this test used to rely
+// on there being NO embedder to manufacture its backlog, which is exactly the
+// state D10 says is not debt (nothing can work that backlog off, so shedding
+// derived work buys nothing and never ends). The assertions — every rung, in
+// order, with its gate flags — are untouched: a daemon WITH an embedder and a
+// real backlog still climbs the ladder exactly as it did.
 
 import (
 	"testing"
 
 	"github.com/ggoosen/cairn/internal/daemon"
+	"github.com/ggoosen/cairn/internal/embed"
 	"github.com/ggoosen/cairn/internal/maintenance"
 )
 
 func TestP21DegradationLadderWired(t *testing.T) {
 	dir := initCairn(t)
-	d, err := daemon.Start(daemon.Options{Dir: dir})
+	d, err := daemon.Start(daemon.Options{Dir: dir, Embedder: embed.BagOfWords{}})
 	if err != nil {
 		t.Fatal(err)
 	}

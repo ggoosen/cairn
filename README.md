@@ -42,8 +42,8 @@ If you run multiple AI agent sessions — Claude Code here, Codex there, a chat 
 ## What Cairn does
 
 - **`cairn send`** — any agent publishes a message, decision, or artifact into the mesh
-- **`cairn digest --budget 1500`** — any agent gets a *ranked* rollup of what's new and relevant, hard-capped to a character budget (oversized items are dropped whole, never truncated mid-item)
-- **`cairn search "council approval status"`** — hybrid keyword + semantic search across everything, from any session, offline
+- **`cairn digest --budget 1500`** — any agent gets a *ranked* rollup of what's new and relevant, hard-capped to a character budget (oversized items are dropped whole, never truncated mid-item). Budget in tokens instead with `--budget-tokens`; pass exactly one of the two, and the response names the tokenizer that counted it — today an over-estimating approximation called `cairn-approx-v1`, not a BPE tokenizer
+- **`cairn search "council approval status"`** — hybrid keyword + semantic search across everything, from any session, offline. Multi-term queries match on *any* term and rank by how many hit, so a natural-language question finds the right note instead of demanding every word appear in it; terms so common they carry no signal are dropped from the match and the response says which
 - **`cairn fetch <id>`** — deliberately pull the full original, with provenance back to the signed source event
 - **`cairn thread <id>`** — read a whole conversation; **`cairn topic list`** — browse the taxonomy with live counts
 - **`cairn why-ranked <interaction-id> <message-id>`** — see the exact arithmetic behind a ranking, as it was recorded at the time. No black boxes.
@@ -59,7 +59,8 @@ The five commands above are the daily loop. The rest of what's built:
 - `cairn export <id>` renders `exports/<id>.md` with read-only front-matter — edit the body in any editor, then `cairn export ingest`: an unchanged base becomes a clean revision, a diverged one is machine-merged with diff3, and a genuine conflict lands in `conflicts/<id>/` for you to settle with `cairn resolve`.
 
 **Confine your agents**
-- `cairn run --profile read-only -- <your agent>` — run any agent inside a capability-confined session: it gets a short-lived handle (`CAIRN_SESSION`), auto-revoked on exit or idle, that cannot retract, restructure topics, or touch admin. Profiles are `full` / `agent-standard` / `read-only`, or your own in `profiles.toml`. `cairn session list` and `cairn session revoke` are the kill switch.
+- `cairn run --profile read-only -- <your agent>` — run any agent inside a capability-confined session: it gets a short-lived handle (`CAIRN_SESSION`), auto-revoked on exit or idle, that cannot retract, restructure topics, or touch admin. Profiles are `full` / `agent-standard` / `read-only`, or your own in `profiles.toml`. `cairn session list`, `cairn session prune` and `cairn session revoke` are the kill switch.
+- `cairn run --profile agent-standard --topic 'project/x/*' --max-budget-chars 1500 -- <your agent>` — confine it to a *subtree* as well as a tier. The grant is positive-only, `*` spans `/` (so `project/x/*` is the whole subtree), and anything outside it is a **typed refusal**, never a quietly empty result — including via `thread`, which crosses topics. A budget cap is clamped and the clamp is reported in the response.
 
 **Shape what each agent receives**
 - `cairn subscribe "<what this view works on>" --view <name>` — declare a standing interest so digests surface it. Local by default (no events); `--durable` replicates it across the mesh.
@@ -68,6 +69,7 @@ The five commands above are the daily loop. The rest of what's built:
 - `cairn saved add council "council approvals"` / `cairn saved run council` — name the queries you run repeatedly.
 
 **Navigate instead of searching blind**
+- `scripts/cairn-adopt-standalone.sh` merges an ad-hoc **standalone mesh** into your primary one. A separate mesh has its own genesis and root, so its events cannot be merged (R34) — the procedure re-publishes the knowledge with provenance back to the original message id, verifies `cairn doctor` on both, and retires the old mesh without deleting it. It states plainly what it does not preserve. See DOGFOOD.md §16.
 - `cairn map` writes `views/<view>/map.md`, a topic/thread/pin rollup. `cairn compact` writes `compaction.md`, the log folded down to current-state entities — what things *are* now, not how they got there. `cairn peek <id>` returns sender, revision, hash, class and size without spending budget on a body.
 
 **Attachments**
@@ -93,24 +95,37 @@ The five commands above are the daily loop. The rest of what's built:
 
 ## Roadmap
 
-This table is the coarse phase-level view. The complete, consolidated
-inventory of everything still to be built — including the smaller gaps,
-deferred debt, and open design rulings scattered across the docs — lives
-in **[ROADMAP.md](ROADMAP.md)**.
+This table is the coarse phase-level view. Everything still to be built —
+release blockers, capture, evaluation, deferred debt, unbuilt spec surfaces,
+later phases and the open design rulings — lives in one file:
+**[build/BUILD-PLAN.md](build/BUILD-PLAN.md)**, which also carries the
+execution order and says what each blocked item is blocked *on*.
+
+Worth knowing when reading the table: some outstanding work maps to **no
+phase row at all** — deferred scaling debt (macOS codesigning for the prebuilt
+binaries, which needs an Apple Developer ID) and surfaces
+the spec describes but no milestone built (mutes, an `explore` ranking
+profile). A green phase row is not a claim that nothing is owed underneath
+it.
+
+Vector search runs on a `sqlite-vec` index, feature-probed at startup; where
+the extension will not load, the brute-force cosine scan answers instead and
+`cairn status` names which path is live. Both return the same top-K — that
+equivalence is a test, not an assumption.
 
 | Phase | Scope | Status |
 |---|---|---|
 | **P0** | Single-machine daemon: event log, search, ranked digests, outbox, exports, crash safety | ✅ complete — engineering gates green; field evaluation pending |
 | **P1** | Multi-machine Tailscale mesh: signed membership, event + text + blob replication with durability classes, live fork detection, MCP server, capability-scoped sessions, durable subscriptions, deterministic attachment derivatives | ✅ code-complete · passed a live two-node audit in July 2026 |
-| **P2** | Retrieval quality: behavioural salience, an additive ranking profile + calibration harness, **agent-shaped relevance** (self-subscribe + a self-configuring onboarding record), local **structural** navigation maps (topic/thread rollups), saved searches, compaction views, opt-in OCR derivatives | 🔨 built (opt-in, not yet calibrated) |
-| **P3** | Frictionless onboarding: **one-command `cairn setup`** (mesh + resident daemon service + MCP client wiring), iroh transport, one-time pairing invites, thin nodes for mobile | 🔨 single-machine deploy shipped · mesh scope built + audited single-host (two-machine pass and iroh live wire both deferred) |
-| **CAPTURE** | Zero-effort capture: session-transcript ingest as a low-trust searchable substrate (opt-in, redacted, never in digests), trigram substring search, end-of-session handoff convention, memory-provider packaging for agent harnesses | 🔨 partial — trigram search, handoff convention and [memory-provider packaging](docs/memory-provider.md) shipped; transcript ingest still planned ([work order](build/CAPTURE-PLAN.md)) |
-| **EVAL** | Proving the claims rather than making them: an independent black-box harness, corpora with **mined human relevance labels** (not author-written), component ablations, baselines including grep-over-transcripts, an agent-in-the-loop task battery, adversarial injection testing, and long-horizon/mesh recall — with **falsification criteria registered before measurement** | 📋 planned ([work order](build/EVAL-PLAN.md) · [claims register](eval/claims.yaml)) |
+| **P2** | Retrieval quality: behavioural salience, an additive ranking profile + calibration harness, **agent-shaped relevance** (self-subscribe + a self-configuring onboarding record), local **structural** navigation maps (topic/thread rollups), saved searches, compaction views, opt-in OCR derivatives, duplicate/thread-saturation penalties | 🔨 built (opt-in) — **not yet calibrated, and the penalties are audited but unproven**: the golden corpus has no duplicates and no threads, so it cannot exercise them |
+| **P3** | Frictionless onboarding: **one-command `cairn setup`** (mesh + resident daemon service + MCP client wiring), iroh transport, one-time pairing invites, thin nodes for mobile | 🔨 single-machine deploy shipped · mesh scope built + audited single-host · pairing now authenticates **both** directions and metered/battery sensing is automatic (sensing may only ever ADD caution) · **two-machine pass still outstanding**; the iroh wire is deferred by ruling (R58), not merely unbuilt |
+| **CAPTURE** | Zero-effort capture: session-transcript ingest as a low-trust searchable substrate (opt-in, redacted, never in digests), trigram substring search, end-of-session handoff convention, memory-provider packaging for agent harnesses | 🔨 partial — trigram search, handoff convention and [memory-provider packaging](docs/memory-provider.md) shipped; transcript ingest designed but unbuilt, pending a crossed review of its privacy model ([build plan](build/BUILD-PLAN.md) §2 · [design note](build/CAPTURE-C3-DESIGN.md)) |
+| **EVAL** | Proving the claims rather than making them: an independent black-box harness, corpora with **mined human relevance labels** (not author-written), component ablations, baselines including grep-over-transcripts, an agent-in-the-loop task battery, adversarial injection testing, and long-horizon/mesh recall — with **falsification criteria registered before measurement** | 🔨 apparatus built, **nothing measured yet** — harness ([`eval/`](eval/), its own module so the compiler enforces black-box access), corpus format/normalizers/loader and the time-control hook all ship and gate in CI; corpora are unacquired and the 21 kill criteria are unsigned, and measuring before either would defeat the point ([build plan](build/BUILD-PLAN.md) §3 · [claims register](eval/claims.yaml)) |
 | **P4** | Self-organising knowledge: automated filing, **embedding-clustered self-folding topic maps** (the semantic map — needs P2 usage/salience data to be good), salience propagation | planned |
 
 **On P1:** the full multi-machine mesh — replication of events, canonical text and attachment blobs with explicit durability classes; capability-scoped sessions; the MCP server and its untrusted-content envelope; live fork detection; and durable subscriptions — is built and passing its acceptance suites. In July 2026 it went through six rounds of live two-node audit on real hardware over a real tailnet (macOS + Linux), by two independent AI auditors working from separate adversarial briefs, ending with zero blockers — one of which found a genuine ephemeral-backfill leak that was fixed and re-verified live. Two caveats worth stating plainly: those auditors were AI agents, not human security reviewers; and the audit certifies a July commit — the pairing, trust and sync code has been extended since and has not been re-audited live. Treat it as thoroughly exercised, not independently certified.
 
-**On P3:** single-machine onboarding is real today — `cairn setup` (via `install.sh` or `make deploy`) creates the mesh, installs the daemon as a user service, and wires your MCP clients in one idempotent command. The multi-machine layer — one-time pairing invitations (`cairn pair invite`/`join`), thin-node roles for mobile/metered devices, and `cairn net` diagnostics — is built, and its safety invariants (single-use admission durable across restart, server-side root re-verification, membership enforcement, revocation, thin-node durability accounting) were adversarially audited on a real Linux box, including raw wire-protocol attacks below the CLI. That audit ran **over loopback on one host**; the companion two-machine pass was blocked before it started and has not been rerun, so P3's mesh path has not yet been exercised between two machines. The live **iroh** transport — the wire itself, relay self-hosting, automatic metered/battery sensing — is deliberately deferred behind a transport interface that the handshake and reconciliation already run over unchanged (a second transport implementation is exercised in the test suite), and drops in with no caller changes.
+**On P3:** single-machine onboarding is real today — `cairn setup` (via `install.sh` or `make deploy`) creates the mesh, installs the daemon as a user service, and wires your MCP clients in one idempotent command. The multi-machine layer — one-time pairing invitations (`cairn pair invite`/`join`), thin-node roles for mobile/metered devices (now with automatic metered/battery sensing, which may only ever ADD caution — a sensed "not metered" never overrides your config), and `cairn net` diagnostics — is built, and its safety invariants (single-use admission durable across restart, server-side root re-verification, membership enforcement, revocation, thin-node durability accounting) were adversarially audited on a real Linux box, including raw wire-protocol attacks below the CLI. That audit ran **over loopback on one host**; the companion two-machine pass was blocked before it started and has not been rerun, so P3's mesh path has not yet been exercised between two machines. The live **iroh** transport — the wire itself and relay self-hosting — is deliberately deferred behind a transport interface that the handshake and reconciliation already run over unchanged (a second transport implementation is exercised in the test suite), and drops in with no caller changes.
 
 Each phase gates the next on measured results. P0's engineering gates are green on the dev machine — zero acknowledged-event loss (deep doctor clean across the crash matrix), 100% provenance on fetched results, 100% hard-budget compliance, and send-ack → lexical-digest-visible P95 of ~16–25 ms against a 200 ms gate over 347 real sends. Run `cairn gates` to reproduce them against your own corpus; note that the provenance and blob-durability rows pass trivially until you have traffic. The product gate is still open: Cairn must demonstrably beat copy-paste (Success@5 ≥ 70% across 30 real cross-session handoffs) before P2 is declared shipped, and that evaluation has not begun. The event-sourced core means every later phase is a new projection over the same log: no migrations, ever.
 
@@ -122,9 +137,20 @@ The design and its full decision trail — specification (v0.3), the binding bui
 
 ## Status
 
-**Pre-alpha.** P0 and P1 are code-complete: the single-machine daemon and the multi-machine Tailscale mesh (replication, blob durability, capability-scoped sessions, MCP, live fork detection) are built, passing their acceptance suites, and past six rounds of live two-node hardening audit with zero blockers at the audited commit. P2 and P3 are built but opt-in, and their newest pieces — the self-subscribe/onboarding affordances and `cairn setup` — are unit-tested and code-reviewed but have had no live audit. What remains before cutting the first tag is the operator's own **30-handoff product evaluation** (the real-world "does it beat copy-paste?" gate in [`DOGFOOD.md`](DOGFOOD.md)), which has not started. Star/watch for the release. Built in Go; macOS (Apple Silicon) is the primary target, and Linux runs in CI on equal footing (verify, race, lint and fuzz smoke all gate) plus by hand on a WSL2 Ubuntu node.
+**Pre-alpha.** P0 and P1 are code-complete: the single-machine daemon and the multi-machine Tailscale mesh (replication, blob durability, capability-scoped sessions, MCP, live fork detection) are built, passing their acceptance suites, and past six rounds of live two-node hardening audit with zero blockers at the audited commit. P2 and P3 are built but opt-in, and their newest pieces — the self-subscribe/onboarding affordances and `cairn setup` — are unit-tested and code-reviewed but have had no live audit. What remains before cutting the first tag is the operator's own **30-handoff product evaluation** (the real-world "does it beat copy-paste?" gate in [`DOGFOOD.md`](DOGFOOD.md)), which has not started. Star/watch for the release. An independent evaluation harness now exists ([`eval/`](eval/), its own Go module so the compiler enforces black-box access) and runs in CI, but it is deliberately **dark**: it reports no number as evidence until the falsification criteria in [`eval/claims.yaml`](eval/claims.yaml) are signed and independent corpora are acquired. Built in Go; macOS (Apple Silicon) is the primary target and gates CI alongside Linux (verify on both, plus race, lint, fuzz smoke, the eval harness and the release-packaging path).
 
-**Known limitation — degradation ladder.** Under disk/memory pressure Cairn sheds load in stages (defer auto-linking → summaries → embeddings → force lexical-only search → defer proactive blob replication). The two most aggressive stages — *rejecting* new low-priority blobs or small text outright — are currently computed and reported (visible in `cairn status`, every transition logged) but not yet *enforced*: safely rejecting a send needs reserved-capacity accounting that's deferred to its own change. Until then they fail open — the send proceeds — never silently.
+**By design — the degradation ladder stops short of rejecting sends.** Under
+disk/memory pressure Cairn sheds load in stages (defer auto-linking → summaries
+→ embeddings → force lexical-only search → defer proactive blob replication).
+The two most aggressive stages — *rejecting* new low-priority blobs or small
+text outright — are computed and reported (visible in `cairn status`, every
+transition logged) but deliberately not enforced pre-acknowledgement: **send
+never blocks** (R61). An agent hits disk pressure at exactly the moment it most
+needs to record something, so a rejection under reserved-capacity accounting
+would break the central promise precisely then. The final stage refuses only
+when a write physically cannot succeed — that is reality reporting itself, not
+policy — and the emergency reserve exists for the genuinely-full case, released
+by explicit operator command.
 
 ## Security posture
 
@@ -166,14 +192,37 @@ The design and its full decision trail — specification (v0.3), the binding bui
 
 ## Quickstart
 
-**Prerequisites.** **Go 1.25+** — or any Go 1.21+ with `GOTOOLCHAIN=auto` (the
-default) and network access, which fetches the pinned toolchain for you. You also
+**Homebrew — prebuilt binary, no toolchain** *(from the first tagged release; see
+the note below)*:
+
+```bash
+brew tap ggoosen/cairn
+brew install cairn
+cairn setup
+```
+
+Artifacts are macOS arm64 and Linux x86_64/arm64. Each one is built on a native
+runner of its own architecture and then *executed there* — a real mesh, a real
+daemon, a send and a search — before it is allowed onto a release page, so a
+binary whose SQLite lacks FTS5 cannot ship
+([`.github/workflows/release.yml`](.github/workflows/release.yml)). Checksums are
+published with every release. Two honest caveats: the macOS binary is **not
+notarized** (this project has no Apple Developer ID, so `brew install` works but
+a *browser*-downloaded tarball is quarantined by Gatekeeper), and the Linux
+binaries link glibc 2.35 (Ubuntu 22.04 and newer). `git` must be on PATH at
+runtime either way. **This path goes live with the first tagged release** — the
+pipeline is built and exercised in CI, but until a tag is pushed the tap has
+nothing in it, so use the source install below.
+
+**Prerequisites for the source install.** **Go 1.25+** — or any Go 1.21+ with
+`GOTOOLCHAIN=auto` (the default) and network access, which fetches the pinned
+toolchain for you. You also
 need **`git`** (at build time *and* at runtime, for the three-way merge in
 `cairn export ingest`) and a **C toolchain** — Cairn uses cgo for SQLite/FTS5, so
 on macOS run `xcode-select --install` if you haven't. macOS arm64 is primary;
 Linux is best-effort.
 
-**One command (recommended):**
+**One command (recommended until the tap is live):**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ggoosen/cairn/master/install.sh | sh
@@ -183,8 +232,7 @@ This builds Cairn, installs it to `~/.local/bin` (no sudo), and runs `cairn setu
 which creates your mesh, installs the resident daemon as a user service
 (launchd/systemd), and wires `cairn mcp` into every detected MCP client (Claude
 Desktop / Claude Code / Codex). Idempotent: re-run any time to upgrade. From a
-checkout, `make deploy` does the same. *(A prebuilt signed binary + Homebrew tap
-is the planned zero-dependency path.)*
+checkout, `make deploy` does the same.
 
 Then restart Claude Desktop / Claude Code so they load the tools, and:
 

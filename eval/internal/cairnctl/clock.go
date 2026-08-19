@@ -6,7 +6,7 @@ import (
 )
 
 // Clock controls the daemon's sense of time so a run can replay months of
-// mesh in minutes (EVAL-PLAN §9.2). E9's recall-over-age and
+// mesh in minutes (BUILD-PLAN §3.4 E9). E9's recall-over-age and
 // recall-under-growth curves are otherwise unrunnable: a year-long
 // experiment that takes a year is not an experiment.
 //

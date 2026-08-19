@@ -49,6 +49,9 @@ func (b *flatNotes) Open(_ context.Context, cfg Config) error {
 	if cfg.WorkDir == "" {
 		return errors.New("B2 requires a WorkDir")
 	}
+	if err := refuseArm(B2FlatNotes, cfg.Arm); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(cfg.WorkDir, 0o700); err != nil {
 		return err
 	}

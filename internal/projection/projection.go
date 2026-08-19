@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/mattn/go-sqlite3"
@@ -43,6 +44,8 @@ type Projection struct {
 	path       string
 	bodyFetch  BodyFetch
 	parkLogger func(ParkedEvent) // FIX-F8.3: invoked AT park time (loudness)
+	vec        vecState          // D1: sqlite-vec capability + derived-index state
+	unions     unionCounters     // D14: companion-index queries actually run
 }
 
 // SetParkLogger registers the loud-park callback (RULINGS.md R4.3): the
@@ -87,6 +90,15 @@ func Open(path string, bodyFetch BodyFetch) (*Projection, error) {
 			db.Close()
 			return nil, fmt.Errorf("%w: found %s, want %d", ErrSchemaVersion, v, config.ProjectionSchemaVersion)
 		}
+	}
+	// D1: feature-probe sqlite-vec. A failure is NOT an error — it means this
+	// machine answers vector queries by brute-force cosine, which rulings §7
+	// sanctions. Then reconcile the derived index with the vectors table,
+	// because the capability can differ from the run that wrote this file.
+	p.vecProbe(os.Getenv(EnvVectorIndex) == "off")
+	if err := p.vecSync(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("reconciling the vector index: %w", err)
 	}
 	return p, nil
 }

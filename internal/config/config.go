@@ -130,11 +130,18 @@ type DeviceConfig struct {
 	RemoteQuery bool `toml:"remote_query,omitempty"`
 
 	// Metered (P3-3e, spec §7 battery/metered awareness): the connection is
-	// data-metered. POLICY only — this is a manual flag; automatic sensing of the
-	// network state is platform-specific and deferred (hardware). When set, a
-	// thin node does NOT auto-spend data on remote query (its search stays local
-	// and partial). Ignored on a full node.
+	// data-metered. When set, a thin node does NOT auto-spend data on remote
+	// query (its search stays local and partial). Ignored on a full node.
+	// This is the MANUAL declaration and it always wins: P3-6 sensing can only
+	// turn metered ON when the platform says so, never off.
 	Metered bool `toml:"metered,omitempty"`
+
+	// MeteredSense (P3-6): "off" disables automatic metered/battery sensing,
+	// leaving Metered above as the only input. Empty/unset = sensing on. Sensing
+	// fails safe — an unreadable platform is identical to sensing off — so this
+	// exists for an operator who wants no platform probes run at all, not as a
+	// correctness switch. Device-local (a power/network state is per-device).
+	MeteredSense string `toml:"metered_sense,omitempty"`
 
 	// Role (P3-3): the node's role in the mesh — RoleFull (default) or RoleThin.
 	// Device-local (a role is a per-device operational choice, not a mesh fact).

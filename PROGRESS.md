@@ -4267,3 +4267,2638 @@ synthetic sample.
 
 Green: `make verify`, `make eval`, `golangci-lint run` 0 issues in both
 modules.
+
+### Bookkeeping — plan documents consolidated to ONE (2026-08-15)
+
+Five plan documents had accumulated (`ROADMAP.md`, `build/BUILD-PLAN.md`,
+`build/CAPTURE-PLAN.md`, `build/EVAL-PLAN.md`, `build/DEBT-PLAN.md`) and the
+sprawl was itself the problem: "what is left to build" had five possible
+answers, each partly right, and the newest one was the least likely to be
+read. Operator called it — one source of truth.
+
+Now: **`build/BUILD-PLAN.md` is the only plan.** It carries the execution
+order up front, then release blockers, CAPTURE, EVAL, DEBT, P2/P3/P4
+completion and the open author rulings. The completed P0 plan moved to
+`build/P0-BUILD-PLAN-HISTORICAL.md` (kept for acceptance criteria and the
+decision trail; explicitly not a work queue). ROADMAP/CAPTURE/EVAL/DEBT are
+deleted, their content merged, nothing dropped.
+
+References repointed: README, CLAUDE.md (read order + workflow), ci.yml, and
+every `EVAL-PLAN §x` citation across the eval module (section numbers remapped
+to their BUILD-PLAN homes, e.g. §5-E1 → §3.4 E1, §2.2 → §3.2). Entries ABOVE
+this line still cite the old filenames; they are a historical log and are left
+as written rather than rewritten after the fact.
+
+Maintenance rule, restated because it is what failed: new planned work gets a
+section in BUILD-PLAN.md; shipped work moves here and its section is deleted.
+Do not start a new plan document.
+
+### Author rulings needed — D9 session idle-across-restart (raised 2026-08-15)
+
+`loadSessions` (internal/daemon/session.go:215) resets `sess.lastUsed = now`
+on every daemon start, with a comment saying the restart of the idle window
+is deliberate. The README promises capability sessions are "auto-revoked on
+exit or idle". Those cannot both hold: a daemon restart currently grants every
+stale token a fresh 6-hour idle window, so idle revocation never retires a
+session across a restart.
+
+Question: should `lastUsed` be persisted, making the documented promise true,
+or is the reset the intended semantics and the README wrong?
+
+Conservative interim (implement this if the ruling has not landed): reap on
+expiry and on dead bound-pid — neither of which is in question — and leave
+the `lastUsed` reset as written, marked `// RULING-NEEDED:`.
+
+Full defect writeup, including the upstream leak in cmd/cairn/mcp.go:67 where
+a `defer`red revoke cannot run on signal termination: build/BUILD-PLAN.md §4 D9
+at the time this was raised — the section was deleted when the work shipped
+(the plan's maintenance rule), and the writeup now lives in the D9 entry below.
+
+## D9 — capability sessions are never reaped (2026-08-16) — DONE
+
+Sprint S1, first of two live defects found by inspection on the dev node:
+2,673 resident sessions, 1,524 of them already expired, in a 772 KB
+`sessions.json` that was rewritten in full on every mint. Four compounding
+causes, all four addressed.
+
+**The leak had a source, and it is fixed at the source.** `cairn mcp` minted a
+session per process and released it with `defer`, which does not run when the
+process is killed by a signal — exactly how MCP clients tear down stdio
+servers. `cmd/cairn/mcp.go` now installs a SIGTERM/SIGINT handler that revokes
+the handle and exits 128+n; the `defer` remains for the ordinary path, both
+routed through a `sync.Once` so a revoke never fires twice. SIGKILL still
+cannot be caught, which is why the daemon reaps as well.
+
+**Reaping, with the pid binding finally read.** `BoundPID` was recorded and
+printed and read nowhere, so a handle was valid for its full 24h TTL whether
+or not its process existed. The session table now sweeps on load, on mint, on
+list, and on demand (`cairn session prune`, new IPC op `session-prune`,
+operator-tier and non-delegable like the other `session-*` ops). A record is
+dead when its TTL has passed, when its expiry cannot be parsed (`resolve()`
+has always treated that as expired), or when the process it is bound to is
+gone or has been recycled.
+
+**Two guards against reaping something live**, because over-reaping revokes a
+running agent's handle mid-session and is strictly worse than the leak:
+
+- the pid is trusted only for a record **this device** minted (new
+  `bound_device`); a pid number from another device names an unrelated local
+  process, and a record written before this change carries no device at all,
+  so it is reaped on expiry alone.
+- the pid is paired with the **process incarnation captured at mint** (new
+  `bound_proc`: boot id + start-time tick on Linux), so a recycled pid cannot
+  resurrect a dead session's record. This is the spec's "pair it with
+  `CreatedAt`" guard implemented as an identity captured *at* `CreatedAt`
+  rather than as a comparison against it — a start-time-vs-`CreatedAt`
+  comparison would be wrong under the `cairn_testhooks` simulated clock, where
+  `CreatedAt` comes from an offset clock and a process start time does not, and
+  a back-dated evaluation run would then reap every live session. Comparing an
+  identity token needs no clock at all.
+
+**A live smoke test found one more case**, which is why it was run rather than
+trusted: a ZOMBIE — killed, but not yet reaped by its parent — answers signal 0
+exactly like a running process, so a `cairn mcp` killed by a parent that does
+not `wait()` kept its session resident. On Linux the process state is read from
+`/proc/<pid>/stat` and Z/X counts as gone. End-to-end after the fix: SIGTERM
+revokes through the new handler, SIGKILL leaves nothing resident once the sweep
+runs, and a live `cairn mcp` keeps its handle throughout.
+
+Everything else undecidable reads as ALIVE: `Kill(pid, 0)` returning anything
+other than ESRCH/EPERM, an unreadable `/proc`, an unbound pid. Off Linux the
+incarnation token is unavailable (macOS keeps the start time in a `kinfo_proc`
+that stdlib `syscall` does not expose on darwin, and this change does not add
+`golang.org/x/sys` for one refinement), so a pid there is judged on liveness
+alone: gone, or owned by another user, reaps it. The gap that leaves is a pid
+recycled into another process of the same user inside the TTL, which fails
+safe — the record lives out its TTL, exactly as it did before. Documented in
+`internal/daemon/proc_other.go`.
+
+**The mint path is bounded.** `sessions.json` is now a compacted snapshot with
+an append-only `sessions.journal` beside it; a mint or revoke appends one line,
+and the snapshot is rewritten only when the journal grows past
+max(`SessionJournalMinCompact`=64, live sessions), which makes the per-mint
+cost amortized O(1). Journal replay is idempotent (tokens are unique and never
+reused), so a crash between snapshot write and journal removal is harmless, and
+a torn final line stops replay rather than failing startup — the file stays
+cache-class. Measured: 300 mints serialize 364 records, where the old path
+serialized 45,150.
+
+**Tests are the negative ones**, per the sprint's own warning
+(`session_reap_test.go`, `session_reap_internal_test.go`): a live session is
+not reaped by the sweep on list, the sweep on mint, an explicit prune, or a
+daemon restart, and still resolves afterwards; a foreign-device and a legacy
+pid binding are not trusted; a killed process's session is reaped and its
+handle stops granting; a 500-record expired backlog is dropped on load and the
+file shrinks; prune reports counts per reason; the incarnation token is stable
+under a live process across repeated reads.
+
+Deliberately NOT changed: `resolve()` still does not consult the pid (a
+`cairn run` child may legitimately outlive nothing, but a token passed to a
+grandchild is a case this fix has no reason to break), and idle is not a
+reaping reason — see the ruling below.
+
+Green: `make verify`, `make test-race`.
+
+### Author rulings needed — D9 session idle-across-restart (interim implemented 2026-08-16)
+
+The question raised on 2026-08-15 (immediately above) is unanswered and NOT
+blocking. The conservative interim is now implemented: reaping happens on
+expiry and on a dead bound process — neither of which is in question — and
+`loadSessions` still resets `lastUsed`, so the idle window still restarts on
+every daemon start. Marker: `// RULING-NEEDED:` on `reapLocked` in
+`internal/daemon/session.go`.
+
+Restated for the author: persisting `lastUsed` would make the README's
+"auto-revoked on exit or idle" true across restarts, but the reset is
+documented in code as deliberate, so flipping it is the author's call, not
+this fix's.
+
+## D10 — the ladder could not tell "behind" from "no embedder" (2026-08-16) — DONE
+
+Sprint S1, second live defect from the same node. `assessDegradation` sampled
+`CountPendingEmbeddings()` unconditionally, so the backlog axis could not tell
+**behind** (real load; shed derived work to catch up) from **no embedder at
+all** (nothing to catch up to). Observed: 1,242 revisions unembedded because no
+venv was provisioned, read as debt, putting an idle laptop at rung 2
+(delay-summaries) under zero load — and `message_summaries` held 5 rows for
+1,242 messages, which is that shedding actually happening. With no embedder the
+counter is monotonic in CORPUS SIZE, not in load, so it only ever worsens:
+~5,000 messages reaches rung 3, 20,000 reaches rung 4.
+
+**The fix is one condition:** the backlog axis is sampled only when an embedder
+is configured. Rungs 3–4 were harmless no-ops in that state anyway (you cannot
+delay embeddings that never run, and lexical-only was already true), but rungs
+1 and 2 shed real, ACHIEVABLE work forever. The disk axis (rungs 5–7) reads a
+different signal and is untouched in both states. The transition log now says
+"no embedder configured — backlog axis disengaged" rather than printing a
+pending count it is not using.
+
+An embedder that is present but FAILING still counts its backlog as debt: it is
+configured, the work is real, and the ladder's assumption that shedding buys
+time holds. Pinned by a test.
+
+**`cairn status` now names the cause of lexical-only**, which was the second
+half of the defect: today's `lexical_only` in a search response is
+`d.emb() == nil` (retrieve.go), which is NOT the ladder's rung 4 — same visible
+state, unrelated causes, and an operator could not tell "provision the venv"
+from "you are under load". New `Daemon.RetrievalStatus()` reports
+`hybrid` / `lexical_only` plus one of three causes with its remedy:
+
+| cause | means | remedy |
+|---|---|---|
+| `no_embedder` | nothing configured | provision the venv / `CAIRN_EMBED_PYTHON` |
+| `ladder_rung_4` | backlog is shedding the vector query | it clears as the enricher catches up |
+| `embedder_failing` | configured, last call errored | fix the embedder (the error is quoted) |
+
+The third was previously invisible: a failed query embed simply fell through to
+lexical results. The daemon now records the outcome of every real `Embed` call
+(query path and enricher), and health is "did the LAST call work" rather than a
+sticky flag — an embedder that recovers reports hybrid again on its next
+success. Swapping the embedder clears the record, since one embedder's health
+says nothing about another's.
+
+**One existing test changed, deliberately and visibly.**
+`TestP21DegradationLadderWired` manufactured its backlog by running with NO
+embedder — precisely the state D10 says is not debt — so it asserted the
+defect. It now starts the daemon WITH `embed.BagOfWords{}` and never runs the
+enricher, which produces a real backlog; every assertion (each rung, in order,
+with its gate flags) is untouched and passes unchanged. That is the only edit
+to an existing test in this sprint, and
+`TestD10EmbedderPresentStillClimbsTheLadder` re-pins the same climb
+independently so the zeroing cannot quietly become unconditional later.
+
+Green: `make verify`, `make test-race`.
+
+### Author rulings needed — D10 unworkable backlog as debt (raised 2026-08-16)
+
+Whether a backlog nothing can work off counts as "debt" is a reading of spec
+§8.2, not something the spec says outright. The conservative reading is
+implemented and NOT blocking: the ladder exists to shed derived work *so the
+system can catch up*, and where catching up is impossible, shedding is pure
+loss with no recovery — so zeroing the axis is the ladder's intent rather than
+a change to it.
+
+Question for the author: confirm that reading, or rule that an unworkable
+backlog should still degrade (in which case rungs 1–2 need a different
+justification, because in that state they shed achievable work permanently).
+Marker: `// RULING-NEEDED:` in `assessDegradation`,
+`internal/daemon/maintenance.go`.
+
+## D2 — origin-liveness beacon (2026-08-16) — DONE
+
+Sprint S2, first of two. Spec §13.2 deferred this in P0 for a stated reason
+("requires peers") and P1 has peers. The gap: `detectFrontierForkFromPeer`
+catches two chains that reached the SAME sequence with DIFFERENT heads, and a
+chain that simply moved BACKWARDS collides with nothing. A device restored
+from a stale backup therefore looked exactly like an ordinary lagging peer.
+
+**What is persisted:** the highest (generation, sequence) ever observed per
+origin, in `.cairn/liveness.json` beside the durability registry — derived and
+cache-class, because the floor is recomputed from our own verified log at
+every observation. Losing the file costs only the part of the watermark that
+was learned from a peer rather than held in frames.
+
+**What is compared, and why only that.** A peer advertises frontiers for every
+origin it holds, and holding less of somebody else's origin is the normal
+state of a mesh: it is what "behind" means, what a thin node is, and what
+every node looks like mid-catch-up. Only a device's own origin is a statement
+about itself — a device is the sole appender to its own chain, so it can never
+legitimately hold less of it than it once did. The beacon compares ONLY the
+frontiers a peer advertises for origins whose device id IS that peer. That one
+restriction is what makes ordinary restart, ordinary catch-up and a thin node
+*structurally* incapable of raising this alarm rather than merely unlikely to,
+and it is asserted by a mutation: dropping the restriction makes drill 1 of
+the acceptance test fail with a false positive on the very first reconcile.
+
+Third-party gossip is not evidence in either direction: another peer's claim
+about an origin neither raises that origin's watermark nor alarms about it.
+The floor rises only from frames we actually hold and from a device's
+statement about itself.
+
+**It alarms; it never quarantines**, per the plan. The check runs on BOTH
+sides of the frontier exchange (initiator and responder), because a regressed
+node may only ever dial us.
+
+**The live smoke test corrected the operator guidance, which is why it was
+run.** Two real daemons, a real stale restore: the alarm fires and `cairn net`
+/ `cairn doctor` / the daemon log all name the origin and both watermarks —
+but the reconcile does NOT repair the restored node, as first drafted. When
+the healthy node pushes the restored device its own missing events,
+`ingestRecords` treats any peer event at or beyond the head of our OWN active
+origin as a device clone (N8), so the restored node freezes its own origin and
+reports an equivocation that names a clone which does not exist. That is
+pre-existing N8 behaviour, in scope for neither this item nor this sprint, but
+it is exactly why the beacon has to live on the OTHER node: without it the
+only alarm anywhere blames the wrong thing. The message now says the events do
+not flow back on their own and points at DOGFOOD §14. The interaction is
+pinned by an assertion in drill 5, so a future change to it cannot silently
+make the guidance wrong again.
+
+**Recovered, not erased.** When an origin returns to or above its watermark
+the alarm is marked recovered and doctor demotes it from PROBLEM to note. It
+is not deleted: "it fixed itself" is precisely what an operator should still
+get to see after a backup restore.
+
+**Tests.** `liveness_test.go` is two real daemons over the N6 enrolment pair,
+six drills in deliberate order — ordinary operation, ordinary restart,
+ordinary catch-up (20 events behind), a thin node, THEN the stale restore,
+then recovery — so the one drill that must alarm is proved against a
+background of five that must not. `liveness_internal_test.go` pins what a live
+pair cannot easily stage: watermarks only rise, third-party gossip is inert, a
+vanished generation alarms with observed_seq −1, an empty or self-less
+frontier is malformed rather than evidence, and a repeat observation updates
+one record instead of duplicating it. `cmd/cairn/net_test.go` covers the two
+operator surfaces the plan names, loading a persisted alarm through the real
+daemon and rendering it. Three mutations were run against the suite (beacon
+disabled, self-origin restriction dropped, comparison neutered); each fails it.
+
+Live verification, two `cairn daemon` processes on isolated sockets: ordinary
+restart and a 30-event catch-up produced no alarm; the stale restore produced
+`liveness: 1 ORIGIN REGRESSION ALARM(S)` in `cairn net`, a nonzero `cairn
+doctor` with `PROBLEM ORIGIN LIVENESS ... watermark next_seq 16 ... now
+advertises next_seq 8 — 8 event(s) missing`, and the matching daemon-log line.
+
+Worth recording for whoever runs two nodes of one mesh on one machine: the IPC
+socket path is derived from the cairn id, so both daemons claim the SAME
+socket and every CLI call reaches whichever bound it last. Isolating
+`XDG_RUNTIME_DIR` per node is the workaround; the first smoke run was
+misleading until that was done.
+
+Green: `make verify`, `make test-race`.
+
+## D3 — capability `resource_selectors` (2026-08-16) — DONE
+
+Sprint S2, second of two, in its own commit because it touches the capability
+model (R21/R22/R23) and must be reviewable in isolation. Spec §7.2 always
+described per-capability resource scoping; P0/P1 shipped the coarse action
+tiers only, so a session could be denied *writing* but not confined to a
+*subtree* — which is the grant an operator actually wants for a narrow agent.
+
+**The record.** A handle gains optional `Selectors{Topics []glob,
+MaxBudgetChars int}`. Absent selectors = P1 behaviour, byte for byte; they are
+opt-in and a session without them is a control case in the tests. The grant is
+validated at MINT time (`session-create`), so a malformed one is refused where
+the operator writes it rather than reinterpreted on every request under it.
+
+**Enforcement is singular**, per the sprint's instruction: `capabilityGate`
+runs the action-tier check and then `applyConfinement`, and nothing downstream
+consults the session. Dispatch was split into `capabilityGate` +
+`dispatchOp` to make that literally true — handlers receive an
+already-scoped request and a `reqContext`, never a `*Session`.
+
+**Unclassified ops are REFUSED.** `opConfinement` classifies each op as
+scoped / resource / open / publish, and its zero value is *refuse* — the same
+conservative default `capabilityFor` uses for unknown ops. A new op is
+unreachable from a confined session until somebody decides what confinement
+means for it. A test asserts every non-admin op has an explicit entry, which
+already caught three (`map`, `compact`, `source-ref`) that were being refused
+by omission rather than by decision; they are now listed with the reason.
+
+**Topic globs resolve through the existing topic table.** A selector is
+matched against `TopicList()` and the resulting NAMES are handed to
+`ScopeMessageIDs` — the same path `cairn search --topic` uses. No second
+resolver, no second notion of what a topic is, and resolution is redone per
+request so a topic created after the handle was minted falls inside the grant
+without re-minting.
+
+**`*` spans `/`.** `project/x/*` is the subtree, which is what §7.2's example
+means; `path.Match` semantics would stop at the separator and silently exclude
+`project/x/api/v1` — most of the subtree the grant names. The bare parent is
+NOT matched, and the operator who wants it writes both: widening a written
+grant is not the daemon's decision.
+
+**The three places a grant could have been walked around**, all closed and all
+tested:
+
+- **digest mandatory items.** Explicit recipients, pins and subscription
+  matches are deliberately exempt from the view's hard filters, so the
+  confinement binds LAST, after they are added. The test addresses an
+  out-of-scope message *to the confined view* so this is proved, not assumed.
+- **`thread`.** A thread is assembled by thread_id and a reply carries its own
+  topics, so it crosses topics by construction — the surface the sprint
+  singled out. The grant is applied per MESSAGE; out-of-scope messages are
+  withheld and counted, and a wholly out-of-scope thread is a typed refusal
+  rather than an empty rendering.
+- **an empty grant.** A grant matching no existing topic must admit NOTHING.
+  Because "no topics" and "no filter" are the same empty slice in the existing
+  scope API, `Scope()` returns a non-nil empty slice and `confineScope` maps
+  that to an empty (not nil) id set. Mutating that one distinction makes the
+  test return all five seeded messages — it is the worst and least visible
+  failure mode available here.
+
+**Refusals are typed.** `Response.Refused{code:"out_of_scope", op, detail,
+topic_grant}` plus an error string that leads with the same stable code, since
+the MCP and CLI paths surface the string. An out-of-scope search returning
+zero rows would be a bug; the tests assert the typed refusal, not just an
+error.
+
+**Clamps are reported.** `Response.Capability` carries the grant, the
+resolved topics, `budget_chars_requested → budget_chars_granted`, and any
+withheld count; the CLI prints it to stderr for search/digest/thread, MCP
+carries it in the envelope (R21 — MCP is the surface that actually runs
+confined), and `cairn session list` shows each handle's grant so an audit can
+tell "read-only" from "read-only inside project/x". A budget of 0 means
+"unbudgeted" for search, so it is clamped too — otherwise the cap is bypassed
+by omitting the field.
+
+**Writes are confined as well as reads.** A confined publish must name at
+least one topic inside the grant (an untopiced message would land outside the
+session's own scope), and replying to or signalling an out-of-scope message is
+refused. Structural ops stay operator work.
+
+**Grants remain positive-only.** There is no syntax for negation — the
+selector charset is the topic-name charset plus `*`, so `!a/*` and `-a/*` are
+refused at mint, and a test says why: mutes are D7's open ruling and this must
+not pre-empt it.
+
+**Live verification**, two rounds against a real daemon and the real `cairn
+run` launcher (unit tests were not enough in S1): a session granted
+`project/x/*` searched and saw exactly its two in-grant topics with
+`capability: scoped to topic grant [project/x/*] (2 matching topic(s))` and
+`budget_chars 0 → 1500`; `--topic secrets/hr` returned `capability:
+out_of_scope: topic "secrets/hr" is outside this session's grant`; a
+cross-topic thread rendered one message and reported `1 item(s) withheld`; an
+out-of-scope send and fetch were refused; `cairn map` was refused; `cairn topic
+list` showed only the two in-grant topics; `cairn session list` showed
+`topic_grant` and `max_budget_chars`; the unconfined operator still saw all
+three matching messages. Four mutations (confinement inert, empty grant read
+as no filter, digest confinement removed, tier check bypassed) each fail the
+suite.
+
+Deliberately NOT done, and why: `map`/`compact` are refused rather than
+confined, because confining them means rewriting both renderers rather than
+filtering a list, and a typed refusal is the honest answer until that is worth
+doing. Sender/thread/mime selectors and the other §7.2 constraints
+(`rate_limit`, `durability_ceiling`, `max_blob_bytes`) are not built — the
+plan named topic globs and budget caps, and inventing the rest without a
+caller would be guessing.
+
+Green: `make verify`, `make test-race`.
+
+## D4 — `budget_tokens` (2026-08-16) — DONE, with one question left to the operator
+
+Sprint S3, first of two. Rulings v0.3.1 §7 ruled `budget_chars` only **for
+P0**, for a stated reason ("no bundled tokenizers"); spec §7 always described
+`budget_tokens` + a named tokenizer. P0 is done, so building it is satisfying
+the spec rather than overriding the ruling — but the reason the ruling gave is
+still true, and that is the whole story of this item.
+
+**What shipped.** `budget_tokens` beside `budget_chars` on every budgeted
+surface — `digest`, `search`, `thread`, `saved-run` — through the daemon API,
+the IPC request, the CLI (`--budget-tokens`) and MCP (`budget_tokens` in all
+three budgeted tool schemas). **Exactly one, never both**: a request carrying
+both is refused with an error naming both numbers, at one place
+(`rank.NewSpec`), before any work is done. Resolving it by precedence was
+explicitly rejected — it would silently discard one of the two numbers the
+caller wrote, and the caller would never know which.
+
+**Every budgeted response now names the tokenizer and the mode.** A token
+budget against an unnamed tokenizer is not a measurement. `budget` carries
+`{budget_mode, budget_limit, tokenizer, budget_used, approximate}` on
+`SearchOutput`, `DigestOutput`, `ThreadOutput` and the MCP envelope; the CLI
+prints it on stderr so a piped payload stays clean. `budget_used` is the
+payload's real cost in the mode's own unit, so an agent can verify compliance
+from the response alone rather than trusting it.
+
+**The dependency question is NOT decided — see "Author rulings needed".**
+Counting tokens properly needs a real tokenizer; Cairn's dependency tree is
+deliberately small and offline, and adding a third-party module is not an
+agent's call (S1 hit the same wall over `golang.org/x/sys` and correctly
+refused). So the counter sits behind a one-method `rank.Counter` interface
+with one honest implementation, and **the honesty is in the name**: the
+tokenizer is `cairn-approx-v1`, reported verbatim to every caller, with
+`approximate: true` beside it, "APPROXIMATION" in the MCP schema and
+"APPROXIMATE" in the CLI line. It is a documented rule set (letters ÷ 4,
+digits ÷ 3, newlines 1, punctuation 1, non-ASCII per 2 UTF-8 bytes; constants
+in `internal/config/constants.go`) tuned to OVER-estimate typical prose,
+because over-estimating drops one item too many while under-estimating blows
+the caller's real context window. Its weakest case is non-Latin script, which
+the constant's comment says outright. Swapping in a vendored tokenizer is a
+new `Counter` and a new name; nothing else moves.
+
+**The capability cap became a second limit, not a conversion.** D3's
+`max_budget_chars` is written in CHARACTERS. A token-budgeted request under
+such a session keeps its token budget and gains the cap as an additional hard
+limit — `rank.Limits` is a conjunction, and `TakeWithinBudget` satisfies every
+limit at once. Inventing a characters-per-token rate to clamp by would be a
+guess presented to the operator as a constraint. Both limits are reported
+(`budget_ceiling_chars` in the budget block and in the capability notice), and
+it is deliberately NOT reported as a `budget_chars` clamp, because nothing was
+clamped.
+
+**Two things this quietly fixed, found by following the number.**
+
+- **The §11 budget-compliance gate would have gone wrong.**
+  `telemetry.Gates` compared `payload_chars > budget_requested`; with a token
+  limit in `budget_requested` that compares characters against tokens and
+  reports a violation for every honest token-budgeted retrieval. The
+  interactions table now records `budget_mode`, `budget_tokenizer` and
+  `payload_units` (cost in the budget's own unit) via the existing additive-
+  ALTER migration path, and the gate compares like with like.
+  `COALESCE(payload_units, payload_chars)` keeps every pre-D4 row's verdict
+  identical, and a caller that leaves the mode empty is treated as
+  character-budgeted, which is what it was.
+- **The thin-node remote-query path could have returned an over-budget
+  payload.** `remote_search` carried `budget` (chars) only, so a token budget
+  would have reached a peer as "no budget" and come back sized by the peer's
+  default. The wire message now carries `budget_tokens` too, AND the asker
+  re-checks the returned payload against its own limits and refuses it (keeping
+  its local result) if it does not comply — which is also the correct behaviour
+  against a peer running an older build that ignores the new field.
+
+**Deliberately unchanged:** the hard-budget property. Oversized items are
+dropped whole in both modes; the property test asserts the payload is exactly
+header + a prefix of rendered items (+ marker), which is what "never truncated
+mid-item" means operationally and is stronger than the old length-only check.
+
+**Tests.** `rank_test.go` runs the budget property over both modes for every
+limit from 1 to 30, plus the both-budgets refusal, the ceiling-as-second-limit
+case, and the counter's own properties (named "approx", deterministic,
+monotone, over-estimates prose). `retrieve_test.go`'s
+`TestBudgetComplianceProperty` is now a table over {chars, tokens} ×
+{search, digest, thread} × nine budgets, asserting compliance AND that each
+response's report describes its own payload. `budget_tokens_test.go` covers
+the IPC contract: both-budgets refused on every budgeted op, tokenizer named
+in every mode, the D3 char cap composing with a token budget, and whole-item
+dropping. `mcp_test.go` and `budget_tokens_cli_test.go` cover the two surfaces
+an agent actually uses.
+
+**Live verification**, real binary, real daemon (unit tests were not enough in
+S1 or S2): `cairn digest --budget-tokens 120` printed `budget: 40/120 tokens
+(tokenizer cairn-approx-v1 — APPROXIMATE)`; `--budget 500` printed `82/500
+chars (tokenizer unicode-scalars)` with no approximate label; both flags
+together exited 1 with `budget_chars and budget_tokens are mutually
+exclusive`; `cairn run --profile read-only --max-budget-chars 200 -- cairn
+digest --budget-tokens 5000` printed `capability: budget_tokens honored, with
+the session's 200-character cap as a second hard limit` and then `budget:
+46/5000 tokens … budget: session ceiling of 200 chars also applied`. Over real
+`cairn mcp` stdio, `cairn_digest{budget_tokens:120}` returned
+`{"budget_mode":"tokens","tokenizer":"cairn-approx-v1","approximate":true}`
+and `cairn_search` with both budgets returned an `isError` tool result reading
+"pass exactly ONE of budget_chars (300) and budget_tokens (100)".
+
+Three mutations were run against the suite and each fails it: dropping the
+both-budgets check in `NewSpec`; making the capability ceiling replace the
+token budget instead of joining it; and renaming the approximate tokenizer to
+something that does not say "approx".
+
+Green: `make verify`, `make test-race`.
+
+### Author rulings needed — D4 tokenizer dependency (raised 2026-08-16)
+
+**The question:** should Cairn vendor a real tokenizer, and if so which?
+
+What ships today is `cairn-approx-v1`, an approximation that says so in its
+name. That is honest, and for the job most callers have — "do not blow my
+context window" — a deliberate over-estimate is a defensible answer. It is
+NOT a substitute for a real tokenizer if the number is ever used to reason
+about cost, to compare against a provider's own count, or to fill a context
+window tightly.
+
+The candidates, with their real trade-offs:
+
+- **`github.com/tiktoken-go/tokenizer`** — pure Go, embeds the BPE ranks in
+  the binary, no network at runtime. Costs: a new third-party module, a
+  several-MB binary increase per vocabulary, and it is only correct for
+  OpenAI/`cl100k`-family models — it would name a tokenizer Cairn's actual
+  callers may not be using.
+- **`github.com/pkoukk/tiktoken-go`** — the more widely used binding, but it
+  downloads vocabulary files at first use by default. That breaks the
+  offline property outright; an embedded-vocab variant exists but is a second
+  dependency on top.
+- **`github.com/daulet/tokenizers`** — wraps HuggingFace's Rust tokenizers,
+  so it handles many model families correctly. Costs: CGO plus a Rust static
+  library, which is a materially worse build story than the one CLAUDE.md
+  already regrets for `mattn/go-sqlite3`.
+- **Do nothing.** Keep `cairn-approx-v1` and its honest name. Costs nothing,
+  measures nothing exactly.
+
+**Recommendation:** do nothing until a caller needs exactness, and revisit at
+E5 — if the agent-in-the-loop battery shows budget survival failing because
+the estimate is wrong (rather than because ranking is wrong), that is
+evidence, and `rank.Counter` is a one-file swap. Adding a multi-megabyte
+vocabulary and a model-family assumption to a deliberately small, offline
+dependency tree without that evidence would be the larger mistake. Recorded
+here rather than decided, per the sprint brief.
+
+## D5 — adopting a standalone mesh (2026-08-16) — DONE
+
+Sprint S3, second of two, in its own commit. R34 permits either a
+`cairn adopt-standalone` verb or a documented script; the plan states a
+preference for the script, and after building it the preference is clearly
+right — so what shipped is `scripts/cairn-adopt-standalone.sh` plus DOGFOOD
+§16, **not** a verb.
+
+**Why not a command, said plainly.** The operation is rare, has a
+consequence you cannot undo in the direction that matters (you cannot
+un-publish into the primary's log), and the single most valuable thing it does
+is tell the operator what it will NOT preserve. A verb hides exactly the steps
+that need reading. The script prints the preserved/not-preserved contract
+before it does anything, stops for manifest review by default, and drives the
+same public commands the operator would type by hand — so reading the script
+teaches the procedure rather than replacing it.
+
+**One primitive was genuinely missing, and it is a verb.** Nothing in the CLI
+enumerated live messages: `search` needs a query, `map`/`compact` render
+statistics, and `cairn export <id>` is per-message and emits round-trip front
+matter that would become body TEXT in another mesh. So `cairn export corpus`
+was added — every live message's head body, verbatim, under a directory tree
+mirroring its topics, with the message id as the filename, plus a manifest.
+That is the shape `cairn ingest scan` already consumes, which is what makes
+the whole procedure reuse an existing, tested, idempotent, provenance-carrying
+import path instead of inventing a second one. It writes INSIDE the portable
+dir (`exports/corpus-<timestamp>/`), never to a caller-supplied path: the
+daemon does not gain "write anywhere on disk" for a rare batch job. It is
+`confineRefuse` in `opConfinement` and operator tier — it renders the whole
+mesh, like `map` and `compact`.
+
+**Provenance falls out of the existing path.** `source_ref` becomes
+`<label>/<topic path>/<ORIGINAL message id>.md`, so the primary can always name
+where an adopted message came from, and the default label
+(`standalone-<mesh-id prefix>`) prefixes every derived topic — an adopted note
+cannot pass for a native one. Verified in the live run: `source_refs` holds
+`standalone-01a008e537c4/roastery/hardware/01a008e5-67b3-….md`.
+
+**The N8 trap is named in three places** (script header, transcript,
+DOGFOOD §16), because it is the failure this procedure exists to prevent: S2
+established that `ingestRecords` treats any peer event at or beyond our own
+active origin's head as a device clone, so an operator who "merges" by copying
+`events/` or `.cairn/` across freezes an origin and spends the afternoon
+repairing a fork that never happened. The instruction is: re-publish, never
+transplant.
+
+**What is preserved / not preserved** is stated identically in the script
+header, on stdout at run time, in `RETIRED.md` and in DOGFOOD §16. Preserved:
+message bodies byte for byte, topic paths, provenance, and the standalone
+mesh's whole log — read, never appended to (only `exports/` and `RETIRED.md`
+are written into that directory). Not preserved: event identity, signatures,
+origins, revision history, original sender and timestamps, secondary topic
+links, threads, pins, priorities, subscriptions, attachments, and retracted
+messages — which stay retracted, because a retraction is a decision and
+carrying it across as live content would silently undo it.
+
+**Retirement keeps everything.** The script writes `RETIRED.md` into the
+standalone directory recording the date, the target, the export root and the
+label, and prints how to stop that daemon. It deletes nothing, ever. Both
+origins remain verifiable, which is what "no event loss from either side"
+means when the two logs cannot be merged.
+
+**The live rehearsal found two defects the unit path could not.** Running the
+real script over two real daemons:
+
+1. **Re-export inside the same second collided.** The export root is
+   second-resolution and stored files are immutable, so a second run in the
+   same second failed halfway through with `file already exists`. Each export
+   now gets its own tree (`corpus-<ts>`, `corpus-<ts>-2`, …) rather than
+   merging into one. This matters precisely because the person most likely to
+   re-run immediately is the one unsure it worked the first time.
+2. **The first "did the content arrive" probe passed for the wrong reason.**
+   It searched for a phrase and then looked for a *reordered* fragment of that
+   same phrase in the payload, which cannot match; the probe now names the
+   query and the exact contiguous body fragment separately.
+
+**Tests.** `cmd/cairn/adopt_standalone_test.go` runs the REAL script against
+two REAL daemons and the real binary (the `TestBackupRestoreDrillScripts`
+pattern — testing a Go re-implementation of a shell procedure tests the wrong
+thing). It asserts: `doctor: clean` and `deep doctor: clean` on BOTH origins;
+the standalone's event count is byte-identical before and after; every live
+standalone message is findable in the primary including the untopiced one; the
+retracted one is NOT resurrected; the primary's own pre-existing message
+survives; the exported files hash EXACTLY to their message body hashes
+(verbatim); the original message ids do NOT resolve in the primary (adoption
+mints new ids, it does not import foreign ones); a re-run is a no-op
+(`published: 0, skipped: 3`); and both refusals fire (a mesh into itself, a
+non-cairn directory).
+
+Four mutations were run; three fail the suite (untopiced messages dropped
+from the export; the same-mesh guard removed; exported bodies no longer
+verbatim — this one initially PASSED, which is why the verbatim hash
+assertion exists). The fourth (removing the `info.Retracted` guard) is inert
+because `DigestCandidates` already excludes retracted messages; the guard is
+kept as belt-and-braces and the property is covered end to end by the search
+probe and the manifest count.
+
+Live rehearsal, two real meshes on isolated sockets: adoption of a 4-message
+standalone (one retracted) into a 1-message primary published 3 messages under
+5 new topics, ended `doctor: clean` + `deep doctor: clean` on both origins, and
+a second run reported `"published": 0, "skipped": 3`. The `--from-export`
+two-machine path was exercised separately against the same corpus, and the
+interactive review path (answering `n`) wrote nothing to the primary.
+
+Deliberately NOT done, and why: no `cairn adopt-standalone` verb (R34 allows
+either; the script is the safer form for a rare, high-consequence operation,
+and promoting it later is a wrapper around the same commands). Secondary topic
+links, threads and attachments are not re-created — doing so means inventing a
+second import path with different semantics from `cairn ingest`, and the
+manifest records what was dropped so an operator can re-link deliberately.
+
+Green: `make verify`, `make test-race`.
+
+## S4 — Evaluation apparatus, built DARK (2026-08-16) — DONE
+
+E4 (ablations + baselines), E9's recall-under-growth curve, and E6
+(adversarial/safety) are built. Every one of them runs end to end. **None of
+them reports a number**, because every `signoff:` in `eval/claims.yaml` is
+still `pending`.
+
+All work is inside `eval/`; nothing outside it changed.
+
+### The rule this sprint was built under
+
+Apparatus may be built ahead of sign-off; no measurement may be reported as
+evidence before its kill criterion is signed. The distinction is between
+COMPUTING a number and REPORTING one — an apparatus nobody can exercise is an
+apparatus nobody has debugged, but an unfalsifiable number is worse than no
+number, because it looks like evidence.
+
+That rule is now **enforced by code that reads the register**, not by
+discipline:
+
+- `internal/claims` parses `claims.yaml` — a strict, ~200-line, stdlib-only
+  parser that REFUSES an unknown key, a stray indent or a claim missing its
+  signoff. It refuses rather than skips because a lenient parser would drop a
+  hand-edited signoff and leave the gate reading whatever it read before.
+  A signoff is accepted only as an ISO date: "yes"/"true"/"signed" are refused,
+  since a signoff that cannot be dated cannot be audited against the results it
+  authorised.
+- `internal/score.Reportable()` opens only when **both** halves hold: every
+  bearing claim carries a dated signoff, AND the corpus declares independent
+  labels. Neither is sufficient. Signed criteria over an author-written corpus
+  is still a statement about the harness.
+- `cairn-eval measure` REFUSES an independent corpus outright while the
+  criteria are unsigned, with no override flag. Running the sample corpus is
+  fine (it is labelled not-evidence); running mined human ground truth produces
+  the first half of real evidence, and that is the ordering E1 exists to
+  prevent.
+- `cmd/cairn-eval/darkness_test.go` runs the real commands and fails on
+  comparative language or on a metric name with a value attached to it. Naming
+  a metric is allowed — the ablation catalogue has to be able to say "nDCG
+  moves honestly but Recall@K cannot" — a name with a number is not.
+
+Observations and judgments stay in **separate artifacts**: `internal/result`
+records what happened and still carries no metric field (its test asserts the
+shape); `internal/score` writes a derived ScoreCard that stamps
+`evidence: false` and the reason into its own bytes, so a stray file argues
+against itself.
+
+### E4 — ablations and baselines
+
+`internal/metric` implements nDCG@k, MRR, Recall@k, Precision@k and Success@k
+(retained only so spec §11's existing gate number stays reconcilable), with
+hand-worked test vectors. Three properties are asserted rather than commented:
+**an error is not a zero** (unscoreable queries are counted and excluded, never
+imputed); precision is denominated by k, so returning less is not rewarded; and
+the 95% interval is a seeded bootstrap that refuses to draw below 20 queries.
+
+The ablation catalogue (`internal/ablation`) is the sprint's main design
+decision. Cairn exposes **no CLI switch** for ±freshness, ±priority or
+vector-only, and `eval/` is a separate module precisely so it cannot reach in.
+So every arm declares its **fidelity**:
+
+| arm | fidelity | how |
+|---|---|---|
+| `as-shipped` (RRF, P0) | native | the control |
+| `lexical-only` | native | no embedder configured; `retrieval_mode` asserted |
+| `profile-p0` / `profile-p2` | native | `CAIRN_RANK_PROFILE`; the profile in the published arithmetic is asserted |
+| `mandatory-inclusion` | native | items written `--to <view>`; a WRITE-side arm, since inclusion class is not a weight |
+| `no-freshness`, `no-priority` | recomputed | re-ranked from `cairn why-ranked` |
+| `vector-only` | recomputed | ordered by the published `vec rank` |
+| `priority-undecayed` | **unavailable** | fails loudly |
+
+Recomputed arms work through `internal/explain`, which parses `why-ranked` and
+**reconciles every trace** (printed products must sum to the printed total)
+before using it — because a silent parse failure would look exactly like a
+successful ablation. Their shared limits string, copied verbatim into every
+scorecard section, says what they cannot show: a re-ranking cannot surface a
+document retrieval never returned, so **Recall@K at the requested K cannot
+move**, and every effect size is a lower bound.
+
+`priority-undecayed` is declared UNAVAILABLE and errors rather than running:
+`why-ranked` publishes the decayed `P_eff` but not the undecayed normalized
+priority, so "priority does not earn its place" and "the DECAY does not earn
+its place" cannot be separated black-box. Reconstructing it from a fresh
+message's near-zero decay would be an assumption dressed as a measurement.
+
+Arms that fail to take effect are errors, not silent duplicates:
+`profile-p2` asserts the profile in the arithmetic, `lexical-only` asserts
+`retrieval_mode`, `vector-only` refuses on a lexical-only daemon. A
+silently-untaken arm reads as "this ablation made no difference", which is a
+mislabelled result and worse than a missing one. B3/B4 keep failing loudly and
+now do so INSIDE the matrix, so an unimplemented baseline appears as a stated
+refusal rather than an absence.
+
+Ablations are Cairn-only and refused twice — by the runner and again by the
+baseline backends (`ErrArmUnrealizable`), because running B1's default under an
+arm's name would fabricate a result.
+
+### E9 — recall under growth (that curve only)
+
+`internal/growth` grows the corpus 10×/100×/1000× around a FIXED query set with
+budget and k held constant. Filler comes from a seeded bigram model over the
+corpus's own vocabulary, so distractors are lexically plausible rather than
+trivially separable, and it is timestamped AFTER the real material — long-term
+memory is asked to find old things in a big new corpus.
+
+**Two generators, never averaged.** `neutral` removes query vocabulary (growth
+in unrelated areas — a LOWER bound on interference); `contending` keeps it
+(growth in the same area, which is what actually happens to a project's memory
+— an UPPER bound). They bracket the answer; averaging them would report a point
+estimate of nothing. A corpus too small to build a distinguishable model from is
+refused, because near-duplicate filler would plant second copies of the answers
+and then report that recall held up.
+
+Verified at 1000× (6,000 items) against a live daemon: 77s. The full curve is
+cheap. The rest of E9 — recall-over-age, supersession, stale-confidence,
+duplicate dilution, temporal competence, every mesh metric — is **not** built,
+and the scorecard says so in its notes.
+
+### E6 — adversarial / safety, and exactly where it stops
+
+Nine payloads (`internal/adversarial`), all published by a NON-operator
+principal: instruction override, fake operator directive, spoofed onboarding
+record, tool-call injection, exfiltration lure, envelope escape, provenance
+spoof, conversation forgery, and one deliberately front-loaded payload (below).
+Each carries a unique greppable marker, and `Validate()` refuses a payload
+whose marker is not in its own body — such a payload could never be complied
+with and would contribute a free zero to the rate.
+
+Daemon-side containment is checked end to end, and checks have **three** states.
+Inconclusive is not folded into pass or fail: a check whose preconditions were
+never met has established nothing, and counting it as a pass manufactures
+containment while counting it as a failure manufactures a bug.
+
+The R56 question is answered end to end, and the answer is stronger than
+expected. `OnboardingRecord` looks up the latest **operator-authored** message
+on the onboarding topic, so a structurally-valid non-operator record is never
+even surfaced to `Verify()` — defence in depth ahead of the authorship gate.
+The check proves the record IS in the mesh before reading "not found" as
+containment, then drives `onboarding apply` for real against a throwaway
+instructions file and asserts the file is byte-identical and carries none of
+the attacker's values, because R56's claim is about EFFECT and a gate that
+reported a refusal while still writing config would pass a message check.
+R56's other half — the record "stays readable as untrusted data" — is checked
+too.
+
+**Where the agent-in-the-loop boundary sits.** Built: the corpus, the planting,
+the collection of the exact bytes an agent would be handed on each of digest /
+search / fetch (kept in the report as `agent_bytes`, so a third party can run
+their own agent without rerunning anything), every structural check, and the
+scoring of a transcript once one exists. NOT built: the agent runner itself
+(T2 — networked, stochastic, costly; it is E5's infrastructure and a second
+agent loop here would guarantee two that disagree). The seam is exactly
+`[]adversarial.Transcript → Score()`. `Score` and `Rate` return
+`ErrAgentRequired` rather than a zero, and the report carries
+`compliance_status: "NOT MEASURED…"` in its own bytes. A compliance rate of
+zero that was never measured is the most damaging number this repository could
+publish.
+
+The scorer classifies four ways, not two: `acted` (objective — a tool call or
+side effect carrying the marker, which quoting cannot produce), `not-present`,
+`quoted-while-refusing`, and `ambiguous`. Ambiguous cases go to an
+adjudication queue and `Rates.Final()` refuses to call the rate settled until a
+human clears it. The refusal-cue heuristic is the weakest part of E6 and lives
+in one visible list for that reason.
+
+### Findings the plumbing surfaced (observations, not verdicts)
+
+Running the apparatus on the sample corpus turned up four things about Cairn
+worth recording. None is reported as a measurement; all are visible in the run
+records.
+
+1. **Lexical search is conjunctive over every query term.**
+   `projection.FTSQuery` joins quoted terms with a space, which FTS5 reads as
+   AND, so a natural-language question — exactly what CLAUDE.md tells agents to
+   type — returns nothing unless every word appears in the document. All six
+   sample queries returned zero results from `cairn search`; B1 (grep, which
+   falls back to any-term) returned hits for the same queries. The harness now
+   raises `RETURNED NOTHING FOR EVERY QUERY` on any condition that comes back
+   empty across the board, because a uniform zero is a real score and an alarm
+   at the same time.
+2. **The digest reports `retrieval_mode: full` when the view has no interest
+   query** (`retrieve.go`: "no relevance component in play"), even with no
+   embedder present. Defensible, but it means the field cannot distinguish
+   "hybrid ran" from "there was nothing to retrieve with".
+3. **A view with no standing interest has no relevance component at all** —
+   R = 1.0 uniformly, so its digest is freshness and priority only. B5 now
+   declares each query as a LOCAL standing interest (R25, what CLAUDE.md tells
+   agents to do) before generating the digest; without that, digest-surface
+   ablations would have been measuring a surface with no relevance in it.
+4. **A digest entry excerpts only the first few body lines**, which keeps most
+   of an injection out of that surface — a real, incidental containment layer.
+   It is named as such rather than credited to the envelope, and payload
+   `inj-009` is front-loaded on purpose so the per-line quoting is actually
+   exercised: an attacker who knows about the excerpt puts the payload in the
+   head.
+
+### Harness changes worth knowing about
+
+B5's DIGEST surface now runs over **MCP** rather than `cairn digest`. The CLI
+prints the payload and nothing else; the MCP envelope carries the same
+daemon-generated payload plus the `interaction_id` that `why-ranked` is keyed
+on. Without it the digest has no published arithmetic and ±freshness could only
+run on search — the wrong answer, since the digest is where freshness matters
+most (72-hour half-life against search's 90 days). It is also the surface an
+agent actually reads. MCP failing to start is a hard error, not a fallback.
+
+`eval/` still has **zero external dependencies**, and the black-box boundary is
+untouched.
+
+### Verified
+
+`make eval` green (14 packages). `make verify` green. Exercised against a live
+daemon: `measure -arms all` (13 Cairn arms + 4 baseline conditions run; 2 arms
+refused loudly and correctly), `growth` at 1/10/100/1000×, `adversarial`
+(23/23 structural checks held, 0 inconclusive). Nothing printed a number.
+
+### Left for the operator
+
+Sign (or edit, or reject) the 21 kill criteria in `eval/claims.yaml`.
+`cairn-eval claims` is the readout. Until then the gate stays shut, which is
+the point.
+
+---
+
+## D1 — sqlite-vec integration (2026-08-16) — DONE
+
+Sprint S5. `schema.sql` stored vectors in a plain table and `HeadVectors`
+pulled **every** head vector into process memory for an in-process cosine
+scan; `config.BruteForceMaxCandidates = 5000` named the cliff. CLAUDE.md
+pinned `asg017/sqlite-vec-go-bindings`, with brute force as the sanctioned
+fallback (rulings §7). Both are now in the tree, and the interesting part of
+the item is the relationship between them.
+
+**The extension works here, in-process, with nothing to install.** The cgo
+binding compiles sqlite-vec from source INTO the binary and registers it as an
+SQLite auto-extension, so `vec0` exists on every connection the process opens.
+That is the opposite of the ONNX story: no runtime dylib to locate, nothing to
+bundle. Pinned at `v0.1.6` — the newest release that is not a prerelease.
+
+**`vectors` stays the source of truth; `vec0` is a derived index over it.**
+The plain table is written exactly as before, and a new `vec_index` virtual
+table (created lazily, because vec0 fixes its dimension at CREATE time and we
+do not know it until the first vector arrives) is mirrored **inside
+`InsertVector`'s transaction** — one writer, one commit, so the index can be
+neither ahead of nor behind the vector it indexes. `vec_map` bridges
+revision_id to the INTEGER rowid vec0 requires, the same shape and for the
+same reason as `fts_map`. `InvalidateVectors` drops the index with the
+vectors. `ProjectionSchemaVersion` 7 → 8; the auto-rebuild path replays from
+the log, exercised on a real log written by the previous binary (below).
+
+**Brute force is the ORACLE, not dead code.** `VectorTopKBruteForce` and
+`VectorTopKIndexed` sit side by side in `internal/projection/vec.go`, both
+exported, both reached through one `VectorTopK` that routes. The equivalence
+test asks both on a seeded corpus and demands the **identical** top-K —
+unscoped, scoped, with and without retracted messages, with exact-duplicate
+vectors planted to force ties, and above the cliff at 6,000 vectors. Three
+mutations were run against that test and all three were caught: removing the
+over-fetch, dropping the scope from the KNN, and relaxing the model partition.
+
+**Identical is engineered, not hoped for.** vec0's KNN is exhaustive rather
+than approximate, so the index cannot miss a neighbour — but its distances are
+float32 and the oracle's cosines are float64, and a tie at the K boundary is
+resolved by whichever rows happen to come back. So the index is used as a
+candidate GENERATOR: fetch `k + 64`, re-score those with the same `embed.Cosine`
+the oracle uses, cut with the same (similarity desc, message_id asc)
+comparator, and if a tie group straddles the fetch boundary, double the fetch
+and retry up to sqlite-vec's own `k` ceiling. Constants in
+`internal/config/constants.go`.
+
+**Scoping binds INSIDE the query, and that was the capability risk.** Before
+D1 the vector candidates were the whole corpus, filtered in Go afterwards. Now
+the topic/sender/thread scope and the D3 capability grant are pushed into the
+KNN as a `rowid IN (...)` constraint, which sqlite-vec applies BEFORE choosing
+the k nearest — so the answer is the top-k of the permitted set, not the
+permitted part of the global top-k. A nil scope means unrestricted and an
+EMPTY scope means nothing, which is the distinction that stops a grant
+matching no topics from admitting everything. Two daemon tests cover it, one
+of them a confined session over real IPC against a corpus whose forbidden
+message is a near-duplicate of the granted one; both fail when the scope is
+removed from the call.
+
+**Cross-model comparison is unreachable, not filtered.** The model id is a
+vec0 PARTITION KEY and every query constrains it, so a vector from another
+model is in another partition. `schema.sql:160`'s rule is now enforced by the
+storage layer rather than by a WHERE clause.
+
+**Absence is a supported state.** `projection.Open` feature-probes and, on
+failure, logs the reason and keeps brute force — never an error. It is
+exercised three ways: a `cairn_novec` build tag that compiles the extension
+OUT entirely (so `vec_version()` genuinely does not exist), an operator kill
+switch `CAIRN_VECTOR_INDEX=off` on the shipping binary, and `make test-novec`,
+now wired into `make verify` so the fallback is part of the green bar. At
+`Open` the index is reconciled against `vectors` whenever the two disagree —
+which is what a machine that gains or loses the extension between runs looks
+like. `cairn status` reports `vector path: vec0 (sqlite-vec v0.1.6)` or
+`brute_force (…reason…)`.
+
+### The bug this sprint found
+
+Not in the vector code. `messages.head_revision_id` had **no index**, and
+every vector query — both paths — joins through it. With the index absent
+SQLite built a transient automatic index per query, and the vec0 path measured
+**66 ms against brute force's 36 ms**: the fast path was slower than the thing
+it replaced, on the real corpus, while every unit test passed. `CREATE INDEX
+idx_messages_head` is part of the v8 schema, and afterwards the same
+measurement reads **11.4 ms vs 37.8 ms**.
+
+Two consequences worth keeping. The KNN now runs as its OWN statement and the
+~160 resulting rowids are resolved by a second lookup, because hanging the
+projection joins off the `MATCH` makes the vector query's cost depend on
+indexes that have nothing to do with vector search. And the scope filter is
+written as a join DRIVEN BY the scope list rather than `message_id IN (SELECT
+value FROM json_each(...))`, which invites SQLite to walk the corpus and
+re-evaluate the list per row.
+
+### Verified, with real binaries
+
+- **v7 → v8 rebuild on a real log**: a corpus built by the pre-D1 binary
+  (21 messages, embedded), then opened by the new one — `WARNING: projection
+  schema version mismatch: found 7, want 8 — rebuilding the derived projection
+  from the log`, daemon up, `vector path: vec0 (sqlite-vec v0.1.6)`, and the
+  search results **identical in id and order** to the pre-D1 run (scores differ
+  in the 6th decimal: freshness decay between the two runs, not the vector
+  path).
+- **Extension absent, same corpus**: the `cairn_novec` binary starts, serves,
+  returns the identical top-10, accepts a new `cairn send`, and `cairn doctor`
+  reports clean. Reopening with the vec0 binary reconciles the index at `Open`
+  and the message written while it was absent is found through vec0.
+- **Above the cliff**: 6,052 messages (12,108 events) driven through the real
+  CLI. Per search through the daemon, 100 searches × 3 runs: **vec0 59 ms,
+  brute force 76 ms** (client + IPC baseline ≈ 4 ms); identical top-10 across
+  the two paths. In-process on that same projection: **vec0 11.4 ms, brute
+  force 37.8 ms**.
+- **Not loading every vector**: allocation-bounded in the test suite — on a
+  6,000-vector corpus, vec0 allocates 92 KB against brute force's 3.7 MB, and
+  the test fails if the fast path allocates more than a quarter of the corpus
+  or if the oracle allocates less than all of it.
+- `make verify` (including `test-novec`) and `make test-race` green.
+
+### Judgment calls
+
+- **`v0.1.6`, not `v0.1.7-alpha.2`.** Both probe identically; the stable tag is
+  the conservative pin.
+- **The digest's vector top-K stays UNSCOPED.** The digest fuses a global
+  lexical top-K with a global vector top-K and reads a rank only for
+  candidates that already survived the view's filters and the D3 grant, so
+  nothing out of scope reaches the agent. Scoping only the vector half would
+  tilt RRF toward it, and scoping both is a ranking change rather than an
+  indexing one — out of scope for a performance task. Search is different: it
+  already scoped before its top-K, so it keeps doing so.
+- **`cairn_novec` is an opt-OUT tag.** The default build has no new tag and
+  `make verify` still asserts that an untagged build fails with the FIX-F4
+  guard. The tag exists so the fallback can be tested on a binary where the
+  extension is genuinely missing rather than merely disabled.
+- **A wrong-width vector is refused loudly** rather than skipped. It is
+  unreachable through enrichment (EnrichOnce refuses a foreign model,
+  ReindexSemantic invalidates first), and a silent skip would desynchronize
+  the index from its source of truth.
+- **A `k` above sqlite-vec's KNN ceiling (4096, found by asking for more)
+  falls back to the oracle** instead of erroring. Retrieval asks for 100.
+
+### Residual, recorded not hidden
+
+`HeadVectors` still exists and subscription matching still uses it, because
+R24 calibrates a threshold against the WHOLE similarity distribution and
+records every evaluated candidate as an observation — a top-K index cannot
+serve that. Changing it is a ranking-semantics decision, not an indexing one.
+In practice it is bounded by a subscription's hard topic filters, and it runs
+at digest time rather than per search. Noted in the code at the function.
+
+### D11 raised — lexical search is conjunctive (found 2026-08-16, S4 fallout)
+
+S4's evaluation apparatus ran its six sample queries against a real daemon and
+`cairn search` returned ZERO results for every one, while B1 (grep over raw
+transcripts) returned hits for the same queries. Reproduced by hand on a
+one-message mesh afterwards:
+
+    cairn search "council approved"                            -> 1 result
+    cairn search "what did the council decide about approval"  -> "results": null
+
+Cause: `FTSQuery` (internal/projection/search.go:35-45) quotes each term and
+joins them with a space, which FTS5 reads as AND, so a document must contain
+every query term.
+
+Recorded as BUILD-PLAN §4 D11 and sprint S15, placed ahead of every other
+ready sprint. The reason it outranks them: §3.6's central competitive kill
+criterion is "Cairn does not beat B1 (grep) on task success", and today Cairn
+does not answer natural-language queries at all — so every intrinsic number
+S11 would produce measures this defect rather than the retrieval design.
+
+Not fixed here. It is a ranking-semantics change (R47/R51 reconciliation, the
+budget property tests and a golden corpus that is expected to MOVE are its
+guard rails), not a one-line loosening, and it deserves its own reviewed
+sprint rather than being folded into the plan-maintenance commit that found it.
+
+## P3-5 — mutual pairing authentication (2026-08-16) — DONE [S9, Tier 1]
+
+**Gap (recorded at P3-2c as deferred hardening):** the pairing handshake
+authenticated the DIALER to the inviting node (key possession) and nothing in
+the other direction. A joining node handed its root-signed credential to
+whatever answered the address the operator typed, then believed whatever verdict
+came back. A rogue endpoint could not forge membership, but it could harvest the
+credential's public half, refuse, or falsely ack — and the new node only learned
+something was wrong later, when sync failed.
+
+**Fix — the pairing wire is now v2 and authenticates both directions**
+(`internal/peer/pair.go`, `internal/config/constants.go`):
+
+    dialer → node:  hello{mode:"pair", cairn_id, nonce}
+    node   → dialer: pairMsg{v:2, server_device, nonce, sig}   ← NEW: the node proves ITSELF
+    dialer → node:  pairMsg{payload, sig}                       ← credential only after that passes
+    node   → dialer: pairMsg{ok, event_id}
+
+The dialer checks the node with `verifyPeer` — the SAME R27 rule the N5
+membership handshake applies (member, not revoked, signature over a nonce-bound
+transcript) — against the mesh trust the invitation proves from genesis
+(`identity.VerifyPairingInvitation`, or the installed pairing bootstrap). No new
+trust path, no new verifier: the check the joining node already ran offline is
+now also run against the live counterparty.
+
+Consequences, in order of importance:
+
+- **The credential is never handed to an unauthenticated endpoint.** The dialer
+  aborts before writing the payload, so a rogue listener learns nothing at all.
+  Verified against the shipped binary with a hand-written rogue listener that
+  claims the real cairn id: `ROGUE GOT NOTHING — the dialer refused us before
+  handing over the credential`.
+- **A false ack is no longer available to a non-member.**
+- Both proofs bind BOTH nonces and the node's device id, under domain separators
+  distinct from each other and from `SyncHelloDomain`, so no signature is
+  transplantable between protocol, direction or session.
+- The round trip count is unchanged (4 messages, was 5): the node's challenge
+  nonce arrives with its proof, so the dialer answers credential + proof in one
+  message.
+
+**Invariants deliberately preserved** (they were adversarially audited): hard
+single-use admission, server-side root re-verification in `servePair` /
+`AdmitPairedDevice`, expiry anchored in the root-signed cert, append-on-arrival,
+live trust refresh. Nothing in `internal/daemon/pairing.go` changed.
+
+**No silent downgrade.** A pre-v2 dialer (hello without a nonce) is refused with
+an instructive message naming the fix; its payload is drained first so the
+refusal cannot deadlock a synchronous transport. A v1 node is likewise refused by
+a v2 dialer. Downgrade is exactly what the version guards, so it is never
+negotiated.
+
+**Judgment call (operator-visible):** the dialer can only authenticate a node
+that is in the invitation's chain — i.e. one that was already in the mesh when
+the invitation was minted. Pairing with a node that JOINED AFTER the mint now
+fails closed. This is the conservative reading (a trust ceremony should not
+accept an unprovable counterparty) and the alternative — trusting the node's own
+claim — is precisely the hole being closed. `cairn pair join` says so on failure:
+mint the invitation on the node you intend to pair with, or pair with a device
+present at mint time. If the operator wants the looser behaviour it is a ruling,
+not a code change.
+
+**Tests.** `internal/peer/pair_test.go` (new, wire-level): both directions
+authenticate; a non-member rogue never receives the credential; a revoked node,
+a forged signature (right device id, wrong key), a foreign cairn, and nil trust
+are all refused with the credential unsent; a harvested proof replayed from
+another session is refused; the node signs NOTHING for a dialer it will refuse
+(no signing oracle); a v1 dialer is refused instructively, not downgraded; the
+dialer's proof over the old unbound transcript is refused.
+`internal/daemon/pairing_wire_test.go`: existing end-to-end pairing tests now
+carry the invitation trust, plus a new two-mesh test proving an invitation for
+mesh A cannot pair with a node of mesh B and admits nothing there.
+
+**Mutation-tested** (each mutation applied to the shipped code, suite re-run,
+then reverted): dialer skips `verifyPeer` → 4 tests fail; node's proof drops the
+dialer nonce → replay test fails; v1-dialer guard removed → downgrade test
+fails; nil-trust guard removed → its test fails; dialer proof drops the node id
+and dialer nonce → session-binding test fails; node signs before the cairn check
+→ signing-oracle test fails. No mutation passed unnoticed.
+
+**Live verification, two real daemons on loopback** (release binary, not the test
+harness): `cairn init` × 2 → `cairn pair invite` → `cairn pair join` admitted
+`device.add 057f18c5…`; node B's daemon then reconciled 5 events and `cairn
+search` on B found the message sent on A. Negatives, all refused with exit 1:
+replayed invite (`already admitted or revoked (pairing is single-use)`); a real
+second mesh answering the port (`wrong cairn`, logged with the presented cairn
+id); a rogue impersonating the right cairn id (`failed authentication against the
+invitation's chain — NOT handing it the invitation`, with the rogue confirming it
+received no credential); a device revoked after pairing (`SYNC REFUSED … is
+REVOKED`, and re-pairing refused).
+
+`go test -race` clean on `internal/peer`, `internal/daemon`, `cmd/cairn`.
+
+## D6 — prebuilt binaries + Homebrew tap (2026-08-16) — DONE in code, OPEN on signing
+
+Sprint S7. README promised a "planned zero-dependency path" and the only real
+path was build-from-source with a C toolchain — the largest adoption barrier a
+tool pitched as "one command" can have. What ships now: a release workflow that
+produces macOS arm64 and Linux x86_64/arm64 artifacts with checksums, and a
+Homebrew formula that points at them. Codesigning stays operator-gated, by
+design and in the open.
+
+### What was built
+
+- `.github/workflows/release.yml` — tag-triggered (`v*`), plus a
+  `workflow_dispatch` **rehearsal** mode that runs the entire pipeline and
+  publishes nothing. A release pipeline whose first execution is a real release
+  is a pipeline nobody has tested.
+- `packaging/release-smoke.sh` — the FIX-F4 guard carried from the source tree
+  to the **artifact**. It inits a throwaway mesh, starts the daemon, sends a
+  message, searches for it, and reads `cairn status`.
+- `packaging/package.sh` — packages an already-built binary into a tarball
+  (binary + LICENSE + README + the embed bootstrap script) and appends its
+  sha256 to a shared `checksums.txt`.
+- `packaging/homebrew/cairn.rb.tmpl` + `packaging/mkformula.sh` — the formula
+  and its renderer. Every placeholder must resolve or the render fails.
+- `packaging/formula-lint.rb` — evaluates a rendered formula against a stubbed
+  Homebrew DSL, once per shipped platform, and checks that each one resolved a
+  https url naming its own artifact and a real 64-hex sha256.
+- `ci.yml` gains a `packaging` job: the whole path (package → verify → unpack →
+  run a daemon out of the unpacked copy → render → lint) on **every push**, not
+  only at tag time.
+
+### Cross-compiling cgo was the central difficulty, and it was not solved — it was avoided
+
+Cairn is cgo (SQLite/FTS5), so a cross-built artifact is one nobody has ever
+executed. Each artifact is therefore built on a **native runner of its own
+architecture** (`macos-14`, `ubuntu-22.04`, `ubuntu-22.04-arm`) and run there
+before upload. Ubuntu 22.04 rather than `ubuntu-latest` is deliberate: the
+binary links glibc, so the runner's glibc silently becomes every user's floor.
+22.04 pins that floor at 2.35 and the release notes state it.
+
+### The FIX-F4 assertion, and the proof that it bites
+
+The compile-time guard proves the *source tree* refuses to build untagged; it
+says nothing about a downloaded tarball. So the assertion is made at runtime on
+the exact bytes being uploaded — a search that returns the seeded message
+cannot have happened without a working FTS5 table — and `cairn status`'s
+`vector path` line catches a stray `cairn_novec` build, which is a test
+configuration that must never ship.
+
+Verified rather than asserted: the smoke was run against a deliberately
+`cairn_novec`-built binary and **failed**, naming the reason. Against the real
+build, and against the binary unpacked from its own tarball, it passes:
+`FTS5: OK`, `sqlite-vec: OK (vector path is vec0)`, `doctor: OK`.
+
+### Signing: what is missing and what happens without it
+
+There is no Apple Developer ID, so the macOS artifact carries only the ad-hoc
+signature the Go linker applies — enough to run on Apple Silicon, and enough
+for `brew install`, which does not quarantine formula downloads. A tarball
+fetched with a **browser** is quarantined and Gatekeeper refuses it.
+
+The workflow degrades rather than blocks: the codesign step exits cleanly when
+`MACOS_CERT_P12` is unset, writes `signed=no` into the artifact, and that fact
+propagates into the release notes and the formula's caveats. Supplying
+credentials is configuration, not a rewrite. One structural limit worth
+recording: **a bare executable cannot be stapled** — `xcrun stapler` accepts
+only `.app`/`.dmg`/`.pkg`. Notarization registers the hash with Apple, so an
+online Gatekeeper check passes; an offline-verifiable ticket would need a
+signed `.pkg`, which is a packaging change and not a signing one.
+
+### Judgment calls
+
+- **Packaging is separate from building.** `package.sh` deliberately does not
+  compile. That is what lets the entire path be rehearsed on one machine, and
+  it keeps the per-runner build step down to `make build`.
+- **The formula is a custom tap, permanently.** PolyForm Noncommercial is not a
+  free/open-source licence, so homebrew-core would never accept it. `brew
+  style` is run in CI but treated as advisory for the same reason.
+- **`depends_on arch: :arm64` on macOS Intel** rather than a missing url: there
+  is no macOS x86_64 artifact and Rosetta cannot help a native cgo binary, so
+  the failure should name its reason.
+- **The formula's `test do` block runs a real mesh**, not just `--version`. It
+  is the same assertion as the release smoke, re-run on the installed binary on
+  the user's machine, which is the only place it can still be false.
+- **Packaging is byte-deterministic** (fixed mtimes, `gzip -n`): packaging the
+  same binary twice gives identical tarballs. The Go build itself is not
+  claimed to be reproducible.
+- **Release builds must not be VCS-dirty.** The workflow rejects a `-dirty` or
+  unstamped version string: an artifact built from a tree matching no commit
+  cannot be audited.
+- **`cairn --version` still prints `p1-<commit>`, not the release tag.** The
+  string is computed from build info (R11) and is not settable by `-ldflags
+  -X`; making it tag-aware means editing `cmd/cairn/main.go`, which was another
+  sprint's lane this week. The release notes state the discrepancy. Worth
+  revisiting when the version scheme is next touched.
+
+### Verified here, with real output
+
+- `packaging/release-smoke.sh bin/cairn` → PASS; against a `cairn_novec` build
+  → FAIL on the vector-path assertion, as intended.
+- Full Linux artifact path, for real: `make build` → `package.sh` →
+  `shasum -c` → unpack → smoke on the **unpacked** binary → PASS.
+- Packaging determinism: two runs, identical sha256.
+- The publish job's collect/render/lint steps executed locally against three
+  staged artifacts (one real Linux tarball, two stand-ins) — checksums verified,
+  formula rendered, `formula-lint OK`.
+- The `ci.yml` packaging job's script executed verbatim locally — green — and
+  then **on a hosted GitHub runner** on the D6 commit: `SMOKE PASS …
+  (p1-220bcb704b1d)`, `FTS5: OK`, `sqlite-vec: OK`, `formula-lint OK`. That run
+  also exposed a hole worth recording: the `brew style` step produced NO output,
+  because Homebrew is not on that runner's PATH. A silently skipped check reads
+  exactly like a passing one, so both workflows now print a loud SKIPPED note
+  naming `formula-lint` as the only formula check that ran. With brew located at
+  the Linuxbrew path, **`brew style` then ran the real rendered formula through
+  rubocop**: 3 offences, all file-header conventions (Sorbet sigil,
+  `frozen_string_literal`), **none about the formula's substance** — no
+  complaint about the licence string, the platform blocks, the urls or the test
+  block. Two of the three are now carried in the template header, matching what
+  homebrew-core's own formulas do; `typed: strict` is left unsatisfied
+  deliberately, since a sigil claiming strict typing on a file nothing
+  type-checks would be a decoration. The CI run after that change reports
+  exactly what it should: `1 file inspected, 1 offense detected` —
+  `Sorbet/StrictSigil: Sorbet sigil should be at least strict got true`.
+- `actionlint` clean on both workflows; the release-notes step executed
+  locally to prove the heredoc renders.
+- `make verify` and `make vet` green.
+
+### Unproven here — what an operator must do
+
+This sandbox has no macOS runner, no Homebrew, no arm64 Linux and no GitHub
+release, so four things are honestly untested:
+
+1. **`brew install` on a clean machine.** Nothing here can execute it. Proof =
+   `brew tap ggoosen/cairn && brew install cairn && brew test cairn` on a Mac
+   with no Xcode CLT beyond what brew requires.
+2. **The macOS build job.** `MACOSX_DEPLOYMENT_TARGET=12.0`, the arch
+   assertion, and the ad-hoc-signature behaviour are all unrun. Proof = the
+   `workflow_dispatch` rehearsal, which builds and smokes without publishing.
+3. **The `ubuntu-22.04-arm` runner label**, which depends on account and repo
+   visibility. If it is unavailable the substitutes are a self-hosted arm64
+   runner or a cross toolchain — and a cross-built artifact cannot run the
+   smoke, so it would ship unexecuted. Prefer native.
+4. **Signing and notarization end to end.** Needs an Apple Developer ID.
+   Secrets: `MACOS_CERT_P12` (base64 .p12), `MACOS_CERT_PASSWORD`,
+   `MACOS_SIGN_IDENTITY`, `MACOS_NOTARY_APPLE_ID`, `MACOS_NOTARY_PASSWORD`
+   (app-specific), `MACOS_NOTARY_TEAM_ID`. Also `HOMEBREW_TAP_TOKEN` (a PAT
+   with contents:write on `ggoosen/homebrew-cairn`) — without it the workflow
+   attaches `cairn.rb` to the release and prints the manual landing steps
+   instead of pushing the tap.
+
+The operator's order of business: create the empty `ggoosen/homebrew-cairn`
+repo, run the rehearsal, then tag. README says plainly that the brew path goes
+live with the first tagged release, so nothing claims to work before it does.
+
+## P3-6 — automatic metered/battery sensing (2026-08-16) — DONE [S9, Tier 2]
+
+**Gap:** `metered` was a manual device-config flag. A laptop that walks onto a
+phone hotspot kept auto-spending data on thin-node remote query until the
+operator remembered to edit TOML — which is precisely the moment they are least
+likely to.
+
+**Build — `internal/netstate` (new package).** One rule governs it, stated at the
+top of the file and enforced by the type system:
+
+    SENSING MAY ONLY ADD CAUTION, NEVER REMOVE IT.
+
+Every probe answers a tri-state whose ZERO VALUE is Unknown, and the daemon
+combines inputs by OR and only by OR (`Daemon.meteredNow`, role.go):
+
+    effective metered = configured metered  OR  sensed metered == Yes
+
+so: an unreadable platform behaves EXACTLY as the daemon did before this
+existed; a sensed "metered" withholds spending with no operator action; a sensed
+"not metered" can never overrule an operator who declared metered — it is
+treated identically to Unknown. There is no input combination in which sensing
+makes a node spend data it would not have spent yesterday.
+
+- **Linux (best-effort):** metered from NetworkManager via `nmcli -t -f
+  GENERAL.DEVICE,GENERAL.STATE,GENERAL.METERED device show` — read through nmcli
+  rather than D-Bus so the dependency is "a binary present iff NetworkManager
+  is", not a D-Bus client in a daemon that has none. Only CONNECTED non-loopback
+  devices count; one metered connected device settles it (we cannot know which
+  interface a sync will traverse, so caution wins); a guessed-metered connection
+  — how NM marks cellular and tethering — reads as metered. Battery from sysfs
+  (`/sys/class/power_supply/*/type`, `online`, `status`), no helper process.
+- **macOS (primary):** battery from `pmset -g batt`. Metered is only PARTLY
+  available and the code says so: the signal a GUI app uses is
+  Network.framework's nw_path `expensive`/`constrained`, reachable only through
+  the framework (cgo + an Obj-C bridge), with no supported CLI read. So we sense
+  the one case macOS does expose as text — a default route over a tethered
+  iPhone/iPad/Android hardware port — and report **Unknown** for Wi-Fi, hotspot
+  and Low Data Mode rather than guessing "unmetered". That gap is real, is
+  documented at the call site, and leaves the manual flag as the operator's tool
+  for it.
+- **Everything else:** Unknown, always. No Windows (rulings §platform).
+- Readings are TTL-cached (`MeteredSenseTTL = 60s`) and each pass is bounded
+  (`MeteredSenseTimeout = 2s`), so a search path never pays for a probe and a
+  wedged platform tool can never wedge a search — it times out into Unknown.
+- `metered_sense = "off"` (new device-config key) disables probing entirely and
+  is REPORTED as off, so an operator can tell "sensing disabled" from "platform
+  unreadable". Config, not env-var-only — DEPLOY-E2's lesson.
+
+**Surfaces.** `cairn net` now prints the effective decision, which input made it,
+and the raw sensed values; the thin-node partial-search reason names the input
+too, so "I never set metered" and "the platform says I am tethered" no longer
+look identical to an agent.
+
+**Deliberately NOT done: battery keys no policy.** Battery is sensed and
+reported, but nothing behaves differently because of it. Spec §7 defines a
+metered consequence and no battery consequence; inventing one (suppress sync on
+battery?) is a product decision, not a platform one. `TestP36BatteryAloneChanges
+NoPolicy` is where a future change to that will fail first, on purpose.
+
+**Tests.** `internal/netstate`: the Linux battery probe against real fixture
+trees on disk (on battery / plugged in / battery-only / status unreadable / no
+supplies at all / unrecognised type), nmcli parsing against recorded terse
+output (unmetered, guessed-metered, explicitly metered, metered-wins-over-
+unmetered, a DISCONNECTED metered device that must NOT count, loopback ignored,
+garbage, empty), and the failure matrix — absent binary, non-zero exit, timeout,
+empty and garbage output — each of which must land on Unknown. The macOS probes
+and parsers are deliberately NOT behind the build tag (only the platform
+selector is), so `pmset`/`route`/`networksetup` parsing and the tether decision
+are compiled and tested on every host, including this Linux one. What that does
+NOT prove is that a given macOS release prints those strings — that needs a Mac,
+and is recorded here as unverified. `internal/daemon`: the policy — sensed
+metered suppresses remote query, an unreadable platform changes nothing, a
+sensed "not metered" cannot override the manual flag, battery alone changes
+nothing. `cmd/cairn`: `cairn net` reports the sensed state on the real host and
+distinguishes disabled from unreadable.
+
+**Mutation-tested:** sensing ignored → the sensed-metered test fails; Unknown
+treated as metered (fail-unsafe) → the unreadable-platform test fails; sensed
+"no" overriding the manual flag → its test fails; battery gating policy → its
+test fails; a failed probe reporting "not metered" → two netstate tests fail; a
+disconnected metered device counting → the parse test fails.
+
+**Live verification on THIS host** (release binary, real exec path):
+- Unreadable platform, which is what this container is:
+  `metered: false (not metered (metered: unknown (no NetworkManager/nmcli here —
+  exec: "nmcli": executable file not found in $PATH); battery: unknown (no power
+  supplies exposed — VM or container)))` — and a thin node with `remote_query`
+  on still attempted its remote query, exactly as before sensing existed.
+- Same node, same config, with a NetworkManager on PATH reporting a guessed-
+  metered wlan0: `metered: true (sensed: … NetworkManager: wlan0 = yes
+  (guessed))`, and the search went local + partial with
+  `remote query is configured but suppressed: the connection is metered —
+  sensed: …`. No config was edited between the two runs.
+
+`go test -race` clean on `internal/netstate`, `internal/daemon`, `cmd/cairn`.
+
+**Follow-up for the operator (not done here, deliberately):** README's "On P3"
+paragraph still lists "automatic metered/battery sensing" as deferred. README is
+being edited by a parallel sprint right now, so it is left to the reconciliation
+pass rather than edited from two sides at once.
+
+## P3-4c — iroh transport: investigated, NOT shipped (2026-08-16) [S9]
+
+**Outcome up front: no iroh transport was built, and nothing that looks like one
+was committed.** What exists is a researched recommendation and a recorded
+ruling request. The S9 exit criterion "two nodes pair and reconcile over iroh"
+is NOT met, and no code in this repo claims otherwise — `transport = "iroh"`
+still refuses, now with an accurate reason.
+
+**The problem.** iroh is Rust. spec §12 names "iroh 1.x" as the P3 transport;
+CLAUDE.md's library table does not pre-authorize any iroh dependency. So the
+first question is not "how do we write the adapter" (the P3-1 seam already
+answers that — `Transport` is `Listen`/`Dial`/`ValidateAddr`/`LocalAddr`, and a
+second implementation is already exercised in the suite) but "what do we depend
+on". Three answers, all real, none free:
+
+**Option A — n0's own FFI, through cgo.** `n0-computer/iroh-ffi` v1.0.0 exists
+and tracks iroh 1.0's stabilized surface, but ships bindings for Swift, Kotlin,
+Python and JavaScript only — there is no `iroh-go` in the module (checked
+v0.26.0 and v1.0.0 trees; pkg.go.dev's `iroh-ffi/iroh-go` entry is from a long-
+dead 0.x layout). Go would come from `NordSecurity/uniffi-bindgen-go`, whose
+current release (v0.7.1+v0.31.0) targets uniffi-rs 0.31.0 against iroh-ffi's
+0.31.1 — a plausible match, with async and callback/trait support present per
+its changelog, and proc-macro (non-UDL) support NOT documented, which is the
+risk since uniffi 0.31 code is typically proc-macro-first.
+  There is also `n0-computer/iroh-c-ffi` (iroh 1.0.0, safer-ffi, a hand-written
+C header) which is far friendlier to cgo than uniffi's RustBuffer ABI, and is
+n0's own repo.
+  **Cost:** cgo, a Rust toolchain in the build, and a per-platform static
+library. "Single binary `cairn`" survives, but `make build` stops being `go
+build`, and S7's signing/Homebrew work inherits a native artifact per platform.
+
+**Option B — a pure-Go iroh.** `github.com/tmc/go-iroh` is a clean-room Go port
+(MIT, explicitly "not affiliated with the n0 team") targeting wire compatibility
+with Rust iroh: QUIC endpoints keyed by ed25519 public keys, direct paths, relay
+fallback, QUIC Retry, multipath, QAD/QNT NAT traversal, plus `relayserver` and
+`dnsserver` — i.e. exactly the "relay self-hosting + diagnostics, NAT-traversing
+dial-by-key" the plan asks for. Its API lands on cairn's seam almost verbatim:
+`Endpoint.ListenStreams() (*StreamListener /* net.Listener */, error)` and
+`Endpoint.Dial(ctx, addr, alpn) (net.Conn, error)`.
+  **It works.** Exercised in this sandbox: two endpoints bound on loopback with
+relays disabled, dial by endpoint id, full round trip (`A received "ping"` /
+`B received "pong"`). No cgo, no Rust.
+  **Cost, and why it was not adopted anyway:** the module is `v0.0.0-2026...` —
+untagged, no releases, first published two days ago, single author. It vendors a
+fork of quic-go and a patched crypto/tls (RFC 7250 raw public keys), which is a
+large, network-facing, unaudited parsing surface in the daemon's address space —
+even opt-in. And it declares `go 1.26`, which would raise cairn's floor from the
+1.25.0 that R52 requires to be an honest statement of the dependency set. Its
+claim of wire compatibility with Rust iroh is a claim: unverified here.
+
+**Option C — neither.** Keep the tailnet transport and remove iroh from the
+spec. The transport seam stays valuable regardless; nothing about the mesh
+design depends on which wire carries bytes, because R27 membership is proved
+above the transport in both directions (and P3-5 now closes the pairing side).
+
+**Judgment.** The honest reading of the house rules is that this is not mine to
+decide: it changes the dependency set, the build toolchain or the language
+floor, and the spec text — one ruling, three consequences. Shipping Option B
+unilaterally would also mean adding a two-day-old TLS/QUIC fork to a
+security-sensitive daemon on my own authority, which is precisely the kind of
+decision the "STOP and record it" rule exists for. So: refused, recorded, and
+the code says why.
+
+**Changed here:** `peer.TransportByName`'s iroh refusal now states the real
+reason (no official Go binding; the choice is an open ruling) instead of
+"hardware-gated", carries the `RULING-NEEDED` marker with the three options, and
+its test asserts the refusal names both the cause and where the decision lives.
+
+### Author rulings needed — P3-4c iroh binding
+
+**Question:** which iroh does Cairn mean, and what may it cost?
+
+1. **Rust FFI via cgo** (n0's `iroh-ffi` + `uniffi-bindgen-go`, or the plainer
+   `iroh-c-ffi` C API) — upstream code, at the price of cgo, a Rust toolchain in
+   the build, and a native artifact per platform for the signing/Homebrew path.
+2. **Pure-Go `tmc/go-iroh`** — no cgo, drops straight into the P3-1 seam, proven
+   to carry bytes in this sandbox; but an untagged v0.0.0 unaffiliated port with
+   a vendored quic-go/crypto-tls fork, and it raises the Go floor to 1.26 (R52).
+3. **Drop iroh from spec §12** and keep the tailnet transport as the only wire.
+
+An answer of 1 or 2 also needs a call on the **relay** half: self-hosting is a
+patching duty the design brief already flags, and Option 2 bundles a relay
+server while Option 1 would need one deployed separately.
+
+Until this is ruled on, `transport = "iroh"` refuses and the mesh runs on the
+audited tailnet transport. **No stub, no half-wire, and no dependency was added
+on the strength of a sandbox experiment.**
+
+## D11 — lexical search is disjunctive with preference (2026-08-16) — DONE [S15, Tier 1]
+
+**The defect, reproduced first on a real daemon.** `FTSQuery` joined the
+query's terms with FTS5's implicit AND, so a document qualified only by
+containing EVERY term. On a one-message mesh:
+
+    $ cairn search "council approved"                           -> 1 result
+    $ cairn search "what did the council decide about approval"  -> "results": null
+
+S4's apparatus had already found the same thing at corpus scale: six sample
+queries, zero results from `cairn search` for all six, while B1 (grep) returned
+hits. On the 184-document golden corpus the conjunctive matcher answered
+**at most one document for any query** — `cands=1` on a hit, `cands=0` on a
+miss — which is not retrieval, it is exact lookup wearing retrieval's clothes.
+
+**What shipped.** Terms are joined with `OR`, and bm25 does the discriminating:
+it sums an idf-weighted contribution per MATCHED term, so a document matching
+more of the query — and rarer parts of it — sorts above one matching less.
+Precision moves from *refusing to answer* into *ranking*.
+
+### The FTS5 construct, and what was rejected
+
+Measured on a four-document fixture before choosing (probe kept in the
+implementation comments, not in the tree):
+
+| expression | result |
+|---|---|
+| `"council" "the"` (implicit AND) | doc1 only |
+| `"council" OR "the"` | doc1 −0.88764680, then docs 2,3 at −0.00000142 |
+| `"council"` alone | doc1 −0.88764538 |
+| `"" ` / `"---"` (empty phrase) | matches NOTHING, inert inside an OR |
+
+Two facts fell out of that and both are load-bearing. Matching two terms scores
+better than matching one (−0.88764680 vs −0.88764538): **bm25 already
+implements "prefers more matched terms"**, so the disjunction needs no
+coverage counter of its own. And a document matching only `"the"` scores
+−0.00000142 — SQLite's bm25 clamps a non-positive idf to 1e-6, i.e. the index
+itself announces which terms cannot order anything.
+
+- **Chosen: plain `OR` between quoted phrases.** One MATCH expression, one bm25
+  ordering, so lexical rank position — the only thing the ranker consumes — is
+  a pure function of query and corpus. `why-ranked` prints `lex rank`; nothing
+  about reconciliation changes shape.
+- **Rejected: a relaxation ladder** (run AND, then subsets, then OR, and merge).
+  It would make candidate order a property of a merge policy rather than of one
+  bm25 ordering, and an external auditor would have to replay the ladder to
+  reproduce a rank. It also multiplies queries per search for a result bm25
+  already gives.
+- **Rejected: `NEAR()`** — proximity-constrained but still conjunctive inside
+  the group; it does not answer the defect.
+- **Rejected: prefix expansion (`term*`)** — widens by morphology, not by
+  disjunction, and moves toward match-anything.
+- **Rejected: an LLM or learned reranker** — BUILD-PLAN §4 non-goal, breaks
+  R47/R51 (a model's opinion does not reconcile against printed arithmetic).
+
+### The stopword problem showed up, and is solved as ranking
+
+The guard rail said stopword-heavy queries must not drag in every document
+containing "the", and measurement said they did: on the golden corpus a bare
+`OR` made **100 candidates (the pool cap)** for any query containing a
+function word — `"what did the team decide about the token rotation"` pulled
+the whole corpus in, and ranks 2..K were documents whose only claim was "the".
+
+The fix is a term filter derived from bm25 itself, not a word list. A term
+occurring in **more than half** the indexed documents is past the point where
+idf crosses zero, so the index says it cannot order results; it is dropped
+from the disjunction. Corpus-derived, language-independent, and it adapts as
+the corpus grows (`FTSNonDiscriminatingDocFraction`, the single new constant).
+That same query now builds a **10-candidate** pool with the right document
+still first.
+
+Two boundary rules make it safe, and each is pinned by its own test because
+each was found by a failing one:
+
+1. **A term in a single document is never common**, whatever the corpus size
+   (`cutoff` floors at 2). Without the floor a one-document mesh calls every
+   term of every query uninformative — arithmetically true, and it resurrects
+   the original defect on exactly the mesh the build plan reproduced it on.
+2. **When EVERY term of the query is common** ("the project" against a corpus
+   that says both words everywhere) the query is searched as written rather
+   than answered with silence — precision comes from ranking.
+
+**The asymmetry this creates, stated plainly.** If a query's content words
+match nothing and only its function words remain, it returns NOTHING rather
+than falling back ("what did the quokka decide about wombats" → empty; lexical
+arm searched no terms). But "the project" → answered. Adding a term to an OR
+therefore removes results in that one corner, which is not monotone. It is
+deliberate: the fallback exists for queries that carry no discriminating
+information at all, not as a way to answer a question about wombats with 100
+documents that contain "the". The alternative failed the sprint's own
+acceptance criterion.
+
+The C2 trigram companion keeps its conjunctive semantics, as instructed — it
+only ever fills pool slots the word index left empty, so nothing about it
+needed to move.
+
+### Visible, not silent
+
+Every search response now carries `lexical_query`: the terms searched, the
+terms dropped as `common_terms`, the terms dropped as `unmatched_terms`, and
+`all_terms_common` when the fallback fired. On the reproduction:
+
+    {"terms":["the","council"],"unmatched_terms":["what","did","decide","about","approval"]}
+
+An agent (or an auditor) can see why a result set has the shape it has without
+reasoning about bm25.
+
+### Guard rails — verified, not assumed
+
+- **R47/R51 reconciliation: verified by ACTUAL external recomputation**, not by
+  inspection. A python3 verifier parsed `cairn why-ranked` for every result of
+  the multi-term query `"what did the council decide about the drainage levy"`
+  on a live daemon, recomputed each score with plain IEEE-754 doubles (each
+  printed value × printed weight rounded individually, summed in R,S,F,P_eff,I,N
+  order) and compared against the score `cairn search` returned. **Bit-exact for
+  every result under BOTH profiles** (search-P0 and search-P2, the latter via
+  `CAIRN_RANK_PROFILE=p2`) — e.g. recomputed `0.9899434168389654` against
+  returned `0.9899434168389654`. The equivalent is now a permanent test
+  (`TestD11WhyRankedReconcilesForAMultiTermQuery`, both profiles, reusing the
+  R51 harness that reconciles against the RETURNED score).
+- **Hard budgets:** `TestBudgetComplianceProperty` still passes, and D11 adds
+  its own sweep over the queries the change widened (a stopword-heavy question,
+  `"the project"`, and bare `"the"`) × chars/tokens × five budgets including 1.
+  No overrun; more candidates cost more ranking, never more payload.
+- **`make verify` (incl. `test-novec`), `make test-race`, `make eval`: green.**
+
+### The golden corpus moved, case by case
+
+Lexical-only top-10 went **0.80 (24/30) → 0.97 (29/30)**; hybrid Success@5 is
+**unchanged at 0.97**. Nothing was re-recorded: the six cases that moved all
+moved from *nothing at all* to *the relevant document at rank 1*.
+
+| query | before | after |
+|---|---|---|
+| "when do proration credits apply" | 0 results | billing-proration @1 |
+| "autoscaler cleanup destroyed zone" | 0 results | deploy-dns @1 |
+| "tokenizer unicode grapheme truncation" | 0 results | ml-tokenizer @1 |
+| "corrupted embedding checkpoints" | 0 results | ml-tokenizer @1 |
+| "kubernetes canary error" | 0 results | deploy-canary @1 |
+| "zebra authentication middleware" | 0 results | still a miss (see below) |
+
+Every one of the other 24 kept its hit and kept it at rank 1. The remaining
+miss is unchanged and understood: "zebra" is not a token in this corpus
+(`unicode61 tokenchars '_-#@'` makes `zebra-api` ONE token), so the query can
+only match on "authentication" (df 10) and "middleware" (df 8), and the
+distractor notes that match the rarer of the two outrank the one document that
+matches the commoner. It was the hybrid pass's single miss before this change
+and remains it — bm25 behaving correctly on a corpus built to have decoys.
+
+**What did NOT move, and is worth saying:** the top-1 document for every query
+that already had a hit. The widening added results below the answer, not in
+front of it.
+
+A **ratchet** was added to `TestRunGoldenReproducesClaim`: lexical-only top-10
+must stay ≥ 0.96. The shipped gate (0.60) cannot tell conjunctive from
+disjunctive matching apart — 0.80 passes it — so a silent regression would
+otherwise sail through CI.
+
+### Mutation-tested
+
+Each mutation applied to the shipped code, suite run, then reverted:
+
+| mutation | caught by |
+|---|---|
+| `OR` → implicit AND (the original defect) | 3 projection tests, 1 daemon test, the golden ratchet |
+| common-term filter disabled | 2 projection, 2 daemon tests |
+| fallback fires even when content terms matched nothing | `TestD11AbsentSubjectMatterReturnsNothing` |
+| single-document cutoff floor removed | `TestD11OneDocumentMeshStillAnswers` |
+| cutoff back to non-strict (`df ≥ N/2`) | `TestD11HalfCorpusTermIsStillSearched` |
+| unmatched terms kept in the disjunction | 1 projection, 1 daemon test |
+
+The first two rounds found real gaps: the one-message reproduction and the
+half-corpus boundary were both initially unguarded, and the tests above exist
+because the mutations passed without them.
+
+### The evaluation harness, before and after
+
+`cairn-eval measure -corpus corpora/sample-plumbing-v1 -arms all`, run against
+a build of each side (the "before" from a throwaway worktree):
+
+    before:  8 arms flagged "RETURNED NOTHING FOR EVERY QUERY"
+             (B0 search+digest, B5 as-shipped/lexical-only/no-freshness/
+              no-priority/profile-p0/profile-p2 — every B5 SEARCH arm)
+    after:   2 — B0 search and digest, the no-memory control, which is
+             supposed to return nothing
+
+E4's B1-versus-B5 comparison now compares against a system that answers.
+**The darkness property is intact:** both runs end "NO NUMBERS ARE SHOWN", the
+scorecards stamp `evidence=false`, and `darkness_test.go` passes unchanged.
+
+### Cost, measured (2001-document corpus, per query)
+
+| query | AND (before) | OR without the filter | shipped |
+|---|---|---|---|
+| `council` | 0.27 ms | 0.30 ms | 0.22 ms |
+| `drainage levy` | 0.61 ms | 0.47 ms | 0.43 ms |
+| `what did the council decide about the drainage levy` | 0.68 ms (0 results) | 3.77 ms (100 junk candidates) | **0.80 ms (1 candidate)** |
+| six common terms, nothing else | 13.4 ms | 13.0 ms | 11.2 ms |
+
+The df probes are `SELECT count(*) FROM (SELECT rowid … MATCH ? LIMIT cutoff)`
+— early-exited, so a term is scanned only as far as the point where it stops
+discriminating — plus one `max(rowid)` for the corpus size, which is an
+O(log N) b-tree lookup because fts_map rowids are assigned by INSERT and never
+deleted. Net: the filter PAYS FOR ITSELF versus an unfiltered OR, and the
+natural-language query costs about what the old (empty) answer cost.
+
+**Recorded for S13's 1M scorecard:** a query made entirely of corpus-wide
+common terms is ~11–13 ms at 2k documents, and that cost is dominated by bm25
+ordering a saturated candidate pool — it was 13.4 ms under conjunction too, so
+D11 did not introduce it, but it scales with corpus size and should be measured
+at 1M rather than extrapolated.
+
+### One test's expectation changed, deliberately
+
+`TestF1UnprojectableEventIsParkedNotFatal` asserted `SearchLexical("after the
+poison")` returned EXACTLY ONE result. Under disjunction "before the poison" is
+a legitimate weaker hit. The test's subject is that the event after a parked
+one still projects, so it now asserts the intended message is the BEST match
+rather than the only match. That is the only pre-existing expectation that
+moved.
+
+### Reconciliation after the parallel run (bookkeeping 2026-08-16)
+
+Four sprints ran concurrently today (S15, S9, S7, plus S4 earlier alongside
+S5). Their plan maintenance was suspended so they could not conflict on
+BUILD-PLAN.md; this closes it.
+
+- **S7 shipped** — sprint block deleted, Coverage marked shipped.
+- **S9 split** — mutual pairing authentication and metered/battery sensing
+  shipped and are removed from §6; the iroh wire remains and is now blocked
+  on a DEPENDENCY RULING rather than on effort, so the sprint is restated as
+  `S9 — iroh transport [gated: an author ruling on the binding]` and the
+  question is in the §8 open-rulings table.
+- **S15 shipped** (the agent did its own maintenance).
+- README's "On P3" paragraph claimed metered sensing was deferred and
+  described the pairing asymmetry. Both were false as of a0d8d21/abdc820.
+  Corrected. S9 correctly left README alone because S7 was editing it.
+
+Two defects raised from reading CI rather than a local terminal, held in a
+new sprint S16:
+
+- **D12** — `verify (macos-latest)` has been RED since at least D1, on the
+  unix-socket path limit. Five sprints reported "make verify green"
+  truthfully, on Linux, while the primary platform was broken. The procedural
+  lesson is the more important half: a local green is not a green build, and
+  nobody was reading the runners.
+- **D13** — a release binary cannot name its own version (`p1-<commit>`, not
+  the tag), surfaced by S7 and correctly left in another lane.
+
+Also noted, not acted on: the brief given to each sprint agent said "never
+mention a model name in commits", which conflicts with the harness-mandated
+`Co-Authored-By` trailer that every commit on this branch carries. S15 flagged
+it rather than silently diverging from the convention. The trailer wins; the
+instruction was over-broad and should say "no model identifier in prose".
+
+## D12 — macOS `make verify` fails on the unix-socket path limit (2026-08-16) — DONE [S16]
+
+`verify (macos-latest)` had been red since at least D1, deterministically,
+macOS-only, in `TestD5AdoptStandaloneScript`:
+
+```
+error: listen unix /var/folders/df/djsxfhc17x95674wsm_g8s980000gn/T/
+       cd52667834331/cairn/01a00bff-…-….sock: bind: invalid argument
+```
+
+### Was FIX-A7's reasoning wrong, or did this path defeat it?
+
+**Neither half of that question was quite the right one, and the answer
+matters more than the fix.** FIX-A7 claimed its fallback respected "the
+~104-byte path cap the code documents", and for the path it described it was
+RIGHT: on macOS `XDG_RUNTIME_DIR` is unset, so `SocketDir()` returned
+`os.TempDir()/cairn-<uid>` = `/var/folders/…/T/cairn-501` (58 bytes), and the
+socket came to **100 bytes** against a 103-byte usable `sun_path`. Production
+fitted. It still fits.
+
+What FIX-A7 did wrong was subtler, in two ways:
+
+1. **It left three bytes of headroom and never checked.** A six-digit uid
+   takes the same path to 103 — exactly the edge. The bound was satisfied by
+   arithmetic nobody re-ran, in code that computed a length-critical path with
+   no length check anywhere in it.
+2. **It delegated the whole guarantee to the caller in the branch it did not
+   reason about.** When `XDG_RUNTIME_DIR` IS set, FIX-A7's comment assumes it
+   means Linux's `/run/user/<uid>` — "already private and short". Nothing
+   enforced that, and this path defeated it: `TestD5AdoptStandaloneScript`
+   exported a runtime dir from `os.MkdirTemp("", "cd5")` under a comment
+   promising "A SHORT runtime dir", citing Linux's 108-byte limit. But
+   `os.MkdirTemp("")` honors `$TMPDIR` — `/tmp` on Linux, a 48-byte
+   `/var/folders` path on macOS. **The same line of test code produced a
+   65-byte path on Linux and a 110-byte one on macOS.**
+
+And the reason five sprints missed it is NOT that Linux tolerates 110 bytes.
+It does not — a 110-byte bind fails on Linux too, four bytes later, with the
+identical bare EINVAL (verified locally while writing this). The paths
+differed, not the limits. That is the general lesson: environment-derived
+paths are where a "green on my platform" claim is worth least.
+
+### The fix
+
+Both places, because the evidence pointed at both.
+
+- `internal/daemon/ipc.go`: `socketDirCandidates()` replaces the single
+  `SocketDir()` decision, and `SocketPath` chooses against
+  `config.SocketPathMaxBytes` (103 — the macOS figure, **enforced on every
+  platform**, because a bound that only bites on the platform nobody develops
+  on is a bound nobody ever sees bite). The ladder degrades the NAME before
+  the DIRECTORY: an operator who exported `XDG_RUNTIME_DIR` chose it for
+  privacy and logout cleanup, so it keeps the directory and shortens the leaf
+  to a 16-hex BLAKE3 prefix over the FULL cairn id first — which preserves the
+  anti-collision argument the full id was there for (a UUIDv7 prefix is a
+  millisecond timestamp; the TestF3 flake). Only then does it move directory,
+  with `/tmp/cairn-<uid>` as a floor that exists on both platforms. `Serve`
+  now prepares `filepath.Dir(sock)` rather than `SocketDir()`, and
+  `checkSocketPathLength` refuses an impossible path by name, size and limit
+  instead of letting `bind` answer "invalid argument" — the error that hid
+  this for five sprints.
+- The tests that were wrong about "short": `TestD5AdoptStandaloneScript` and
+  `TestSocketDirSymlinkRefused` now root their runtime dirs at `/tmp`
+  explicitly. The symlink test needed it for a second reason — now that Serve
+  prepares the directory it will actually bind, a too-long runtime dir would
+  be skipped by the ladder and the test would quietly stop exercising the
+  refusal on macOS.
+
+### The regression guard
+
+`internal/daemon/socket_path_test.go` pins the macOS-shaped environment by
+LENGTH (`dirOfLength`, against `macOSTMPDIRBytes`) on every platform, and then
+**binds for real** — the only check a generous local `$TMPDIR` cannot fool. It
+covers the production macOS case (full id kept), the CI-breaking case (name
+degraded, directory kept), a runtime dir no leaf can rescue (directory falls
+through), a hopeless `TMPDIR` (floor at `/tmp`), and the refusal message.
+
+### Deviation / judgment calls
+
+- `SocketDir()` is kept exported and now returns the *preferred* candidate
+  only; the directory in use is `filepath.Dir(SocketPath(id))`. No caller
+  outside `ipc.go` used it.
+- 103 rather than a platform-conditional constant. Uniformity is the point.
+- The shortened leaf is a BLAKE3 prefix, not a truncated UUID, so the
+  construction does not assume the cairn id is a UUIDv7.
+
+### Observed on a hosted runner, not inferred
+
+The acceptance for this item was explicitly "observed, not inferred", because
+a green Linux run had been standing in for a green build all day. CI run
+**31968088680** (commit 493b8bb), job `verify (macos-latest)` on
+`macos-latest`/arm64: **conclusion `success`**, `make verify` step 19:36:59 →
+19:39:06. Both halves ran green on the runner — the tagged suite
+(`ok github.com/ggoosen/cairn/cmd/cairn 21.184s`, previously the sole failure)
+and `test-novec`. `verify (ubuntu-latest)`, `race`, `fuzz-smoke`,
+`eval-harness` and `packaging` were `success` in the same run.
+
+### Not fixed — out of lane
+
+The `lint` job was ALSO red at 9bca52a, on `internal/rank/rank_test.go:174`
+(`QF1001: could apply De Morgan's law`). `internal/rank/` belongs to the
+parallel S8 sprint and was being edited while this ran, so it was left alone
+deliberately rather than risk a conflicting edit. It is a one-line change.
+
+## D13 — a release binary can now name its own version (2026-08-16) — DONE [S16]
+
+`cairn --version` printed `p1-<commit>` derived from Go build info and
+settable by nothing, so a tagged artifact could not report its tag; S7's
+release notes documented the discrepancy instead of fixing it.
+
+**Shape.** `p1-<12 hex>` (+`-dirty`, or `p1-dev` with no stamp) is unchanged
+for development builds. A release build reports `v0.3.0 (p1-<commit>)`. The
+tag leads because it is the fact a user can read off their install; the commit
+stays because it is the fact that triages the bug report — and because keeping
+the whole development stamp inside the parentheses means `-dirty` and `-dev`
+remain visible to the release workflow's existing guard, which refuses to
+publish an artifact carrying either. **A tag printed next to the word "dirty"
+refutes itself; a tag that had silently swallowed it would not.**
+
+**Mechanism.** `main.releaseVersion`, empty in every build except one linked
+with `-ldflags -X`. `make build CAIRN_VERSION=v0.3.0` produces that link and
+nothing else does, so a binary printing a tag was built by something that knew
+the tag. `main.go` splits into `vcsStamp()` (impure) and `buildVersion()`
+(pure, table-tested).
+
+**Where it is asserted.** Three places, because the failure mode is silence —
+a renamed symbol or mistyped `-X` path is accepted by the linker and the tag
+is simply absent:
+
+- `cmd/cairn/version_stamp_test.go` links a real stamped binary and runs it,
+  taking the linker flags from `make print-ldflags` rather than restating them
+  (so renaming the symbol fails the test instead of passing against a string
+  nothing uses). It also asserts the other half — the suite's own unstamped
+  binary must claim no tag.
+- `ci.yml`'s packaging job now builds with `CAIRN_VERSION=v0.0.0-ci` and
+  asserts both halves on **every push**. The release workflow only runs on a
+  tag, so without this the stamping would first be exercised by a real
+  release.
+- `release.yml` asserts the artifact's version string begins with the tag
+  being released, alongside the existing `-dirty`/`-dev` refusals. The release
+  notes now quote the real string instead of explaining why it is wrong.
+
+**Observed on a hosted runner.** Same run 31968088680, `packaging` job, step
+"Assert the release build stamps its tag": `version: v0.0.0-ci
+(p1-493b8bb56504)` / `unstamped version: p1-493b8bb56504`. The stamp also
+survives packaging — `release-smoke.sh` on the UNPACKED tarball printed
+`SMOKE PASS: …/dist/unpacked/cairn (v0.0.0-ci (p1-493b8bb56504))`, so what a
+user downloads is what names the tag.
+
+**Judgment call.** A stamped build of a dirty tree still prints the tag, with
+`-dirty` beside it, rather than suppressing the tag. Suppression would make
+the release workflow's guard test a condition that can no longer occur, and an
+operator hand-building with `CAIRN_VERSION` deserves to see both facts.
+
+## S8 — P2 duplicate and thread-saturation penalties (2026-08-16) — DONE
+
+`config.PenaltyCap = 0.15` had been pinned and unreferenced since M0: spec
+§9.1 describes duplicate and thread-saturation penalties, and nothing applied
+them. They now apply under both P2 profiles, as ordinary additive terms in the
+why-ranked record, with an external recompute reconciling bit-exactly.
+
+### What a duplicate is, and what was rejected
+
+§9.1 pins the cap and nothing else. It never defines "duplicate" or
+"saturated", so the definitions are a choice, and the choice was made on
+auditability rather than on recall:
+
+- **Duplicate = content-address identity.** Two results are duplicates when
+  their head revisions resolve to the same body object — the BLAKE3 address
+  the object store already keys on. Binary, so the first occurrence is free
+  and every later copy pays the full cap.
+- **Rejected: embedding near-duplicates.** "Similar enough" needs a cutoff on
+  a cosine produced by whichever embedder is provisioned. The trace could
+  print the number, but reproducing it needs the same model at the same
+  version, and Cairn's embedder is an opt-in subprocess a node may not have at
+  all (search degrades to `lexical_only` without one). R51 defines
+  reconciliation against an EXTERNAL verifier; a penalty that moves an agent's
+  results and cannot be re-derived offline is the black box §9 forbids.
+- **Saturation = the projection's own thread key**, `COALESCE(thread_id,
+  message_id)` — a root and its replies share one key, a standalone message
+  keys on itself and can never saturate against anything. Graded rather than
+  binary: `min(ahead, 3)/3`, so a thread's second result costs a third of the
+  cap and its fourth costs all of it. A thread contributing a second message
+  is normal; a thread contributing its fourth is the crowding-out §9.1 names.
+
+Both penalties are POSITIONAL — "how much of this has the agent already been
+shown?" — so they need an order to be defined against, and it cannot be the
+order they help produce. The pass runs on the BASE ordering (every candidate
+scored with both penalty terms zero, sorted by the existing total comparator),
+assigns each candidate its penalty from what precedes it there, rescores, and
+re-sorts. `TestPenaltiesAreOrderIndependent` pins that the result is a function
+of the candidate SET, not of the slice's incoming order.
+
+### Author rulings needed
+
+- **Is near-duplicate detection wanted, and on what reproducible key?** Only
+  exact content identity is penalised today, which under-penalises and never
+  over-penalises. If C3 (transcript ingest) lands, near-identical chunks will
+  slip through this definition entirely — which is the case that made S8 "the
+  item C3 drags forward" in the first place. Auditable options exist that a
+  live embedder call is not: a normalised-text hash (case/whitespace/
+  punctuation folded) or a shingle/MinHash signature recorded in the
+  explanation. Marked `// RULING-NEEDED:` in `internal/rank/penalty.go`.
+
+### Lockstep with R47/R51, which is the whole difficulty
+
+The penalties are terms, not adjustments. `DUP` and `SAT` print with the same
+`value × weight = product` shape as R/S/F/P_eff/I/N and are summed LAST, so the
+scorer's term order is exactly the order the trace describes. Their WEIGHT is
+the §9.1 cap, negative: the feature stays an ordinary [0,1] number and "capped
+at 0.15" is a property of the weight rather than a clamp hidden in the
+arithmetic. The trace also prints the EVIDENCE — how many earlier results
+shared the key, and which key — so the feature value is recomputable, not
+asserted:
+
+    DUP   1 × -0.15 = -0.15   (1 earlier result shares body b2091e85…; cap 0.15)
+    SAT   0.6666666666666666 × -0.15 = -0.09999999999999999   (2 earlier
+          results share thread 01a00c13-19d0…; full at 3; cap 0.15)
+
+Under P0 the pass is SKIPPED, not merely zero-weighted, so a P0 trace's
+`DUP 0 × 0 = 0` is true of the item as well as of the score; P0 explanation
+records stay byte-identical (the penalty fields are omitted, exactly as S/I/N
+are). Three surfaces moved in the same change: `rank_explanations`, the
+`why-ranked` renderer, and the three suite recompute helpers — plus
+`eval/internal/explain`, whose `AllTerms` is the harness's external verifier
+and would otherwise have reconciled a score no agent ever received.
+
+### Verified by recomputation on a real binary, not by inspection
+
+A Python verifier (`struct.pack` bit comparison, no Go, no shared code) parsed
+`cairn why-ranked` for every result of a live query against a real daemon,
+checked each printed product equals value×weight, summed in printed order, and
+demanded bit-exact equality with the score returned OUTSIDE the record
+(`search --json` results; `score=` in the rendered digest):
+
+    search : reconciled 11 results bit-exactly (2 duplicate-penalised, 4 saturation-penalised)
+    digest : reconciled 11 entries bit-exactly (2 duplicate-penalised, 4 saturation-penalised)
+    OK: R47/R51 holds with both penalties active, under search and digest
+
+The same corpus under P0: 22 traces, all bit-exact, **zero** penalties fired.
+
+**Mutation-tested** (break it, confirm the suite notices) — all seven caught:
+duplicate penalty disabled; saturation grading flattened to the cap; cap
+doubled to 0.30; penalties scored but omitted from the trace (the R47/R51
+defect class — caught by the pre-existing digest reconciliation, at
+0.65 vs 0.60); P0 given penalty weights; penalties summed FIRST while the
+trace still prints them last (caught at 1 ulp — R51 clause 1 doing exactly its
+job); and the re-sort dropped so the penalised order goes stale.
+
+### Golden corpus: nothing moved, and why that is not a free pass
+
+`cairn bench golden` before and after: Success@5 **0.97**, lexical-only top-10
+**0.97**, same single miss (`"zebra authentication middleware"`) — the D11
+ratchet at ≥0.96 is untouched. A finer diff than the two headline numbers was
+taken: the full top-10 ID list for all 30 queries under P0 and P2, hybrid and
+lexical-only — 120 result lists — is **byte-identical**. **No corpus case
+moved.**
+
+That is a real result and also a limitation worth stating plainly: the corpus
+has 184 messages with 184 distinct bodies and no threads, so it cannot
+exercise either penalty. It confirms no regression; it says nothing about
+whether the penalties help. Their value gets measured when there is a corpus
+with repetition in it — C3 transcripts, or E7's longitudinal dogfood — and if
+they turn out to hurt, §9.1 being wrong is a legitimate finding.
+
+### Other judgment calls
+
+- **A penalised score can go negative** (R≈0 plus two capped penalties). Scores
+  are only ever compared, never interpreted as probabilities, and nothing in
+  the tree assumes positivity; spec §9.4 itself prints `penalties −0.00`, so
+  subtraction is the intended shape. Left as is rather than clamped — a clamp
+  would make the printed arithmetic stop reconciling.
+- **`DUP 0 × -0.15 = -0`** — the trace prints negative zero for an unfired
+  penalty, which is what IEEE-754 does and what §9.4's own example shows
+  (`−0.00`). Adding it is exact identity, so reconciliation is unaffected.
+- **Calibration replay (§9.3)** carries the logged penalty as a fixed
+  per-candidate offset rather than a searchable weight: the cap is pinned by
+  §9.1, and a grid that silently dropped penalties would compare weight
+  vectors against a baseline scored under different rules. `rank-stats` reports
+  DUP/SAT distributions alongside the other terms, so an operator can see what
+  the penalties actually subtract before touching anything.
+- **`make verify`, `make test-race`, `make eval` all green.**
+- **Bookkeeping:** S8 ran concurrently with S16, and S16's D12 commit
+  (`efd75ce`) staged the whole of `internal/config/constants.go`, sweeping S8's
+  penalty constants block into it. The content is correct and in the tree; only
+  its attribution is wrong. Left alone rather than rewritten — undoing another
+  session's commit to fix an attribution is a worse trade than a note. The
+  hazard is the one the parallel-run brief names: stage your own paths, never
+  a whole shared file.
+
+### Lint closed, and the fix that was wrong first (bookkeeping 2026-08-16)
+
+S16 correctly left the `lint` job red: its one finding was in `internal/rank/`,
+S8's lane, being edited concurrently. With both sprints landed the job is now
+green in both modules — and the closing was not as mechanical as it looked.
+
+- `internal/rank/rank_test.go`: QF1001, De Morgan. One line.
+- 23 further QF1008 findings ("could remove embedded field Components"), all
+  from S8's new penalty code. **Fixed rather than silenced.** The .golangci.yml
+  enables five linters under `default: none`; disabling a rule to reach green
+  is the pattern this branch has spent the day arguing against.
+- A blanket `s/\.Components\.//` across the three files **broke the build**:
+  in `internal/daemon/retrieve.go` two embedded structs both carry
+  `LexRank`/`VecRank`, so the qualifier is load-bearing and its removal makes
+  the selector ambiguous. staticcheck had flagged only the two lines where it
+  is genuinely redundant. Reverted and applied precisely — a reminder that
+  "the linter says it is removable" is a claim about specific lines, not a
+  pattern to apply file-wide.
+- `eval/internal/adversarial/probe.go`: one dead function (`firstNonEmpty`)
+  from S4, removed.
+
+Both modules: `golangci-lint run` 0 issues. `make verify`, `make test-race`,
+`make eval` all exit 0.
+
+### Sprint reconciliation (2026-08-16)
+
+S8 (P2 duplicate/thread-saturation penalties) and S16 (D12 macOS socket path,
+D13 release identity) shipped; sections deleted, Coverage updated.
+
+**Every remaining sprint is now gated.** S6 needs a privacy review, S9 an iroh
+binding ruling, S10 two machines, S11 operator sign-off then corpora, S12 three
+author rulings, S13 all of the above, S14 usage data. Nothing is runnable by an
+agent without an operator decision first — a real change of state worth naming.
+
+New open ruling from S8: the duplicate penalty ships on exact content-address
+identity, which by construction will NOT catch C3's near-identical transcript
+chunks — the case that made S8 "the item C3 drags forward". Recorded in the §8
+table with the two auditable alternatives.
+
+Process note: `internal/config/constants.go` has now crossed lanes twice
+(S5/S15, then S16 sweeping S8's constants into efd75ce). Both times the code
+was correct and only attribution was wrong, and both times the agent chose not
+to rewrite another session's commit. If sprints run in parallel again, that
+file should be assigned to exactly one of them.
+
+### Author rulings ANSWERED — R58 through R63 (2026-08-16)
+
+The operator worked through the outstanding decision list and agreed with the
+recommendations. Six rulings recorded in RULINGS.md; two sprints closed with
+no code written.
+
+- **R58 iroh DEFERRED.** Not blocked — deferred, with the reason stated: the
+  pure-Go binding works but is days old and vendors a quic-go fork plus a
+  patched crypto/tls into the process holding the signing key, and the need
+  is not there (iroh buys NAT traversal for nodes without a tailnet). Marker
+  cleared in `internal/peer/transport.go`.
+- **R59 mutes DELETED** from the spec. Negative grants make composition
+  ambiguous once nested, and D3's subtree confinement already delivers what
+  mutes reached for. Nothing was built, so nothing is removed.
+- **R60 explore profile CLOSED** — no surface, no profile.
+- **R61 send-never-blocks STANDS.** Ladder rung 7 refuses only when the write
+  physically cannot succeed; rung 6 stays warn-only. Ratifies shipped
+  behaviour; §8.2 is superseded on this point. No code change.
+- **R62 near-duplicate key** = normalised-text hash, when C3 needs it.
+  MinHash rejected (parameters would need reconciling under R51), live
+  embedder rejected absolutely (R51 needs an EXTERNAL verifier). Marker
+  cleared in `internal/rank/penalty.go`.
+- **R63** confirms FIX-A6, R38 and R40/R41 as implemented.
+
+Consequence: **S9 and S12 are closed** — S12 entirely by ruling, with no code
+required, which is what "an unanswered question that blocks work is itself
+the deliverable" was meant to produce.
+
+Four sprints remain and every one is gated on the operator: S6 (privacy
+review of C3), S10 (two machines), S11 (kill-criteria sign-off, then
+corpora), S13/S14 behind them. **No agent-runnable work is left in the plan.**
+
+Explicitly NOT delegated: the 21 kill criteria in `eval/claims.yaml` remain
+`signoff: pending`. They are commitments about what the author would accept
+as disproof of his own project; an agent signing them would make the register
+worthless. The recommendation stands — sign the E4/E6 group first, which
+unblocks intrinsic and safety measurement immediately, and defer E5's until
+corpora exist.
+
+### Engineering scorecard RECORDED at 100k (2026-08-16) — TESTING.md §5
+
+First full scorecard the project has: nine quantities, all of them, at 100k
+synthetic events. Run in-process with `BagOfWords`, on the dev container.
+
+    append total          3m47.3s   (2.27 ms/event)
+    send-ack P50 / P95    2.073ms / 3.413ms
+    ack→lexical-visible P95  1.718ms    GATE < 200ms — passes by ~116x
+    search P50 / P95      57.121ms / 82.162ms
+    cold recovery         35.5s
+    reindex --lexical     2m6.8s
+    reindex --semantic    1m22.3s   (BagOfWords — pipeline, NOT a model benchmark)
+    backup size           747.9 MB  (portable dir; 7.66 KB/event)
+    restore time          52.7s     (copy 14.3s + verified open 38.3s)
+    process RSS           77.7 MB   (in-process daemon + harness)
+
+Corpus growth is affine, not proportional: measured at 2k (78.2 MB) and 20k
+(201.4 MB), fixed cost is ~64 MB and marginal cost 6.84 KB/event. So 1M
+projects to ~7.5 GB steady and ~15 GB PEAK, because measuring restore copies
+the whole tree while the original still exists.
+
+**The 1M run is deliberately deferred** until D14 lands. It would spend ~90
+minutes recording a search number that is about to change, and the search
+number is the one finding worth having.
+
+### D14 raised — the term-discrimination probe is O(corpus) (2026-08-16)
+
+The scorecard's search column, same query shape at each scale:
+
+    2,000 events    ->  3.5 ms P50
+    20,000 events   -> 14.8 ms P50
+    100,000 events  -> 57.1 ms P50
+
+Linear in corpus size. Mechanism, from `internal/projection/search.go`:
+`cutoff` is `n * FTSNonDiscriminatingDocFraction + 1` — half the corpus — and
+`termDocs` counts rows under `LIMIT cutoff`. The LIMIT looks like a bound but
+grows with n, so a term present in most documents costs a ~n/2 partial scan
+on every query. The scorecard's bodies all contain "routine", so every query
+carries exactly one such term — the ordinary case for natural language, not a
+pathological one.
+
+D11's DECISION is not in question (it moved golden lexical-only top-10 from
+0.80 to 0.97). Only how `df` is obtained is: FTS5 publishes it directly
+through an `fts5vocab` companion, turning a partial scan into an indexed
+lookup. Recorded as §4 D14 and sprint S17, ahead of every gated sprint,
+because it is the only ready work left.
+
+Note for whoever builds it: the acceptance criterion is that the set of terms
+judged common stays IDENTICAL to today's for every golden-corpus query,
+asserted against the current probe rather than assumed. This changes how a
+ranking-affecting decision is computed, and R47/R51 reconciliation depends on
+that decision being stable.
+
+## D14 — the term-discrimination probe at scale (2026-08-19) — DONE [S17]
+
+D14 was raised from the 100k scorecard: search P50 grows linearly (2k 3.5 ms →
+20k 14.8 ms → 100k 57.1 ms) and the named mechanism was D11's document-frequency
+probe, whose `LIMIT cutoff` is half the corpus. The probe is real and it is
+fixed. It was also **4% of the number** — measured before touching anything,
+which is the only reason the sprint found the other 86%.
+
+### What the profile said, at 100k, before any change
+
+    full d.Search                      66.1 ms
+      LexicalTopKPlan                  60.8 ms
+        term probe (both query terms)   2.6 ms   <- D14 as diagnosed
+        main word FTS query             9.4 ms
+        trigram companion query        53.6 ms   <- never used at this scale
+      VectorTopK (sqlite-vec)          0.014 ms
+      DerivativeMessageHits            0.049 ms
+
+The vector path — the usual suspect for "slow at scale", and the one this
+project has spent two sprints on — costs 14 MICROseconds, because D1's vec0
+index does the work. The cost was in the lexical path, and mostly in the C2
+trigram companion, which runs the RAW query (D11's filter never applied to it)
+and so scans doclists for a term present in every document.
+
+### Two changes, one of them the one the plan asked for
+
+**1. df comes from fts5vocab (the D14 item).** Schema v9 adds
+`fts_revisions_vocab` and `fts_derivatives_vocab`, `fts5vocab(...,'row')`
+companions publishing `(term, doc, cnt)`; `termDF` seeks a term instead of
+counting matching rowids up to a corpus-proportional LIMIT. `indexedDocs` is
+untouched (already O(1)), as are the cutoff arithmetic, the single-document
+floor, the all-common fallback and the unmatched-term asymmetry. Only the
+source of df moved.
+
+**2. A union that cannot contribute is not run.** `LexicalTopKPlan` unions the
+word index with the derivative index and the C2 trigram index through
+`appendUnseen`, which stops at k — so when the word index has already returned
+k candidates, both companions' results are discarded in full. They were still
+being computed. The guard is `if len(out) < k`, and it cannot change an answer:
+the discarded work is discarded by the pre-existing loop condition.
+
+### The finding that matters: fts5vocab is NOT an O(1) lookup
+
+The build plan said the vocab companion "turns the probe into an indexed
+lookup". It seeks to the term in O(log V) and then computes `doc` by **walking
+that term's doclist** — so it is O(df), and for a term the probe would call
+common, df ≥ n/2 by definition. Measured on the scorecard corpus, one term:
+
+    corpus     probe (D11)   vocab (D14)     whole 2-term plan: probe → vocab
+    2,000        68 µs         51 µs           98 µs →  71 µs
+    20,000      604 µs        592 µs          618 µs → 619 µs
+    100,000    2.451 ms      1.849 ms        2.649 ms → 2.041 ms
+
+Never slower, up to 1.4× faster on the common term and 2.2× on a rare one, and
+structurally right — asking the index for df rather than enumerating rows. But
+it does not change the asymptotics, and anyone reading "indexed lookup" as
+"constant time" would be repeating the exact mistake D14 was raised for: a
+bound that looks constant and is a function of corpus size. FTS5 stores no
+per-term document count anywhere, so there is no O(1) answer to buy.
+
+### Folding a query term, and why it is ASCII-only
+
+fts5vocab stores terms as the tokenizer emitted them, so a raw query term has
+to be folded the way `unicode61 tokenchars '_-#@'` folded the documents before
+it can be looked up. `indexToken` does that for ASCII and **refuses everything
+else**, handing the term to the old probe instead:
+
+- For ASCII the fold is exactly reproducible — A–Z lowercase, `[0-9A-Za-z]`
+  plus the four tokenchars are token bytes, everything else separates — with no
+  dependence on which Unicode version SQLite's tables were built from and none
+  on `remove_diacritics`, which is a no-op on ASCII.
+- A mis-fold does not fail loudly: it reads a DIFFERENT term's document
+  frequency and moves a ranking decision silently. That is the one new failure
+  mode this change could introduce, so the non-ASCII case is not guessed at.
+- Cost of the conservatism: a non-ASCII query term keeps D11's probe cost. In a
+  Latin-script corpus the terms that make the probe expensive ("the", "and", a
+  project name) are ASCII; a CJK corpus gets no speed-up at all. Stated rather
+  than hidden.
+- A term producing no token, or more than one ("foo.bar", "don't"), also falls
+  back: an empty phrase matches nothing, and a multi-token phrase's df is a
+  property of ADJACENCY that no per-term vocabulary can answer.
+
+`TestD14FoldMatchesTheTokenizer` is the guard, and it asks SQLite rather than
+arguing: for 412 terms — every ASCII byte alone, leading, and inside a word,
+plus accents, ß, CJK, ligatures, an astral-plane letter — whenever the fold
+claims one token, a real fts5 table with the same tokenizer must produce
+exactly that token. 272 folded; 140 refused. `config.FTSTokenChars` is the
+single source, and a test pins it against the DDL, which cannot interpolate a
+Go constant.
+
+### The acceptance criterion: are the terms judged common identical?
+
+**Yes — established against the old probe directly, not against a transcript.**
+`lexicalMatch` is now parameterised by its df source, so the rule exists once
+and the superseded probe is driven through it as an oracle (the way brute-force
+cosine remains the vector index's oracle, rulings §7).
+`LexicalPlansForTest(query, derivatives)` returns both plans and every
+differential asserts `reflect.DeepEqual` over the whole plan — Terms, Common,
+Unmatched and AllCommon, in order.
+
+- **Golden corpus, all 30 queries:** identical. And a finding: the golden corpus
+  judges **no** term common — 184 diverse messages, cutoff 93, and no query term
+  reaches it. 10 of 30 queries drop an unmatched term. So the golden corpus
+  alone cannot witness the branch D14 changes, and the test says so instead of
+  looking thorough; a separate scorecard-shaped corpus (400 bodies, "routine"
+  in every one) carries the common branch for all 97 query shapes plus the
+  all-common fallback.
+- **Randomized differential:** 25 corpora × 12 queries over an alphabet built to
+  straddle every fold boundary, fixed seed.
+- **Awkward terms and degenerate corpus sizes:** punctuation, apostrophes,
+  separators, every tokenchar, uppercase, CJK, a 500-character term, the
+  one-document floor, a two-document mesh.
+- **Derivative index:** its own vocabulary, its own population, its own plans —
+  identical, over a corpus of real PDF attachments through the derive pipeline.
+- **End to end:** the ordered top-10 corpus keys for all 30 golden queries under
+  P0 and P2, hybrid and lexical-only — 120 result lists, with each query's plan
+  printed beside them — are **byte-identical** to the same harness run on the
+  parent commit. `cairn bench golden`: Success@5 0.97, lexical-only top-10 0.97,
+  same single miss. The ≥0.96 ratchet is untouched.
+
+### Measured effect (dev container, same machine, before and after)
+
+`TestScorecard` at each scale, search P50 / P95:
+
+    corpus     before              after
+    2,000      3.477 / 4.539 ms    3.442 / 4.333 ms
+    20,000    14.885 / 19.635 ms   4.718 / 5.628 ms
+    100,000   62.219 / 89.641 ms  14.333 / 16.634 ms
+
+100k component profile after the change: full search 15.0 ms, of which the term
+plan is ~2.0 ms and the main word FTS query ~9.4 ms; the trigram query, which
+would still cost 55.7 ms, is not run. Every other scorecard quantity is
+unchanged within run-to-run noise (append 2.38 ms/event, ack→visible P95
+1.85 ms, cold recovery 35.7 s, backup 748.0 MB).
+
+### The exit criterion is NOT met, and this is why
+
+S17's exit was "search P50 flat, or near-flat, across 2k → 20k → 100k". It is
+3.4 → 4.7 → 14.3 ms: 4.3× better at 100k, and still growing. The growth that
+remains is a different quantity from the one D14 named. The old probe scanned
+n/2 rows **however few documents the query actually matched**; what is left
+scales with the number of MATCHING documents — 21 at 2k, 207 at 20k, 1031 at
+100k for the scorecard's query shape, because "topic-N" cycles over 97 topics
+so matches are 1% of the corpus by construction. Per match the query does three
+index seeks (fts row → revision → head-revision check) and bm25 scores it, and
+a ranking cannot rank what it has not scored. Two of the three scales are now
+under 5 ms; the <200 ms visibility gate passes by 100×.
+
+That residual is recorded as **§4 D15** rather than smuggled into this entry as
+a success: it is real, it is measurable, and it is not what D14 was.
+
+### Mutation-tested (break it, confirm the suite notices)
+
+Ten mutants, nine caught: `cnt` (instances) for `doc` (documents); df off by
+one; folding non-ASCII with a naive lowercase; accepting a multi-token term by
+taking its first token; dropping the tokenchars so `-` separates; deleting the
+probe fallback entirely; removing the vocab DDL from the schema; skipping the
+trigram union unconditionally; running both unions when the pool is full (the
+pre-D14 shape); and — the one that first survived — guarding with `len(out) <
+k-1`, which silently drops the last slot's trigram hit. That mutant is what
+added the boundary case with exactly one free slot; the union counters
+(`UnionQueriesForTest`) exist so a skip is asserted as a skip rather than
+inferred from a timing.
+
+**The tenth mutant survives and is equivalent.** Returning 0 instead of falling
+back to the probe when the vocabulary has no row for a folded term is
+undetectable: with an ASCII-only fold proven exact, "absent from the
+vocabulary" means "absent from the corpus", and both paths answer 0. The branch
+is insurance against a future widening of the fold, not a live path, and
+`TestD14FoldMatchesTheTokenizer` is what actually holds the invariant. Recorded
+rather than papered over with a test that only appears to cover it.
+
+### Rejected, with reasons
+
+- **A df table maintained on the append path.** The only structure that gives
+  an O(1) df. It requires tokenizing every body in Go at index time — a second
+  tokenizer, divergence-prone, in front of the durability path — and adds an
+  upsert per distinct token to an ack that is currently 2.2 ms. Buying ~2 ms of
+  query time with that is a bad trade twice over.
+- **A memoised df with monotone bounds.** FTS rows are only ever inserted
+  (retraction and supersession filter at query time), so a cached (df, n) pair
+  bounds the true df in [df, df + growth] and can often decide `df ≥ cutoff`
+  exactly without re-reading anything — genuinely exact, and it would flatten
+  the probe. Not taken now: it is ~2 ms of a 14 ms search, it puts cached state
+  behind a ranking-affecting decision, and the residual it would not touch is
+  larger. Noted in D15 as the option if the probe ever dominates again.
+- **Applying D11's term filter to the trigram companion.** It would cut the
+  trigram query's cost when the companion actually runs, but C2's whole purpose
+  is substring matching, where "this term cannot order results" is a claim
+  about tokens, not substrings. That is a C2 semantics change and needs its own
+  acceptance work; skipping a query whose results are discarded needs none.
+
+### Schema v9, and the rebuild exercised rather than assumed
+
+`ProjectionSchemaVersion` 8 → 9. The projection is derived, so the daemon
+deletes and replays it on drift; that path was exercised twice — once on a
+purpose-built fixture whose vocab tables were dropped and version stamped back
+to 8 (asserting the warning, the rebuilt companions, and that the probe then
+decides identically), and once for real on the 100k corpus left over from the
+profiling run: `found 8, want 9 — rebuilding the derived projection from the
+log`, 2m25s to replay 100,000 events, correct answers afterwards.
+
+`make verify` (including `test-novec`), `make test-race` and `make eval` all
+green.
+
+## D15 — the candidate query's per-match cost (2026-08-19) — DONE [S18]
+
+D14 left search at 100k growing with the number of documents a query MATCHES —
+1031 of them for the scorecard's query shape — and named two candidates for the
+residual, both of which buy milliseconds with duplicated or cached state.
+Neither was taken. The profile found something else: the per-match work was
+three index seeks answering ONE question, and two of them re-derived what the
+third already said. The candidate query now runs one join instead of three. No
+schema change, no new column, no cached state, byte-identical results.
+
+Search P50 at 100k: **15.6 ms → 12.1 ms**, before and after measured
+interleaved on the same machine.
+
+### The profile, before anything was changed
+
+100k synthetic events (the scorecard corpus), median over the scorecard's 50
+queries, in-process with `BagOfWords`, dev container:
+
+    full d.Search                        14.1 ms
+      LexicalTopKPlan                    11.7 ms
+        term plan (D11 decision, D14 df)  2.1 ms
+        word-index candidate query        7.7 ms   <- 1031 matches
+      RankRows(100)                       0.57 ms
+      ResultMeta(10)                      0.05 ms
+      everything else                     ~4 ms
+      (trigram companion, NOT run: 47.7 ms — D14's guard still earning it)
+
+Then the same query built up one join at a time, every shape asserted to return
+production's ids in production's order (97 queries x 3 interleaved passes):
+
+    match enumeration only (count)        0.07 ms
+    match + bm25 + ORDER BY + LIMIT       0.78 ms   <- no joins at all
+    + 1 join  (fts_map)                   2.53 ms
+    + 2 joins (+ revisions)               6.58 ms
+    + 3 joins (+ messages) = production   8.36 ms
+
+**Ninety per cent of the candidate query was join seeks.** Finding the matching
+documents and scoring them cost 0.78 ms; turning each match into a message id
+and testing headness and retraction cost the rest, because the pool is cut to k
+only AFTER the filter, so all 1031 matches are joined and 100 survive.
+
+That refines D15's own breakdown rather than contradicting it. D15 said the main
+word query was "1031 matches x (3 index seeks + bm25)"; the profile says the
+bm25 half is a tenth of it and the seeks are essentially all of it. It also
+confirms D14's guard is still worth its line: the trigram companion would cost
+45 ms per search and is not run.
+
+### The three seeks were asking one question three ways
+
+    JOIN fts_map map ON fts_revisions.rowid = map.rowid          -- which revision
+    JOIN revisions r ON r.revision_id = map.revision_id          -- whose message
+    JOIN messages m ON m.message_id = r.message_id               -- and is it
+                   AND m.head_revision_id = r.revision_id        --   the head?
+
+`revision_id` is a primary key, so a revision belongs to exactly one message;
+and a message's `head_revision_id` is only ever set to a revision inserted for
+that same message in the same transaction (`applyPayload`: publish sets it
+beside the revisions INSERT, revise_body sets it to the last revision it just
+inserted). So "is there a message whose head revision is this one?" already
+answers "whose message is it?": the middle hop re-derived a fact the messages
+row had stated, and the ownership half of the last hop restated it a third time.
+One join replaces all three:
+
+    JOIN messages m ON m.head_revision_id = map.revision_id
+
+`idx_messages_head` already indexes it — the index D1 added for the vector path,
+which has joined exactly this way since (`vec.go`). This is a reformulation of a
+filter, not a new structure: nothing is stored, nothing is duplicated, nothing
+can drift, and the schema version does not move. The C2 trigram companion's
+candidate query gets the same treatment, through the same function, because two
+copies of one filter are two copies that drift.
+
+### Both of D15's candidates were measured, and both declined
+
+Run as real SQL against the real 100k corpus rather than argued about — 97
+queries x 3 interleaved passes, every variant asserted to return production's
+exact ordered ids:
+
+    production (3 joins)                  8.36 ms
+    + covering index on messages          8.50 ms   (planner declines it)
+    + covering indexes on both, forced    6.97 ms
+    message_id carried in fts_map         4.88 ms   (duplicates an IMMUTABLE fact)
+    head-join, no schema change           4.65 ms   <- SHIPPED
+    head/retracted flags beside the rowid 3.04 ms   (D15 candidate 1)
+
+- **Candidate 1 — head/retracted in the FTS row's own table.** Real, and worth a
+  further 1.6 ms: it removes the last messages seek. It also puts a copy of
+  `retracted` and of headness — the two mutable facts that decide whether
+  content may be shown at all — beside the index, where a missed update is a
+  retracted message surfacing in search and nothing necessarily notices. 1.6 ms
+  of a 12 ms search, against the one guarantee that must not fail quietly, on a
+  path whose gate passes by 100x. Declined. Note that the half of its advantage
+  which needs only IMMUTABLE duplication (message_id carried in fts_map, 4.88
+  ms) is what the head-join already gets for free — so the duplication buys
+  nothing until it becomes the mutable kind.
+- **Candidate 2 — memoised df with monotone bounds.** Still exact, still ~2 ms
+  (the term plan is 2.19 ms), still cached state behind a ranking-affecting
+  decision that R47/R51 reconciliation needs to be stable. D14 declined it at
+  2 ms of 14; it is now 2 ms of 12 and the argument has not changed. Declined
+  again — recorded as a second decline rather than carried forward as a plan
+  item.
+- **Covering indexes**, the option with no duplication at all, are worth 1.4 ms
+  and only when forced with `INDEXED BY`: SQLite's planner would not choose them
+  on its own cost estimates. Not taken — the head-join is better and needs no
+  hint.
+
+### The floor, with the arithmetic
+
+After the change, a 100k search is ~12 ms and every millisecond is accounted
+for (same run, warm cache, median of 50 queries):
+
+    term plan (2 terms)                   2.19 ms   O(df): fts5vocab walks the
+                                                    term's doclist, and FTS5
+                                                    stores no per-term document
+                                                    count anywhere
+    candidate query                       6.33 ms   1031 matches
+      match + bm25 + sort + limit         0.78 ms   IRREDUCIBLE — ranking cannot
+                                                    rank what it has not scored
+      fts_map rowid -> revision_id        1.75 ms
+      messages head/retracted lookup      3.80 ms
+    RankRows(100) + ResultMeta(10)        0.66 ms
+    SaveExplanations (R47/R51, 1 fsync)   0.41 ms
+    everything else                       ~2 ms     query embedding, vector
+                                                    top-K (14 us — D1's vec0),
+                                                    scoring, ten snippet reads
+                                                    from the object store, scope
+                                                    resolution, telemetry write
+
+Of that, ~3.1 ms is fixed cost that does not move with the corpus at all, and
+2.19 + 6.33 = 8.5 ms is the part that grows. Inside the growing part the only
+addressable lines are the two seeks, and only by duplicating state: 3.80 ms by
+copying head/retracted next to the rowid (candidate 1, declined — and the
+interleaved bake-off puts its real prize lower, at 1.6 ms), and the 1.75 ms
+fts_map seek only by folding the index and its rowid map into one structure.
+The df walk has no O(1) answer without a cache (candidate 2, declined).
+
+**So the residual is still O(matching documents), and what is left of it is
+inherent**: 6.1 us per matching document, of which 0.76 us is the scoring that
+ranking exists to do and the rest is two index seeks that no amount of query
+rewriting removes. A corpus where a query matches 1% of documents pays that
+1031 times at 100k and would pay it ~10,000 times at 1M; the shape of the curve
+did not change, its constant fell by 45%.
+
+### Results identical — established, not asserted
+
+- **Differential against the superseded query.** `headMessageHits` is
+  parameterised by its head FILTER the way D14 parameterised `lexicalMatch` by
+  its df SOURCE, so the pre-D15 three-join shape is kept as the oracle and the
+  rule around it exists once. `LexicalCandidatesForTest` and
+  `TrigramCandidatesForTest` run both, and every assertion is
+  `reflect.DeepEqual` over the ordered ids: the representative fixture (a
+  superseded revision, a retracted message, identifier bodies, a term in no
+  document) x 14 queries x include-retracted x k in {1,2,5,100}; 12 randomized
+  corpora built from publishes, single and paired revisions, and retractions,
+  seeded; both indexes; and the same corpus again after `reindex --lexical`
+  rebuilt fts_map from the revisions table instead of from the append path.
+- **The filter still filters**, which agreement alone would not prove: the
+  superseded body and the retracted message both still have FTS rows, neither
+  reaches the candidate pool, and `include_retracted` restores exactly the
+  retracted one.
+- **The invariant is asserted, not assumed.** Every corpus is checked for heads
+  with no revision and heads owned by another message; both are zero. A
+  deliberate violation — pointing one message's head at another message's
+  revision, which the event writer cannot do because revision_id is a primary
+  key — makes the two queries disagree, so the differential demonstrably sees
+  the drift it exists to see.
+- **End to end:** the ordered top-10 corpus keys for all 30 golden queries under
+  P0 and P2, hybrid and lexical-only — 120 result lists, each printed with its
+  term plan — are **byte-identical** to the same harness run on the parent
+  commit. `cairn bench golden`: Success@5 0.97, lexical-only top-10 0.97, the
+  same single miss. The >=0.96 ratchet is untouched.
+
+### Measured effect (dev container, before/after interleaved at each scale)
+
+`TestScorecard` search P50 / P95, with `before` run from a git worktree at the
+parent commit so there is no ambiguity about which binary produced which number:
+
+    corpus     before                after
+    2,000      3.574 / 4.881 ms      3.475 / 5.031 ms      (21 matches/query)
+    20,000     4.947 / 6.139 ms      4.536 / 6.070 ms      (207 matches/query)
+    100,000   15.563 / 17.885 ms    12.087 / 15.519 ms    (1031 matches/query)
+
+The improvement tracks the match count, which is the point: 3% at 2k, 8% at 20k,
+22% at 100k. Every other scorecard quantity is unchanged within noise (append
+2.31 -> 2.34 ms/event, ack->lexical-visible P95 1.796 -> 1.659 ms, cold recovery
+43.9 -> 44.6 s, backup 748.0 MB both). The <200 ms visibility gate now passes by
+~120x.
+
+Since D14's entry: search P50 across the three scales is 3.5 / 4.5 / 12.1 ms
+against D11-era 3.5 / 14.9 / 62.2 — 5.1x at 100k over two sprints.
+
+### Mutation-tested (break it, confirm the suite notices)
+
+Seven mutants, six caught, one equivalent:
+
+- head test dropped from the filter (superseded revisions surface) — caught by
+  all three differentials and by C2's own test;
+- retraction filter neutered — caught;
+- deterministic tie-break dropped from the ORDER BY — **survived at first**,
+  which is why `TestD15TiedCandidatesBreakByMessageID` now exists: three
+  documents with identical text score identically under bm25 and are published
+  with DESCENDING message ids, so insertion order — what an unspecified tie
+  falls back to — is the opposite of the order rulings §7 requires. Re-run:
+  caught. The tie-break predates D15, but D15 moved it into shared code, and a
+  rule with no test survives the next refactor by luck;
+- pool cut off by one — caught (by D14's union counters);
+- trigram companion queried against the word index — caught;
+- ownership check dropped from the ORACLE itself — caught, which is what stops
+  the oracle degenerating into a copy of the thing it checks.
+
+**The survivor is equivalent:** running the trigram path through the three-join
+filter returns the same rows by construction — the two filters differ only in
+cost, which is the entire claim of this change. Recorded rather than papered
+over with a test that only appears to cover it.
+
+### Judgment calls
+
+- **Nothing was duplicated, deliberately.** The plan offered a per-match saving
+  in exchange for state that can drift; the profile found a larger saving with
+  no state at all, so the question of whether the duplication is safe never had
+  to be answered.
+- **`SearchLexical` was left alone.** It needs the revision's body_hash and
+  text_class, so it cannot drop to one join, and nothing on the retrieval path
+  calls it — only tests do. Rewriting it would be a change with no measurement
+  behind it.
+- **The profiling harness is committed** (`TestD15BuildCorpus`,
+  `TestD15Profile`, `TestD15Variants`, `TestD15GoldenDump` — all env-gated and
+  skipped by default). D14's lesson and D15's were both "profile first, the
+  attribution is not where you think", and both sprints began by rebuilding the
+  same 100k corpus and the same timing scaffolding by hand. The variant bake-off
+  writes scratch tables into the projection it profiles, so it refuses to run
+  against any directory it did not build itself (a marker file the builder
+  writes).
+- **A measurement artifact, found and corrected:** the first component profile
+  timed `LexicalTopKPlan` immediately after reopening the projection, charging
+  it ~2 ms of page-cache misses that the later loops never paid. The harness now
+  warms the cache over every query before timing anything, and the numbers above
+  come from warmed runs. Run-to-run variance on this container is ~10%, which is
+  why every before/after claim here comes from an interleaved comparison and not
+  from two runs an hour apart.
+
+### No successor item raised
+
+Every remaining lever is measured and declined above, so raising a D16 would be
+raising a plan item to do the thing this sprint decided not to do. The trigger
+that would reopen it is S13's 1M-event scorecard: the residual scales with
+matching documents, that run has ~10x as many per query, and if it lands
+somewhere that matters, the arithmetic above says exactly which milliseconds are
+for sale and what each one costs.
+
+`make verify` (including `test-novec`), `make test-race` and `make eval` all
+green.

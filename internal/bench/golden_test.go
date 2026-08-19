@@ -47,6 +47,16 @@ func TestRunGoldenReproducesClaim(t *testing.T) {
 	if !res.PassLexicalOnly {
 		t.Fatalf("lexical top-10 %.2f", res.LexicalTop10)
 	}
+	// D11 ratchet. Conjunctive matching scored 0.80 here (24/30) because six of
+	// the thirty queries had NO document containing every term, so the lexical
+	// arm returned nothing at all for them. Disjunction moved it to 0.97
+	// (29/30) — the same single miss as the hybrid pass. This bound is above the
+	// old value on purpose: the gate at 0.60 cannot tell the two regimes apart,
+	// and a silent return to conjunction would otherwise pass CI.
+	if res.LexicalTop10 < 0.96 {
+		t.Fatalf("lexical-only top-10 %.2f, want ≥ 0.96 (D11 measured 0.97 = 29/30; "+
+			"a drop toward 0.80 means lexical matching went conjunctive again)", res.LexicalTop10)
+	}
 	for _, want := range []string{"Success@5", "lexical-only top-10", "PASS"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("report missing %q:\n%s", want, out.String())

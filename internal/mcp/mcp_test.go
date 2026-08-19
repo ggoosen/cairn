@@ -557,3 +557,81 @@ func TestToolSchemasMatchDaemonValidation(t *testing.T) {
 		}
 	}
 }
+
+// D4 (MCP surface): budget_tokens is offered by every budgeted tool, exactly
+// one budget is accepted, and the envelope names the tokenizer. MCP is the
+// surface an agent actually runs on (R21), so the contract has to hold here
+// and not only in the Go API.
+func TestD4BudgetTokensOverMCP(t *testing.T) {
+	s, _, _ := startMesh(t)
+
+	// every budgeted tool advertises BOTH budgets, and says the token counter
+	// is an approximation rather than letting a model assume BPE exactness
+	budgeted := map[string]bool{"cairn_digest": false, "cairn_search": false, "cairn_thread": false}
+	for _, tool := range s.Tools() {
+		if _, ok := budgeted[tool.Name]; !ok {
+			continue
+		}
+		schema := string(tool.InputSchema)
+		if !json.Valid(tool.InputSchema) {
+			t.Fatalf("%s schema is not valid JSON: %s", tool.Name, schema)
+		}
+		for _, want := range []string{`"budget_chars"`, `"budget_tokens"`, config.TokenizerApprox, "APPROXIMATION", "exactly ONE"} {
+			if !strings.Contains(schema, want) {
+				t.Errorf("%s schema omits %q: %s", tool.Name, want, schema)
+			}
+		}
+		budgeted[tool.Name] = true
+	}
+	for name, seen := range budgeted {
+		if !seen {
+			t.Fatalf("%s is not in the tool list", name)
+		}
+	}
+
+	sent := callTool(t, s, "cairn_send", map[string]any{
+		"body": "an mcp note about widget assembly with enough words to cost real tokens"}, false)
+	msgID := sent["message_id"].(string)
+
+	for _, tc := range []struct {
+		tool string
+		args map[string]any
+	}{
+		{"cairn_digest", map[string]any{"budget_tokens": 90}},
+		{"cairn_search", map[string]any{"query": "widget", "budget_tokens": 90}},
+		{"cairn_thread", map[string]any{"thread_id": msgID, "budget_tokens": 90}},
+	} {
+		out := callTool(t, s, tc.tool, tc.args, false)
+		budget, ok := out["budget"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s envelope carries no budget: %v", tc.tool, out)
+		}
+		if budget["budget_mode"] != "tokens" {
+			t.Errorf("%s budget_mode = %v, want tokens", tc.tool, budget["budget_mode"])
+		}
+		if budget["tokenizer"] != config.TokenizerApprox {
+			t.Errorf("%s tokenizer = %v, want %s", tc.tool, budget["tokenizer"], config.TokenizerApprox)
+		}
+		if budget["approximate"] != true {
+			t.Errorf("%s did not flag its tokenizer as approximate: %v", tc.tool, budget)
+		}
+		if used, limit := budget["budget_used"].(float64), budget["budget_limit"].(float64); used > limit {
+			t.Errorf("%s used %v of a %v token budget", tc.tool, used, limit)
+		}
+	}
+
+	// both budgets at once is a TOOL error the model can read and correct
+	for _, tc := range []struct {
+		tool string
+		args map[string]any
+	}{
+		{"cairn_digest", map[string]any{"budget_chars": 500, "budget_tokens": 100}},
+		{"cairn_search", map[string]any{"query": "widget", "budget_chars": 500, "budget_tokens": 100}},
+		{"cairn_thread", map[string]any{"thread_id": msgID, "budget_chars": 500, "budget_tokens": 100}},
+	} {
+		out := callTool(t, s, tc.tool, tc.args, true)
+		if !strings.Contains(out["error"].(string), "budget_tokens") {
+			t.Errorf("%s: refusal does not name the offending argument: %v", tc.tool, out["error"])
+		}
+	}
+}

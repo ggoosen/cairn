@@ -26,7 +26,10 @@ CREATE TABLE IF NOT EXISTS interactions (
   agent_instance_id TEXT,
   inferred INTEGER NOT NULL DEFAULT 0,
   query TEXT,
-  budget_requested INTEGER,
+  budget_requested INTEGER,          -- in budget_mode's own unit (D4)
+  budget_mode TEXT,                  -- chars | tokens | unbudgeted
+  budget_tokenizer TEXT,             -- the NAMED counter that measured it
+  payload_units INTEGER,             -- payload cost in budget_mode's unit
   payload_chars INTEGER NOT NULL,
   result_count INTEGER NOT NULL,
   retrieval_mode TEXT,
@@ -78,9 +81,19 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	// N2 migration: pre-existing local telemetry DBs lack the principal
-	// column (telemetry is cache-class; additive ALTER is safe).
-	var hasPrincipal bool
+	// Additive migrations for pre-existing local telemetry DBs (telemetry is
+	// cache-class; additive ALTER is safe). N2 added `principal`; D4 added
+	// the budget mode, the tokenizer that counted it, and the payload cost
+	// IN THE BUDGET'S OWN UNIT — without that last column the §11 budget-
+	// compliance gate would compare a character count against a token limit
+	// and report a violation for every honest token-budgeted retrieval.
+	wanted := []struct{ name, decl string }{
+		{"principal", "TEXT"},
+		{"budget_mode", "TEXT"},
+		{"budget_tokenizer", "TEXT"},
+		{"payload_units", "INTEGER"},
+	}
+	have := map[string]bool{}
 	rows, err := db.Query("PRAGMA table_info(interactions)")
 	if err != nil {
 		db.Close()
@@ -96,13 +109,14 @@ func Open(path string) (*Store, error) {
 			db.Close()
 			return nil, err
 		}
-		if name == "principal" {
-			hasPrincipal = true
-		}
+		have[name] = true
 	}
 	rows.Close()
-	if !hasPrincipal {
-		if _, err := db.Exec("ALTER TABLE interactions ADD COLUMN principal TEXT"); err != nil {
+	for _, c := range wanted {
+		if have[c.name] {
+			continue
+		}
+		if _, err := db.Exec("ALTER TABLE interactions ADD COLUMN " + c.name + " " + c.decl); err != nil {
 			db.Close()
 			return nil, err
 		}
@@ -122,7 +136,10 @@ type Interaction struct {
 	Inferred        bool
 	Query           string
 	Principal       string // N2 capability principal hierarchy
-	BudgetRequested int
+	BudgetRequested int    // D4: in BudgetMode's unit, not always characters
+	BudgetMode      string // D4: chars | tokens | unbudgeted
+	BudgetTokenizer string // D4: the named counter that measured it
+	PayloadUnits    int    // D4: payload cost in BudgetMode's unit
 	PayloadChars    int
 	ResultCount     int
 	RetrievalMode   string
@@ -141,12 +158,23 @@ func (s *Store) Record(it Interaction) error {
 	if it.Inferred {
 		inferred = 1
 	}
+	// D4: a caller that does not fill the budget mode (every pre-D4 caller,
+	// and the tests that stand in for them) is character-budgeted by
+	// definition, so the payload's cost in the budget's unit IS its
+	// character count. Written explicitly rather than left 0, which would
+	// read as "a payload that cost nothing" to the compliance gate.
+	units := it.PayloadUnits
+	if it.BudgetMode == "" {
+		units = it.PayloadChars
+	}
 	if _, err := tx.Exec(`INSERT OR REPLACE INTO interactions
 		(interaction_id, kind, task_id, agent_surface, agent_instance_id, inferred, query,
-		 budget_requested, payload_chars, result_count, retrieval_mode, principal, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 budget_requested, budget_mode, budget_tokenizer, payload_units, payload_chars,
+		 result_count, retrieval_mode, principal, created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		it.InteractionID, it.Kind, nz(it.TaskID), nz(it.AgentSurface), nz(it.AgentInstanceID), inferred,
-		nz(it.Query), it.BudgetRequested, it.PayloadChars, it.ResultCount, it.RetrievalMode,
+		nz(it.Query), it.BudgetRequested, nz(it.BudgetMode), nz(it.BudgetTokenizer),
+		units, it.PayloadChars, it.ResultCount, it.RetrievalMode,
 		nz(it.Principal), it.CreatedAt.UTC().Format(config.WallTimeFormat)); err != nil {
 		return err
 	}
@@ -396,7 +424,11 @@ func (s *Store) Gates() (*GateStats, error) {
 	if err := s.db.QueryRow(`SELECT count(*) FROM interactions WHERE budget_requested > 0`).Scan(&g.BudgetedCount); err != nil {
 		return nil, err
 	}
-	if err := s.db.QueryRow(`SELECT count(*) FROM interactions WHERE budget_requested > 0 AND payload_chars > budget_requested`).Scan(&g.BudgetViolations); err != nil {
+	// D4: compare the payload against the budget IN THE BUDGET'S OWN UNIT.
+	// payload_units is NULL for rows written before D4, which were all
+	// character-budgeted — COALESCE keeps their verdict identical.
+	if err := s.db.QueryRow(`SELECT count(*) FROM interactions
+		WHERE budget_requested > 0 AND COALESCE(payload_units, payload_chars) > budget_requested`).Scan(&g.BudgetViolations); err != nil {
 		return nil, err
 	}
 	if err := s.db.QueryRow(`SELECT count(*) FROM interactions WHERE outcome='found'`).Scan(&g.OutcomeFound); err != nil {

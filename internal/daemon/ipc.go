@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ggoosen/cairn/internal/config"
+	"github.com/ggoosen/cairn/internal/object"
 	"github.com/ggoosen/cairn/internal/projection"
 	"github.com/ggoosen/cairn/internal/telemetry"
 )
@@ -39,6 +40,9 @@ type Request struct {
 	SessionProfile string `json:"session_profile,omitempty"`
 	SessionPID     int    `json:"session_pid,omitempty"`
 	TargetSession  string `json:"target_session,omitempty"`
+	// D3 (spec §7.2): optional positive resource selectors for the handle
+	// being minted. Operator-tier only, like every other session-* parameter.
+	SessionSelectors *Selectors `json:"session_selectors,omitempty"`
 
 	Publish *PublishRequest `json:"publish,omitempty"`
 
@@ -91,13 +95,18 @@ type Request struct {
 	LocalSub *LocalSubRequest `json:"local_sub,omitempty"`
 
 	// reads
-	Query            string `json:"query,omitempty"`
-	K                int    `json:"k,omitempty"`
-	BudgetChars      int    `json:"budget_chars,omitempty"`
-	IncludeRetracted bool   `json:"include_retracted,omitempty"`
-	AgentView        string `json:"agent_view,omitempty"` // fetch/digest view
-	InteractionID    string `json:"interaction_id,omitempty"`
-	ThreadID         string `json:"thread_id,omitempty"` // RETR-D4 thread expansion
+	Query        string `json:"query,omitempty"`
+	K            int    `json:"k,omitempty"`
+	BudgetChars  int    `json:"budget_chars,omitempty"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"` // D4: exactly one of the two
+	// BudgetCeilingChars (D4 × D3) is the session's max_budget_chars cap as a
+	// SECOND hard limit. `json:"-"`: the capability gate sets it, never a client
+	// — a client-settable ceiling would be a client-settable capability.
+	BudgetCeilingChars int    `json:"-"`
+	IncludeRetracted   bool   `json:"include_retracted,omitempty"`
+	AgentView          string `json:"agent_view,omitempty"` // fetch/digest view
+	InteractionID      string `json:"interaction_id,omitempty"`
+	ThreadID           string `json:"thread_id,omitempty"` // RETR-D4 thread expansion
 }
 
 // Response is the IPC reply.
@@ -129,6 +138,13 @@ type Response struct {
 	Thread       *ThreadOutput                `json:"thread,omitempty"`       // RETR-D4 thread expansion
 	Topics       []projection.TopicInfo       `json:"topics,omitempty"`       // RETR-D5 topic list
 	Interactions []telemetry.InteractionRow   `json:"interactions,omitempty"` // P4-G6 query log
+
+	// D3 capability selectors. Refused is a TYPED refusal ("you may not ask"),
+	// which an agent must be able to tell from an empty result ("nothing
+	// matched"); Capability reports what the selectors did to a request that
+	// was allowed — a clamp or a scope applied silently is a lie by omission.
+	Refused    *Refusal          `json:"refused,omitempty"`
+	Capability *CapabilityNotice `json:"capability,omitempty"`
 }
 
 // StagedAttachment is the stage-attachment reply: the stored object's hash and
@@ -140,30 +156,94 @@ type StagedAttachment struct {
 	Filename   string `json:"filename,omitempty"`
 }
 
-// SocketDir returns the per-user 0700 directory holding cairn sockets.
+// socketDirCandidates returns, in preference order, the private directories a
+// cairn socket may live in.
+//
 // FIX-A7: the socket used to sit directly in os.TempDir() with default
-// permissions — on multi-user Linux any local user could connect and,
-// with Session:"" granting the operator tier, act as the operator. A
-// 0700 parent directory is the enforceable guarantee (chmod on the
-// socket itself is not honored everywhere). XDG_RUNTIME_DIR is preferred
-// when set (Linux: /run/user/<uid>, already private and short); the
-// TempDir fallback keeps the path under the ~104-byte unix-socket cap on
-// macOS, where TempDir is per-user private anyway.
-func SocketDir() string {
+// permissions — on multi-user Linux any local user could connect and, with
+// Session:"" granting the operator tier, act as the operator. A 0700 parent
+// directory is the enforceable guarantee (chmod on the socket itself is not
+// honored everywhere), which prepareSocketDir establishes for whichever of
+// these is chosen. XDG_RUNTIME_DIR is preferred when set (Linux:
+// /run/user/<uid>, already private, tmpfs, cleaned on logout).
+//
+// D12: the list exists because ONE directory cannot satisfy both properties
+// at once. FIX-A7 reasoned correctly about its own fallback — os.TempDir() on
+// macOS is a 48-byte per-user /var/folders path, so the natural socket path
+// comes to 100 bytes and fits — but it left three bytes of headroom and
+// delegated the whole length question to whoever exports XDG_RUNTIME_DIR. A
+// runtime dir that is "short" on Linux (/tmp, 4 bytes) is 48 bytes on macOS,
+// and the path then overflows. So the choice is now made against the bound
+// rather than against an assumption; the last candidate is the shortest
+// directory that exists on every supported platform, so the ladder cannot run
+// out on a machine with a pathological TMPDIR.
+func socketDirCandidates() []string {
+	leaf := fmt.Sprintf("cairn-%d", os.Getuid())
+	var dirs []string
 	if rd := os.Getenv("XDG_RUNTIME_DIR"); rd != "" {
-		return filepath.Join(rd, "cairn")
+		dirs = append(dirs, filepath.Join(rd, "cairn"))
 	}
-	return filepath.Join(os.TempDir(), fmt.Sprintf("cairn-%d", os.Getuid()))
+	dirs = append(dirs, filepath.Join(os.TempDir(), leaf))
+	if fallback := filepath.Join("/tmp", leaf); dirs[len(dirs)-1] != fallback {
+		dirs = append(dirs, fallback)
+	}
+	return dirs
+}
+
+// SocketDir returns the PREFERRED per-user 0700 directory for cairn sockets.
+// It is the first candidate only: the directory actually in use is
+// filepath.Dir(SocketPath(id)), which may differ when the preferred one would
+// overflow the platform's socket-path bound.
+func SocketDir() string {
+	return socketDirCandidates()[0]
+}
+
+// shortSocketName is the degraded socket leaf for when the full id does not
+// fit: a BLAKE3 prefix over the WHOLE cairn id, so the identity of the leaf is
+// still derived from the whole id rather than from a millisecond timestamp.
+func shortSocketName(cairnID string) string {
+	return object.Hash([]byte(cairnID))[:config.SocketNameShortHexChars] + ".sock"
 }
 
 // SocketPath returns the daemon's unix socket location: short, deterministic
 // per cairn (unix socket path length limits rule out Application Support).
-// The FULL cairn id is required: a UUIDv7 prefix is a millisecond timestamp,
-// and two meshes created in the same millisecond would collide — one
-// daemon's startup would silently remove the other's live socket (the root
+// The FULL cairn id is used when it fits: a UUIDv7 prefix is a millisecond
+// timestamp, and two meshes created in the same millisecond would collide —
+// one daemon's startup would silently remove the other's live socket (the root
 // cause of the TestF3 flake recorded in PROGRESS.md).
+//
+// D12: the result is bounded by config.SocketPathMaxBytes. The ladder degrades
+// the NAME before it degrades the DIRECTORY — an operator who exported
+// XDG_RUNTIME_DIR chose it for a reason (privacy, logout cleanup), and a
+// hashed leaf costs only legibility, whereas silently relocating the socket
+// costs the property they asked for. If nothing fits, the natural path is
+// returned unchanged so Serve can refuse it by name; a caller must never
+// receive a path that lies about where the daemon is.
 func SocketPath(cairnID string) string {
-	return filepath.Join(SocketDir(), cairnID+".sock")
+	dirs := socketDirCandidates()
+	for _, dir := range dirs {
+		for _, leaf := range []string{cairnID + ".sock", shortSocketName(cairnID)} {
+			if p := filepath.Join(dir, leaf); len(p) <= config.SocketPathMaxBytes {
+				return p
+			}
+		}
+	}
+	return filepath.Join(dirs[0], cairnID+".sock")
+}
+
+// checkSocketPathLength refuses a path bind(2) would refuse. D12: bind's own
+// answer is a bare EINVAL — "invalid argument" — naming neither the limit nor
+// the offender, which is how a deterministic macOS failure was read as
+// something else entirely for five sprints. SocketPath only ever returns an
+// over-long path when EVERY candidate directory overflowed, which means a
+// machine configured beyond help; say exactly that, and say which knob moves.
+func checkSocketPathLength(sock string) error {
+	if len(sock) <= config.SocketPathMaxBytes {
+		return nil
+	}
+	return fmt.Errorf("socket path %s is %d bytes, over the %d-byte unix-domain limit: "+
+		"point XDG_RUNTIME_DIR or TMPDIR at a shorter directory",
+		sock, len(sock), config.SocketPathMaxBytes)
 }
 
 // prepareSocketDir creates the socket dir and refuses to serve into one
@@ -202,10 +282,13 @@ func socketPathFile(deviceDir string) string {
 
 // Serve listens on the unix socket until ctx is done.
 func (d *Daemon) Serve(ctx context.Context) error {
-	if err := prepareSocketDir(SocketDir()); err != nil {
+	sock := SocketPath(d.loaded.Portable.CairnID)
+	if err := checkSocketPathLength(sock); err != nil {
 		return err
 	}
-	sock := SocketPath(d.loaded.Portable.CairnID)
+	if err := prepareSocketDir(filepath.Dir(sock)); err != nil {
+		return err
+	}
 	os.Remove(sock) // stale socket from a dead daemon; the flock is the true owner
 	l, err := net.Listen("unix", sock)
 	if err != nil {
@@ -363,42 +446,81 @@ func writeResponse(w io.Writer, resp Response) error {
 // production.
 var DispatchHookForTest func(req Request)
 
+// reqContext is what the capability gate resolved for one request: who is
+// acting, and (D3) what their selectors confine them to. Handlers read it;
+// they never read the session table themselves.
+type reqContext struct {
+	principal string
+	confine   *Confinement      // nil = unconfined
+	notice    *CapabilityNotice // nil = the selectors changed nothing worth saying
+}
+
 func (d *Daemon) dispatch(req Request) Response {
 	if DispatchHookForTest != nil {
 		DispatchHookForTest(req)
 	}
-	fail := func(err error) Response { return Response{Error: err.Error()} }
-
-	// --- N2 capability gate (rulings §7.2, RULINGS.md R21/R23) ------------
-	// Runs BEFORE any op logic, so every refusal is structurally pre-ack.
-	principal := "operator" // tier-1: local CLI without a handle
-	var sess *Session
-	if req.Session != "" {
-		var prof *Profile
-		var err error
-		sess, prof, err = d.sessions.resolve(req.Session, d.now())
-		if err != nil {
-			return Response{Error: "capability: " + err.Error()}
-		}
-		principal = sess.Principal()
-		if strings.HasPrefix(req.Op, "session-") {
-			// R23: handles are non-delegable — a session can neither mint
-			// nor revoke handles; that stays with the operator tier.
-			return Response{Error: "capability: session handles are non-delegable (session ops require the operator tier)"}
-		}
-		if capNeeded := capabilityFor(req.Op); !prof.Allows(capNeeded) {
-			return Response{Error: fmt.Sprintf(
-				"capability: profile %q does not allow %q (op %q) — refused before ack", sess.Profile, capNeeded, req.Op)}
-		}
-		// a handle acts AS its leaf principal: the client-supplied actor is
-		// overridden, and tier-1-only publish knobs are stripped
-		req.Actor = sess.Name
-		if req.Publish != nil {
-			req.Publish.Actor = sess.Name
-			req.Publish.OperatorOverride = false
-			req.Publish.AutoCreateTopics = false
-		}
+	ctx, refusal := d.capabilityGate(&req)
+	if refusal != nil {
+		return *refusal
 	}
+	resp := d.dispatchOp(req, ctx)
+	// D3: a confined session sees its confinement on every answer, so a scoped
+	// result is never mistaken for the whole mesh.
+	if resp.Capability == nil && ctx.notice != nil &&
+		(ctx.notice.BudgetClamped || ctx.notice.BudgetCeilingChars > 0 || len(ctx.notice.TopicGrant) > 0) {
+		resp.Capability = ctx.notice
+	}
+	return resp
+}
+
+// capabilityGate runs the N2 action-tier check (rulings §7.2, R21/R23) and the
+// D3 selector check, in that order, BEFORE any op logic — so every refusal is
+// structurally pre-ack. A non-nil Response is a refusal.
+func (d *Daemon) capabilityGate(req *Request) (reqContext, *Response) {
+	ctx := reqContext{principal: "operator"} // tier-1: local CLI without a handle
+	if req.Session == "" {
+		return ctx, nil
+	}
+	sess, prof, err := d.sessions.resolve(req.Session, d.now())
+	if err != nil {
+		return ctx, &Response{Error: "capability: " + err.Error()}
+	}
+	ctx.principal = sess.Principal()
+	if strings.HasPrefix(req.Op, "session-") {
+		// R23: handles are non-delegable — a session can neither mint
+		// nor revoke handles; that stays with the operator tier.
+		return ctx, &Response{Error: "capability: session handles are non-delegable (session ops require the operator tier)"}
+	}
+	if capNeeded := capabilityFor(req.Op); !prof.Allows(capNeeded) {
+		return ctx, &Response{Error: fmt.Sprintf(
+			"capability: profile %q does not allow %q (op %q) — refused before ack", sess.Profile, capNeeded, req.Op)}
+	}
+	// a handle acts AS its leaf principal: the client-supplied actor is
+	// overridden, and tier-1-only publish knobs are stripped
+	req.Actor = sess.Name
+	if req.Publish != nil {
+		req.Publish.Actor = sess.Name
+		req.Publish.OperatorOverride = false
+		req.Publish.AutoCreateTopics = false
+	}
+	// D3 resource selectors (spec §7.2). The SINGLE enforcement point, one step
+	// after the action tier: refuse, clamp, and resolve the topic scope here so
+	// no handler ever has to consult the session.
+	confine, cerr := d.resolveConfinement(sess)
+	if cerr != nil {
+		return ctx, &Response{Error: cerr.Error()}
+	}
+	refusal, notice, aerr := d.applyConfinement(req, confine)
+	if aerr != nil {
+		return ctx, &Response{Error: aerr.Error()}
+	}
+	ctx.confine, ctx.notice = confine, notice
+	return ctx, refusal
+}
+
+func (d *Daemon) dispatchOp(req Request, ctx reqContext) Response {
+	fail := func(err error) Response { return Response{Error: err.Error()} }
+	principal := ctx.principal
 
 	pubReq := PublishRequest{Actor: req.Actor}
 
@@ -411,14 +533,25 @@ func (d *Daemon) dispatch(req Request) Response {
 		if name == "" {
 			name = req.SessionProfile
 		}
-		created, err := d.sessions.create(name, req.SessionProfile, principal, req.SessionPID, d.now())
+		var sel Selectors
+		if req.SessionSelectors != nil {
+			sel = *req.SessionSelectors
+		}
+		created, err := d.sessions.create(name, req.SessionProfile, principal, req.SessionPID, sel, d.now())
 		if err != nil {
 			return fail(err)
 		}
-		return Response{OK: true, Status: map[string]any{
+		st := map[string]any{
 			"session": created.Token, "principal": created.Principal(),
 			"profile": created.Profile, "expires_at": created.ExpiresAt,
-		}}
+		}
+		if len(sel.Topics) > 0 {
+			st["topic_grant"] = sel.Topics
+		}
+		if sel.MaxBudgetChars > 0 {
+			st["max_budget_chars"] = sel.MaxBudgetChars
+		}
+		return Response{OK: true, Status: st}
 
 	case "session-revoke":
 		if err := d.sessions.revoke(req.TargetSession); err != nil {
@@ -427,7 +560,23 @@ func (d *Daemon) dispatch(req Request) Response {
 		return Response{OK: true}
 
 	case "session-list":
-		return Response{OK: true, Status: map[string]any{"sessions": d.sessions.list()}}
+		return Response{OK: true, Status: map[string]any{"sessions": d.sessions.list(d.now())}}
+
+	case "session-prune":
+		// D9: force the sweep and compaction now, and say what went — the
+		// operator's way to clear a backlog minted by an older daemon.
+		removed, remaining, err := d.sessions.prune(d.now())
+		if err != nil {
+			return fail(err)
+		}
+		total := 0
+		byReason := map[string]any{}
+		for reason, n := range removed {
+			total += n
+			byReason[reason] = n
+		}
+		return Response{OK: true, Status: map[string]any{
+			"removed": total, "by_reason": byReason, "remaining": remaining}}
 
 	case "subscribe-durable":
 		if req.Subscribe == nil {
@@ -598,13 +747,16 @@ func (d *Daemon) dispatch(req Request) Response {
 
 	case "search":
 		sopts := SearchOptions{
-			Query: req.Query, K: req.K, BudgetChars: req.BudgetChars,
+			Query: req.Query, K: req.K,
+			BudgetChars: req.BudgetChars, BudgetTokens: req.BudgetTokens,
 			IncludeRetracted: req.IncludeRetracted,
 		}
 		if req.Search2 != nil {
 			sopts = *req.Search2
 		}
-		sopts.Principal = principal // dispatch-resolved; client value ignored
+		sopts.Principal = principal                       // dispatch-resolved; client value ignored
+		sopts.Confine = ctx.confine.Scope()               // D3; nil when unconfined
+		sopts.BudgetCeilingChars = req.BudgetCeilingChars // D4 × D3; gate-set only
 		out, err := d.Search(sopts)
 		if err != nil {
 			return fail(err)
@@ -612,7 +764,10 @@ func (d *Daemon) dispatch(req Request) Response {
 		return Response{OK: true, Search: out}
 
 	case "digest":
-		out, err := d.Digest(DigestOptions{AgentView: req.AgentView, BudgetChars: req.BudgetChars, Principal: principal})
+		out, err := d.Digest(DigestOptions{AgentView: req.AgentView,
+			BudgetChars: req.BudgetChars, BudgetTokens: req.BudgetTokens,
+			BudgetCeilingChars: req.BudgetCeilingChars,
+			Principal:          principal, Confine: ctx.confine.Scope()})
 		if err != nil {
 			return fail(err)
 		}
@@ -764,8 +919,23 @@ func (d *Daemon) dispatch(req Request) Response {
 		d.mu.Unlock()
 		st := map[string]any{"frontiers": frs, "peers": peers, "bootstrap": d.bootstrapMode,
 			"listener": d.SyncListenState(), "transport": d.transportName, "role": d.myRole()}
+		// P3-6: metered/battery sensing. `metered` is the EFFECTIVE policy value
+		// (config OR sensed) and `metered_why` names which input decided it, so an
+		// operator can tell "not metered" from "could not tell".
+		metered, why := d.meteredNow()
+		power := d.powerState()
+		st["metered"] = metered
+		st["metered_why"] = why
+		st["metered_sensed"] = power.Metered.String()
+		st["on_battery"] = power.OnBattery.String()
+		st["power_source"] = power.Source
 		if dur, derr := d.DurabilityStatus(); derr == nil && len(dur) > 0 {
 			st["blobs"] = dur
+		}
+		// D2: a frontier regression is a mesh-integrity fact, so it rides the
+		// same status payload `cairn net` already reads.
+		if alarms := d.livenessAlarmStatus(); len(alarms) > 0 {
+			st["liveness_alarms"] = alarms
 		}
 		return Response{OK: true, Status: st}
 
@@ -777,16 +947,44 @@ func (d *Daemon) dispatch(req Request) Response {
 		return Response{OK: true, Message: info}
 
 	case "thread":
-		out, err := d.Thread(req.ThreadID, req.BudgetChars, principal)
+		// RETR-D4 + D3: a thread crosses topics BY CONSTRUCTION, so it is the
+		// surface most likely to leak past a topic selector. Out-of-scope
+		// messages are dropped inside Thread and counted; a thread with NOTHING
+		// in scope is a typed refusal, never an empty rendering.
+		out, err := d.Thread(ThreadOptions{
+			ThreadID:    req.ThreadID,
+			BudgetChars: req.BudgetChars, BudgetTokens: req.BudgetTokens,
+			BudgetCeilingChars: req.BudgetCeilingChars,
+			Principal:          principal, Confine: ctx.confine.Scope()})
 		if err != nil {
 			return fail(err)
 		}
-		return Response{OK: true, Thread: out}
+		if ctx.confine.ConfinesTopics() && out.Included == 0 && out.Withheld > 0 {
+			return ctx.confine.refuse("thread",
+				fmt.Sprintf("thread %s lies entirely outside this session's grant (%d message(s) withheld)", req.ThreadID, out.Withheld))
+		}
+		resp := Response{OK: true, Thread: out}
+		if out.Withheld > 0 && ctx.notice != nil {
+			n := *ctx.notice
+			n.Withheld = out.Withheld
+			n.Note = fmt.Sprintf("%d message(s) of this thread lie outside the grant and were withheld", out.Withheld)
+			resp.Capability = &n
+		}
+		return resp
 
 	case "topic-list":
 		topics, err := d.proj.TopicList()
 		if err != nil {
 			return fail(err)
+		}
+		if ctx.confine.ConfinesTopics() {
+			kept := topics[:0]
+			for _, t := range topics {
+				if ctx.confine.MatchesTopic(t.Name) {
+					kept = append(kept, t)
+				}
+			}
+			topics = kept
 		}
 		return Response{OK: true, Topics: topics}
 
@@ -813,6 +1011,20 @@ func (d *Daemon) dispatch(req Request) Response {
 			return fail(err)
 		}
 		return Response{OK: true, Path: path}
+
+	case "export-corpus":
+		// D5: bulk export of every live message as Markdown, the form
+		// `cairn ingest scan` consumes. Operator tier (see capabilityFor's
+		// admin default and opConfinement's refusal): it renders the WHOLE
+		// mesh to disk.
+		root, man, err := d.ExportCorpus()
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Path: root, Status: map[string]any{
+			"root": root, "messages": man.Messages, "cairn_id": man.CairnID,
+			"skipped": len(man.Skipped), "repo_label": CorpusRepoLabel(man.CairnID),
+		}}
 
 	case "export-ingest":
 		res, err := d.IngestExport(req.Path)
@@ -867,6 +1079,25 @@ func (d *Daemon) dispatch(req Request) Response {
 			st["embedder"] = e.ModelID()
 		} else {
 			st["embedder"] = "none (lexical_only)"
+		}
+		// D10: lexical-only has three unrelated causes with three different
+		// remedies (provision the venv / wait out the backlog / fix a broken
+		// embedder) and used to look identical from here.
+		// D1: WHICH vector path is live. The brute-force fallback is a
+		// supported state, not a fault — but an operator watching a large
+		// corpus needs to know which one is answering, because only one of
+		// them scales.
+		if d.proj.VectorIndexActive() {
+			st["vector_path"] = "vec0"
+		} else {
+			st["vector_path"] = "brute_force"
+		}
+		st["vector_path_detail"] = d.proj.VectorIndexNote()
+		rs := d.RetrievalStatus()
+		st["retrieval"] = rs.Mode
+		if rs.Cause != "" {
+			st["lexical_only_cause"] = rs.Cause
+			st["lexical_only_detail"] = rs.Detail
 		}
 		if pending, err := d.proj.CountPendingEmbeddings(); err == nil {
 			st["pending_embeddings"] = pending
@@ -951,8 +1182,10 @@ func (d *Daemon) dispatch(req Request) Response {
 
 	case "saved-run":
 		out, err := d.SavedRun(req.SavedName, SearchOptions{
-			K: req.K, BudgetChars: req.BudgetChars, IncludeRetracted: req.IncludeRetracted,
-			TaskID: req.Actor, Principal: principal,
+			K: req.K, BudgetChars: req.BudgetChars, BudgetTokens: req.BudgetTokens,
+			BudgetCeilingChars: req.BudgetCeilingChars,
+			IncludeRetracted:   req.IncludeRetracted,
+			TaskID:             req.Actor, Principal: principal, Confine: ctx.confine.Scope(),
 		})
 		if err != nil {
 			return fail(err)

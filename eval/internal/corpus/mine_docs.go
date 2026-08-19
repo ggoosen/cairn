@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-// Documentation cross-reference mining (EVAL-PLAN §5-E3).
+// Documentation cross-reference mining (BUILD-PLAN §5-E3).
 //
 // When a technical writer links "see the retry policy" to retries.md, they
 // have asserted that retries.md answers "retry policy". It is a weaker

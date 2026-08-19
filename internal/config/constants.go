@@ -150,6 +150,35 @@ const (
 	DeclaredPriorityMax = 3
 )
 
+// S8 — P2 duplicate and thread-saturation penalties (spec §9.1). Its own block
+// so the profile weights above keep their original shape.
+//
+// Spec §9.1 pins the CAP ("each duplicate/thread-saturation penalty capped at
+// 0.15") and nothing else: it never defines what makes two results duplicates,
+// nor what counts as a saturated thread. The definitions below are the
+// conservative reading — see the RULING-NEEDED note in internal/rank/penalty.go
+// and PROGRESS.md — chosen so that an auditor can recompute every penalty from
+// values Cairn already publishes, with no model, no threshold on a similarity
+// score, and no dependence on a live embedder whose output could drift.
+const (
+	// DuplicatePenaltyValue is the [0,1] feature value carried by a result whose
+	// head-revision body hash has ALREADY appeared higher in the same ranking.
+	// Content-address identity is binary — two bodies are the same object or
+	// they are not — so the feature is 1 for every copy after the first and 0
+	// otherwise; the cap below is what turns it into a score.
+	DuplicatePenaltyValue = 1.0
+
+	// ThreadSaturationFullAt is how many earlier results from the SAME thread it
+	// takes for the saturation feature to reach 1.0 (and so the penalty to reach
+	// the cap). The feature is min(ahead, ThreadSaturationFullAt)/
+	// ThreadSaturationFullAt, so the second result from a thread is penalised a
+	// third of the cap, the third two thirds, the fourth and beyond the full
+	// cap. Graded rather than binary because a thread contributing a second
+	// message is normal and a thread contributing its fourth is crowding out
+	// everything else — the failure §9.1 names.
+	ThreadSaturationFullAt = 3.0
+)
+
 // ---------------------------------------------------------------------------
 // P2 salience inputs (spec §9.2) — LOCAL, telemetry-derived. Raw impressions
 // never leave the node; only bounded salience feeds ranking.
@@ -220,17 +249,51 @@ const (
 // ---------------------------------------------------------------------------
 
 const (
-	// EmbeddingModelID pins the model; EmbeddingModelHash pins the exact
-	// ONNX artifact (BLAKE3 hex). Vectors from different models are never
-	// compared; migration = invalidate + reindex --semantic.
+	// EmbeddingModelID pins the model. Vectors from different models are
+	// never compared; migration = invalidate + reindex --semantic.
+	//
+	// EmbeddingModelHash is a VESTIGE of the ONNX path that never shipped:
+	// it was to hold the BLAKE3 of a vendored ONNX artifact. The sanctioned
+	// fallback (a sentence-transformers subprocess in an operator-provisioned
+	// venv) shipped instead, and artifact pinning with it — but per-venv,
+	// as <venv>/model.hash written at provision time and re-verified before
+	// each worker start (internal/embed/modelpin.go, P4-G2). Nothing reads
+	// this constant. Kept, empty, only so the name is not silently reused.
 	EmbeddingModelID   = "all-MiniLM-L6-v2"
-	EmbeddingModelHash = "" // pinned in M6 when the ONNX artifact is vendored (deliberately empty until then)
+	EmbeddingModelHash = ""
 
 	EmbeddingDim = 384
 
 	// BruteForceMaxCandidates: below this, plain cosine scan is the
 	// acceptable fallback when sqlite-vec fails to load (rulings §7).
 	BruteForceMaxCandidates = 5000
+
+	// D1 — sqlite-vec candidate over-fetch. vec0's KNN is EXACT (an
+	// exhaustive scan in C with a bounded heap, not an approximate index),
+	// so the only way its top-K can disagree with the brute-force oracle is
+	// a tie or a float32/float64 rounding difference at the K boundary. We
+	// therefore ask vec0 for k + VectorIndexOverfetch candidates and re-score
+	// THOSE with the same float64 cosine the oracle uses, then cut to k with
+	// the same (similarity desc, message_id asc) comparator. Identical
+	// arithmetic on a superset of the answer ⇒ identical answer.
+	VectorIndexOverfetch = 64
+	// VectorIndexMaxK is sqlite-vec's own ceiling on a KNN `k` (it refuses
+	// larger ones outright). Discovered by asking for more, not read off a
+	// page. A request above it is not an error condition: the brute-force
+	// oracle answers instead, which is what it is there for.
+	VectorIndexMaxK = 4096
+	// VectorIndexOverfetchMax bounds the doubling retry used when a tie
+	// group straddles the fetch boundary (so the tie cannot be resolved from
+	// what we fetched). Reaching the cap means thousands of exactly-equal
+	// similarities, where any deterministic cut is as good as another.
+	VectorIndexOverfetchMax = VectorIndexMaxK
+
+	// VecRebuildBatch pages the vec0 rebuild over `vectors`. The rebuild runs
+	// only when the derived index and the source of truth disagree (a first
+	// run with the extension, or one written by a build without it), and it
+	// pages precisely so rebuilding the index that exists to avoid loading
+	// every vector does not itself load every vector.
+	VecRebuildBatch = 512
 )
 
 // Embed-worker watchdogs. The subprocess protocol has no deadline of its
@@ -251,10 +314,22 @@ const (
 // ---------------------------------------------------------------------------
 
 const (
-	ProjectionSchemaVersion = 7 // v7: fts_revisions_trigram companion index (CAPTURE C2); v6: parked_events.retryable (R49/FIX-J1); v5: attachment durability class (N7); v4: derivatives+summaries (N4); v3: subscriptions (N3); v2: parked_events
+	ProjectionSchemaVersion = 9 // v9: fts5vocab companions, the document-frequency source for the D11 term probe (D14); v8: vec_map, the rowid bridge to the sqlite-vec index (D1); v7: fts_revisions_trigram companion index (CAPTURE C2); v6: parked_events.retryable (R49/FIX-J1); v5: attachment durability class (N7); v4: derivatives+summaries (N4); v3: subscriptions (N3); v2: parked_events
 
-	// FTSTokenize: unicode61 with tokenchars `_ - # @` (rulings §6).
+	// FTSTokenize: unicode61 with tokenchars `_ - # @` (rulings §6). The DDL
+	// carries this string literally (schema.sql cannot interpolate a Go
+	// constant), and TestFTSTokenizeMatchesSchema asserts the two agree —
+	// D14 folds query terms in Go against FTSTokenChars below, so a schema
+	// that drifted from this constant would silently fold them wrongly.
 	FTSTokenize = "unicode61 tokenchars '_-#@'"
+
+	// FTSTokenChars are the characters unicode61 treats as part of a token
+	// ON TOP OF the alphanumerics it already knows — the `tokenchars` clause
+	// of FTSTokenize, split out so Go code can fold a query term the way the
+	// index folded the document. D14 uses it to look a term up in the
+	// fts5vocab companion, which stores terms exactly as the tokenizer
+	// emitted them.
+	FTSTokenChars = "_-#@"
 
 	// FTSTrigramTokenize is the CAPTURE C2 companion index's tokenizer. It
 	// takes no options: trigram tokenization is fixed-width and already
@@ -268,6 +343,21 @@ const (
 	// answers them); a query left with no usable term skips the companion
 	// index entirely instead of running a match that cannot hit.
 	FTSTrigramMinTerm = 3
+
+	// FTSNonDiscriminatingDocFraction (D11) is the document frequency at which a
+	// query term stops saying anything about WHICH documents to prefer, as a
+	// fraction of the indexed documents. It is not a tuning dial and not a
+	// stopword list: BM25's inverse document frequency is
+	// idf = ln((N − n + 0.5)/(n + 0.5)), which crosses zero at exactly n = N/2,
+	// and SQLite's bm25() then clamps it to 1e-6 — measured: a term in 3 of 4
+	// documents scores −0.00000142 against −0.88764538 for a term in 1 of 4.
+	// Above this fraction the index itself declares the term worthless for
+	// ordering, so the D11 disjunction drops it instead of letting it widen the
+	// candidate pool to the whole corpus. Being corpus-derived it needs no
+	// language-specific word list and adapts as the corpus grows. If EVERY term
+	// is non-discriminating the query is answered with all of them anyway —
+	// precision comes from ranking, never from refusing to answer.
+	FTSNonDiscriminatingDocFraction = 0.5
 )
 
 // ParkedRetryableGrace (RULINGS.md R49.3) is how long a RETRYABLE parked event
@@ -411,6 +501,50 @@ const (
 	// snippet is quoted (QuotePrefix) and counts against budget_chars like
 	// everything else in the payload.
 	SearchSnippetChars = 200
+
+	// CorpusExportMaxCollisions (D5) bounds the retry when several
+	// `cairn export corpus` runs land in the same second: each export gets
+	// its own tree (corpus-<ts>, corpus-<ts>-2, …) rather than merging into
+	// one directory, and this caps the search rather than looping forever.
+	CorpusExportMaxCollisions = 100
+
+	// --- D4 token budgets -------------------------------------------------
+	//
+	// A budget is only meaningful against a NAMED tokenizer, so every
+	// budgeted response reports the one it used. Two are defined:
+	//
+	//   TokenizerChars  — exact. budget_chars counts Unicode scalar values,
+	//                     which needs no vocabulary and cannot drift.
+	//   TokenizerApprox — an APPROXIMATION, and its name says so. Cairn's
+	//                     dependency tree is deliberately small and offline
+	//                     (see eval/go.mod), and no real BPE tokenizer is
+	//                     vendored, so budget_tokens is counted by the rules
+	//                     below rather than by a vocabulary. It is tuned to
+	//                     OVER-estimate typical prose: dropping one item too
+	//                     many keeps a hard budget hard, while under-counting
+	//                     would silently blow the caller's real context
+	//                     window. Replacing it with a vendored tokenizer is a
+	//                     dependency decision for the operator; the counter
+	//                     is behind rank.Counter so the swap is local.
+	TokenizerChars  = "unicode-scalars"
+	TokenizerApprox = "cairn-approx-v1"
+
+	// ApproxTokenLettersPerToken: an ASCII letter run costs
+	// ceil(len/4) tokens — the familiar "four characters per token" for
+	// English prose, applied per word rather than to the whole payload, so
+	// short words are not averaged into long ones.
+	ApproxTokenLettersPerToken = 4
+
+	// ApproxTokenDigitsPerToken: BPE vocabularies split long digit runs into
+	// groups of at most three, so a digit run costs ceil(len/3).
+	ApproxTokenDigitsPerToken = 3
+
+	// ApproxTokenBytesPerNonASCII: non-ASCII text is charged one token per
+	// two UTF-8 bytes — CJK (3 bytes/char) costs ~2, accented Latin
+	// (2 bytes/char) costs 1, astral emoji (4 bytes) cost 2. This is the
+	// weakest part of the estimate and the reason the tokenizer is named
+	// "approx": it is deliberately generous rather than accurate.
+	ApproxTokenBytesPerNonASCII = 2
 
 	// MCPMaxLineBytes bounds one stdio JSON-RPC message (N1). Matches the
 	// IPC bound: the MCP layer never carries more than one IPC payload.
@@ -556,6 +690,16 @@ const (
 	// P1 logs are small; the full compare is affordable and exact.
 	ForkProbeWindow = 0
 
+	// D2 origin-liveness beacon (spec §13.2; BUILD-PLAN §4 D2). The highest
+	// (generation, sequence) ever OBSERVED per origin, so a device that comes
+	// back advertising LESS of its own append chain than it once had is
+	// caught. That is data loss (a stale-backup restore), not equivocation —
+	// the fork machinery owns equivocation — so it raises an alarm and never
+	// quarantines. Derived/cache-class like the durability registry: the
+	// floor is recomputed from our own log on every observation, so a lost
+	// file costs only the part of the watermark we learned from a peer.
+	LivenessRegistry = "liveness.json" // under .cairn/
+
 	// Capability sessions (N2, RULINGS.md R23): opaque daemon-side handles,
 	// short-TTL, non-delegable, auto-revoked on exit/idle. TTL and idle
 	// window are buildpack-judgment constants, revisable from dogfood data.
@@ -565,6 +709,15 @@ const (
 	SessionsFileName   = "sessions.json" // device-local (cache-class)
 	ProfilesFileName   = "profiles.toml" // device-local capability profiles
 	SessionEnvVar      = "CAIRN_SESSION" // set by `cairn run` for the child
+
+	// D9: minting a session used to rewrite the whole session array, so the
+	// cost of the Nth mint grew with N. Mints and revokes now append one line
+	// to a journal beside the snapshot; the snapshot is rewritten only when
+	// the journal has grown past max(SessionJournalMinCompact, live sessions),
+	// which makes the per-mint cost amortized O(1) instead of O(n). The
+	// minimum keeps a small mesh from compacting on nearly every mint.
+	SessionsJournalFileName  = "sessions.journal" // device-local (cache-class)
+	SessionJournalMinCompact = 64
 
 	// SavedSearchesFileName: P2-4 named, re-runnable queries. Device-local
 	// operator convenience (like sessions/profiles) — not replicated, not an
@@ -604,4 +757,62 @@ const (
 	OutboxRequestFile  = "request.json"
 	OutboxErrorFile    = "error.json"
 	ReceiptSuffix      = ".receipt.json"
+)
+
+// P3-5 — mutual pairing authentication (S9). Appended as its own block so the
+// pairing constants above keep their original shape.
+const (
+	// PairProtocolVersion tags the pairing wire (distinct from
+	// SyncProtocolVersion, which tags post-handshake reconciliation). v1 was the
+	// dialer-authenticates-only handshake; v2 authenticates BOTH directions —
+	// the inviting node proves itself against the invitation's genesis-verified
+	// chain BEFORE the joining node hands over its credential. A version
+	// mismatch is refused instructively on both sides; it is never downgraded,
+	// because a silent downgrade is exactly the attack the version guards.
+	PairProtocolVersion = 2
+	// PairingServerHelloDomain domain-separates the INVITING node's proof from
+	// the dialer's key-possession proof (PairingHelloDomain) and from the N5
+	// handshake (SyncHelloDomain), so no signature is transplantable between
+	// protocols or directions.
+	PairingServerHelloDomain = "cairn-pair-server-hello-v1"
+)
+
+// P3-6 — automatic metered/battery sensing (S9). Appended as its own block.
+const (
+	// MeteredSenseTTL is how long a sensed metered/battery reading is reused
+	// before the platform is asked again. A probe may exec a helper (nmcli,
+	// pmset), and the answer changes on the timescale of plugging in a cable or
+	// walking onto a hotspot — not per query. Long enough that a search path
+	// never pays for it; short enough that unplugging is noticed within a
+	// minute.
+	MeteredSenseTTL = 60 * time.Second
+	// MeteredSenseTimeout bounds one sensing pass. A wedged platform tool must
+	// never wedge a search: the probe is abandoned and the reading stays
+	// Unknown, which behaves exactly as no sensing at all.
+	MeteredSenseTimeout = 2 * time.Second
+	// MeteredSenseOff is the device-config value that disables sensing entirely
+	// (`metered_sense = "off"`), leaving the manual `metered` flag as the only
+	// input. Empty/unset means sensing is on.
+	MeteredSenseOff = "off"
+)
+
+// D12 — the unix-domain socket path bound (S16). Appended as its own block.
+const (
+	// SocketPathMaxBytes is the longest socket path Cairn will construct. The
+	// real bound is sockaddr_un.sun_path, and it is a PLATFORM constant, not a
+	// filesystem one: macOS gives 104 bytes INCLUDING the NUL terminator (so
+	// 103 usable), Linux gives 108. Cairn holds every platform to the macOS
+	// figure deliberately — macOS arm64 is the primary platform (CLAUDE.md) and
+	// almost no development happens there, so a bound that only bites on macOS
+	// is a bound nobody ever sees bite. Exceeding it makes bind(2) fail with a
+	// bare EINVAL ("invalid argument") that names nothing, which is how a
+	// deterministic macOS CI failure survived five sprints of "verify green".
+	SocketPathMaxBytes = 103
+	// SocketNameShortHexChars is the length of the degraded socket leaf: a
+	// BLAKE3 prefix over the FULL cairn id, used only when the natural
+	// "<cairn-id>.sock" leaf does not fit. 16 hex chars = 64 bits, which keeps
+	// the collision argument the full id was there for (a UUIDv7 PREFIX is a
+	// millisecond timestamp and would collide between two meshes created in the
+	// same millisecond — the TestF3 flake) while costing 25 fewer bytes.
+	SocketNameShortHexChars = 16
 )

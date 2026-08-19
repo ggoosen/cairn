@@ -44,6 +44,7 @@ func (d *Daemon) CalibrationEpisodes() ([]rank.Episode, error) {
 				P:         rank.ParseDec(rec.Peff),
 				I:         rank.ParseDec(rec.I),
 				N:         rank.ParseDec(rec.N),
+				Penalty:   rec.penaltyProduct(),
 			})
 		}
 		if ep.Found != "" && len(ep.Cands) > 0 {
@@ -75,7 +76,10 @@ func (d *Daemon) RankStats() ([]TermStat, error) {
 	if err != nil {
 		return nil, err
 	}
-	terms := []string{"R", "S", "F", "P", "I", "N"}
+	// DUP/SAT are here for the same reason they are in the trace: an operator
+	// reading the distribution before touching weights must be able to see how
+	// much the S8 penalties are actually subtracting, not infer it.
+	terms := []string{"R", "S", "F", "P", "I", "N", "DUP", "SAT"}
 	vals := map[string][]float64{}
 	for _, iid := range ints {
 		rows, err := d.proj.ExplanationsForInteraction(iid)
@@ -88,12 +92,14 @@ func (d *Daemon) RankStats() ([]TermStat, error) {
 				continue
 			}
 			contrib := map[string]float64{
-				"R": rank.ParseDec(rec.R) * rank.ParseDec(rec.Weights.R),
-				"S": rank.ParseDec(rec.S) * rank.ParseDec(rec.Weights.S),
-				"F": rank.ParseDec(rec.F) * rank.ParseDec(rec.Weights.F),
-				"P": rank.ParseDec(rec.Peff) * rank.ParseDec(rec.Weights.P),
-				"I": rank.ParseDec(rec.I) * rank.ParseDec(rec.Weights.I),
-				"N": rank.ParseDec(rec.N) * rank.ParseDec(rec.Weights.N),
+				"R":   rank.ParseDec(rec.R) * rank.ParseDec(rec.Weights.R),
+				"S":   rank.ParseDec(rec.S) * rank.ParseDec(rec.Weights.S),
+				"F":   rank.ParseDec(rec.F) * rank.ParseDec(rec.Weights.F),
+				"P":   rank.ParseDec(rec.Peff) * rank.ParseDec(rec.Weights.P),
+				"I":   rank.ParseDec(rec.I) * rank.ParseDec(rec.Weights.I),
+				"N":   rank.ParseDec(rec.N) * rank.ParseDec(rec.Weights.N),
+				"DUP": rank.ParseDec(rec.Dup) * rank.ParseDec(rec.Weights.Dup),
+				"SAT": rank.ParseDec(rec.Sat) * rank.ParseDec(rec.Weights.Sat),
 			}
 			for _, t := range terms {
 				vals[t] = append(vals[t], contrib[t])
@@ -135,7 +141,9 @@ func (d *Daemon) Calibrate(baselineProfile rank.Profile, step float64, holdoutEv
 	}
 	train, holdout := rank.HoldOutByTask(eps, holdoutEveryN)
 	pw := baselineProfile.Weights()
-	baseline := rank.WeightVector(pw)
+	// Only the additive bonus weights are searched; the S8 penalty weights are
+	// the §9.1 cap and ride along inside each candidate's logged Penalty offset.
+	baseline := rank.WeightVector{R: pw.R, S: pw.S, F: pw.F, P: pw.P, I: pw.I, N: pw.N}
 	active := activeTerms(baseline)
 	grid := rank.SimplexGrid(step, active)
 	rec := rank.Calibrate(train, holdout, grid, baseline)

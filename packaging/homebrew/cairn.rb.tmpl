@@ -1,0 +1,124 @@
+# typed: true
+# frozen_string_literal: true
+
+# Those two are the header homebrew-core's own formulas carry, and `brew style`
+# (rubocop) asks for them. It also asks for `typed: strict`, which core does not
+# use either — a sigil claiming strict typing on a file nothing type-checks
+# would be a decoration, so that one offence stays.
+#
+# Cairn — Homebrew formula, GENERATED from packaging/homebrew/cairn.rb.tmpl by
+# packaging/mkformula.sh. The tag, URLs and checksums below were substituted at
+# release time from the exact bytes .github/workflows/release.yml uploaded.
+# Edit the template and re-render; never hand-edit a rendered copy.
+#
+# This installs a PREBUILT binary. That is the whole point of D6: the pitch is
+# "one command", and until now the only path was build-from-source with a C
+# toolchain, because Cairn is cgo (SQLite/FTS5). Nothing here compiles.
+#
+# It can never live in homebrew-core: Cairn is PolyForm Noncommercial, which is
+# not a free/open-source licence, and core only accepts those. It belongs in a
+# custom tap (ggoosen/homebrew-cairn) and always will.
+class Cairn < Formula
+  desc "Local-first, crash-safe message and knowledge daemon for AI agent sessions"
+  homepage "https://github.com/@@REPO@@"
+  version "@@VERSION@@"
+  license "PolyForm-Noncommercial-1.0.0"
+
+  # Runtime, not just build-time: `cairn export ingest` shells out to
+  # `git merge-file` for its three-way merge (README "How it's built").
+  depends_on "git"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/@@REPO@@/releases/download/@@TAG@@/cairn_@@VERSION@@_darwin_arm64.tar.gz"
+      sha256 "@@SHA_DARWIN_ARM64@@"
+    end
+
+    on_intel do
+      # No macOS x86_64 artifact. The project's platform rule is macOS arm64
+      # primary, Linux best-effort (CLAUDE.md), and this is a native cgo
+      # binary, so Rosetta is not an answer. Fail with a clear requirement
+      # rather than hand someone a binary that cannot run.
+      depends_on arch: :arm64
+    end
+  end
+
+  on_linux do
+    on_intel do
+      url "https://github.com/@@REPO@@/releases/download/@@TAG@@/cairn_@@VERSION@@_linux_amd64.tar.gz"
+      sha256 "@@SHA_LINUX_AMD64@@"
+    end
+
+    on_arm do
+      url "https://github.com/@@REPO@@/releases/download/@@TAG@@/cairn_@@VERSION@@_linux_arm64.tar.gz"
+      sha256 "@@SHA_LINUX_ARM64@@"
+    end
+  end
+
+  def install
+    bin.install "cairn"
+    # PolyForm 1.0.0 carries a Required Notice, so the licence travels with
+    # every copy — in the tarball and installed beside it.
+    doc.install "LICENSE", "README.md"
+    # Semantic search is opt-in and needs a python venv. A brew user has no
+    # checkout to run scripts/ from, so the bootstrap script ships too.
+    pkgshare.install "cairn-embed-bootstrap.sh"
+    generate_completions_from_executable(bin/"cairn", "completion")
+  end
+
+  def caveats
+    <<~EOS
+      Next: create your mesh, install the daemon service and wire up MCP clients
+
+        cairn setup
+
+      Cairn keeps your knowledge in ~/cairn and expects that to sit on an
+      encrypted volume (FileVault / dm-crypt). It refuses to start otherwise;
+      pass --allow-unencrypted if you have accepted that risk deliberately.
+
+      Semantic search is opt-in and offline. To enable it:
+
+        #{opt_pkgshare}/cairn-embed-bootstrap.sh
+
+      (or point CAIRN_EMBED_PYTHON at a python that has sentence-transformers).
+      Without it retrieval is lexical-only, which works — `cairn status` says
+      which mode you are in.
+
+@@SIGNING_NOTE@@
+    EOS
+  end
+
+  # The FIX-F4 guard, carried all the way to the installed binary: a `cairn`
+  # whose SQLite lacks FTS5 compiles and starts but cannot search. So the test
+  # runs a throwaway mesh end to end and insists the search comes back. This
+  # mirrors packaging/release-smoke.sh, which the release workflow ran against
+  # these same bytes before uploading them.
+  test do
+    assert_match "p1", shell_output("#{bin}/cairn --version")
+
+    ENV["CAIRN_DIR"] = testpath/"mesh"
+    ENV["CAIRN_DEVICE_STATE_DIR"] = testpath/"devstate"
+    system bin/"cairn", "init", "--allow-unencrypted"
+
+    pid = spawn bin/"cairn", "daemon", [:out, :err] => testpath/"daemon.log"
+    begin
+      up = false
+      60.times do
+        up = quiet_system(bin/"cairn", "status")
+        break if up
+
+        sleep 1
+      end
+      assert up, "daemon did not become answerable: #{(testpath/"daemon.log").read}"
+
+      system bin/"cairn", "send", "--topic", "release/smoke",
+             "the council approved the quarterly budget"
+      assert_match "the council approved the quarterly budget",
+                   shell_output("#{bin}/cairn search 'council quarterly'")
+      assert_match "vector path:   vec0", shell_output("#{bin}/cairn status")
+    ensure
+      Process.kill("TERM", pid)
+      Process.wait(pid)
+    end
+  end
+end

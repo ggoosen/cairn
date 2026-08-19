@@ -1,6 +1,6 @@
 # Corpus format (v1)
 
-EVAL-PLAN §5-E3. A corpus is a directory of three files:
+BUILD-PLAN §5-E3. A corpus is a directory of three files:
 
 ```
 <corpus>/
@@ -76,7 +76,7 @@ until the holdout flatters the system. Changing the salt invalidates every
 result measured against the old split, and any such change belongs in the
 same commit as that admission.
 
-Weights are calibrated on `dev` only (EVAL-PLAN §8: no tuning on the
+Weights are calibrated on `dev` only (BUILD-PLAN §3.7: no tuning on the
 evaluation set); `holdout` answers the claim.
 
 ## Acquiring a corpus
