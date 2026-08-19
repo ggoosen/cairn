@@ -45,8 +45,10 @@ P50 at 100k fell 62.2 ms → 14.3 ms with byte-identical results, and it raised
 D15 for the residual. **S18 (D15, that residual) shipped 2026-08-19** — the
 per-match cost was three index seeks per MATCHING document to test headness
 and retraction, and two of them re-derived what the third already said, so the
-candidate query now runs one join instead of three: 100k P50 14.3 ms → 11.2 ms,
-results byte-identical, no schema change and no duplicated state. See
+candidate query now runs one join instead of three: 100k P50 15.6 ms → 12.1 ms
+measured before-and-after interleaved on one machine, results byte-identical,
+no schema change and no duplicated state. Both candidates the item named were
+measured and declined, and the arithmetic for what is left is recorded. See
 PROGRESS.md.
 
 **Four remain, all gated on the operator:** S6 on a privacy review, S10 on two
