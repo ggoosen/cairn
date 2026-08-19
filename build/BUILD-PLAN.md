@@ -42,13 +42,16 @@ auth; iroh deferred by R58), S12 (closed by R59/R60/R61 with no code
 needed), S15 retrieval correctness (D11), S16 CI truth and release identity
 (D12/D13). **S17 (search latency at scale, D14) shipped 2026-08-19** — search
 P50 at 100k fell 62.2 ms → 14.3 ms with byte-identical results, and it raised
-D15 for the residual. See PROGRESS.md.
+D15 for the residual. **S18 (D15, that residual) shipped 2026-08-19** — the
+per-match cost was three index seeks per MATCHING document to test headness
+and retraction, and two of them re-derived what the third already said, so the
+candidate query now runs one join instead of three: 100k P50 14.3 ms → 11.2 ms,
+results byte-identical, no schema change and no duplicated state. See
+PROGRESS.md.
 
-**Five remain.** S18 (D15, the remaining search-latency headroom) is ready,
-needs nothing from anyone, and breaches no gate — it is headroom, not a
-defect. The other four are gated on the operator: S6 on a privacy review,
-S10 on two machines, S11 on kill-criteria sign-off then corpora, and S13/S14
-behind those.
+**Four remain, all gated on the operator:** S6 on a privacy review, S10 on two
+machines, S11 on kill-criteria sign-off then corpora, and S13/S14 behind
+those. No unblocked agent work is left in the plan.
 
 ## Sprints
 
@@ -65,24 +68,6 @@ and `make verify` + `make test-race` green before moving on.
 one sprint — see Coverage at the end of this part — so finishing S1–S18 is
 finishing the backlog, with no separate track running alongside. Every
 remaining sprint names its gate in the heading.
-
-### S18 — Search latency: the residual after D14 [ready — RUN THIS NEXT]
-
-What S17 measured but did not fix. No gate is breached (the <200 ms
-visibility gate passes by 100×), so this is headroom, and it is ready work
-rather than urgent work.
-
-- **D15** search cost is O(matching documents), and the term probe is still
-  O(df) (§4)
-
-**Exit:** a stated, measured account of where a 100k search spends its
-milliseconds, and either a reduction in the per-match cost or a recorded
-decision that it is the floor for ranking. Results identical, verified the
-way D14 verified them.
-
-**Watch:** the same trap twice over. D14 was raised believing an O(corpus)
-probe was the cost; it was 4% of it. Profile before changing anything, and
-distrust any structure that merely LOOKS like a constant-time lookup.
 
 ### S6 — Capture [gated: crossed review of the privacy model]
 
@@ -169,7 +154,7 @@ or the sprint set is wrong.
 | S15 ✅ shipped | D11 | agent |
 | S5 ✅ shipped | D1 | agent |
 | S17 ✅ shipped | D14 | agent |
-| S18 | D15 | agent |
+| S18 ✅ shipped | D15 | agent |
 | S6 | C3 | agent, after review |
 | S7 ✅ shipped | D6 | agent + operator (signing) |
 | S16 ✅ shipped | D12, D13 | agent |
@@ -553,42 +538,6 @@ an honest note rather than block on it.
 `brew install` on a clean machine yields a working `cairn` with no Xcode
 toolchain present. The FIX-F4 guard still holds — a release artifact must be
 a `sqlite_fts5` build, and the workflow must assert that.
-
-### D15 — search cost is O(matching documents) (S) [code]
-
-What is left of search latency after D14 (S17), measured on the same corpus at
-the same three scales: **2k 3.4 ms → 20k 4.7 ms → 100k 14.3 ms** P50, against
-3.5 / 14.9 / 62.2 before. Better by 4.3× at 100k and still growing, but growing
-in a different quantity: D11's probe scanned half the corpus however few
-documents a query matched, while the residual scales with the number of
-documents the query MATCHES — 21, 207 and 1031 at the three scales, because the
-scorecard's query shape matches 1% of the corpus by construction.
-
-The 100k breakdown after D14:
-
-    full d.Search                    15.0 ms
-      main word FTS query             9.4 ms   <- 1031 matches × (3 index seeks + bm25)
-      term-discrimination probe       2.0 ms   <- O(df); fts5vocab is a doclist walk
-      everything else (vec0, joins)   3.6 ms
-
-**Two candidates, neither obviously worth it.**
-
-1. **Per-match cost.** Each matching row is joined fts → revisions → messages
-   to test `head_revision_id` and `retracted` before bm25 ordering cuts to k.
-   A head/retracted flag carried in the FTS row's own table would remove two
-   seeks per match; it also duplicates state the projection already holds, and
-   duplicated state that can drift is how supersession bugs start.
-2. **A memoised df with monotone bounds.** FTS rows are only ever inserted, so
-   a cached (df, n) pair bounds the true df in [df, df + growth] and decides
-   `df ≥ cutoff` exactly, without re-reading, for as long as the bound holds.
-   Exact, and it would flatten the probe — at the cost of cached state behind a
-   ranking-affecting decision, for ~2 ms of a 14 ms search.
-
-**Acceptance.** Same as D14's: identical results, asserted against the current
-implementation as an oracle, golden corpus and the ≥0.96 ratchet unchanged, and
-the three scorecard scales quoted before and after. A recorded "this is the
-floor" is an acceptable outcome — ranking cannot rank what it has not scored —
-provided the arithmetic is shown.
 
 ### DEBT non-goals
 

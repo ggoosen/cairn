@@ -6649,3 +6649,256 @@ log`, 2m25s to replay 100,000 events, correct answers afterwards.
 
 `make verify` (including `test-novec`), `make test-race` and `make eval` all
 green.
+
+## D15 — the candidate query's per-match cost (2026-08-19) — DONE [S18]
+
+D14 left search at 100k growing with the number of documents a query MATCHES —
+1031 of them for the scorecard's query shape — and named two candidates for the
+residual, both of which buy milliseconds with duplicated or cached state.
+Neither was taken. The profile found something else: the per-match work was
+three index seeks answering ONE question, and two of them re-derived what the
+third already said. The candidate query now runs one join instead of three. No
+schema change, no new column, no cached state, byte-identical results.
+
+Search P50 at 100k: **15.6 ms → 12.1 ms**, before and after measured
+interleaved on the same machine.
+
+### The profile, before anything was changed
+
+100k synthetic events (the scorecard corpus), median over the scorecard's 50
+queries, in-process with `BagOfWords`, dev container:
+
+    full d.Search                        14.1 ms
+      LexicalTopKPlan                    11.7 ms
+        term plan (D11 decision, D14 df)  2.1 ms
+        word-index candidate query        7.7 ms   <- 1031 matches
+      RankRows(100)                       0.57 ms
+      ResultMeta(10)                      0.05 ms
+      everything else                     ~4 ms
+      (trigram companion, NOT run: 47.7 ms — D14's guard still earning it)
+
+Then the same query built up one join at a time, every shape asserted to return
+production's ids in production's order (97 queries x 3 interleaved passes):
+
+    match enumeration only (count)        0.07 ms
+    match + bm25 + ORDER BY + LIMIT       0.78 ms   <- no joins at all
+    + 1 join  (fts_map)                   2.53 ms
+    + 2 joins (+ revisions)               6.58 ms
+    + 3 joins (+ messages) = production   8.36 ms
+
+**Ninety per cent of the candidate query was join seeks.** Finding the matching
+documents and scoring them cost 0.78 ms; turning each match into a message id
+and testing headness and retraction cost the rest, because the pool is cut to k
+only AFTER the filter, so all 1031 matches are joined and 100 survive.
+
+That refines D15's own breakdown rather than contradicting it. D15 said the main
+word query was "1031 matches x (3 index seeks + bm25)"; the profile says the
+bm25 half is a tenth of it and the seeks are essentially all of it. It also
+confirms D14's guard is still worth its line: the trigram companion would cost
+45 ms per search and is not run.
+
+### The three seeks were asking one question three ways
+
+    JOIN fts_map map ON fts_revisions.rowid = map.rowid          -- which revision
+    JOIN revisions r ON r.revision_id = map.revision_id          -- whose message
+    JOIN messages m ON m.message_id = r.message_id               -- and is it
+                   AND m.head_revision_id = r.revision_id        --   the head?
+
+`revision_id` is a primary key, so a revision belongs to exactly one message;
+and a message's `head_revision_id` is only ever set to a revision inserted for
+that same message in the same transaction (`applyPayload`: publish sets it
+beside the revisions INSERT, revise_body sets it to the last revision it just
+inserted). So "is there a message whose head revision is this one?" already
+answers "whose message is it?": the middle hop re-derived a fact the messages
+row had stated, and the ownership half of the last hop restated it a third time.
+One join replaces all three:
+
+    JOIN messages m ON m.head_revision_id = map.revision_id
+
+`idx_messages_head` already indexes it — the index D1 added for the vector path,
+which has joined exactly this way since (`vec.go`). This is a reformulation of a
+filter, not a new structure: nothing is stored, nothing is duplicated, nothing
+can drift, and the schema version does not move. The C2 trigram companion's
+candidate query gets the same treatment, through the same function, because two
+copies of one filter are two copies that drift.
+
+### Both of D15's candidates were measured, and both declined
+
+Run as real SQL against the real 100k corpus rather than argued about — 97
+queries x 3 interleaved passes, every variant asserted to return production's
+exact ordered ids:
+
+    production (3 joins)                  8.36 ms
+    + covering index on messages          8.50 ms   (planner declines it)
+    + covering indexes on both, forced    6.97 ms
+    message_id carried in fts_map         4.88 ms   (duplicates an IMMUTABLE fact)
+    head-join, no schema change           4.65 ms   <- SHIPPED
+    head/retracted flags beside the rowid 3.04 ms   (D15 candidate 1)
+
+- **Candidate 1 — head/retracted in the FTS row's own table.** Real, and worth a
+  further 1.6 ms: it removes the last messages seek. It also puts a copy of
+  `retracted` and of headness — the two mutable facts that decide whether
+  content may be shown at all — beside the index, where a missed update is a
+  retracted message surfacing in search and nothing necessarily notices. 1.6 ms
+  of a 12 ms search, against the one guarantee that must not fail quietly, on a
+  path whose gate passes by 100x. Declined. Note that the half of its advantage
+  which needs only IMMUTABLE duplication (message_id carried in fts_map, 4.88
+  ms) is what the head-join already gets for free — so the duplication buys
+  nothing until it becomes the mutable kind.
+- **Candidate 2 — memoised df with monotone bounds.** Still exact, still ~2 ms
+  (the term plan is 2.19 ms), still cached state behind a ranking-affecting
+  decision that R47/R51 reconciliation needs to be stable. D14 declined it at
+  2 ms of 14; it is now 2 ms of 12 and the argument has not changed. Declined
+  again — recorded as a second decline rather than carried forward as a plan
+  item.
+- **Covering indexes**, the option with no duplication at all, are worth 1.4 ms
+  and only when forced with `INDEXED BY`: SQLite's planner would not choose them
+  on its own cost estimates. Not taken — the head-join is better and needs no
+  hint.
+
+### The floor, with the arithmetic
+
+After the change, a 100k search is ~12 ms and every millisecond is accounted
+for (same run, warm cache, median of 50 queries):
+
+    term plan (2 terms)                   2.19 ms   O(df): fts5vocab walks the
+                                                    term's doclist, and FTS5
+                                                    stores no per-term document
+                                                    count anywhere
+    candidate query                       6.33 ms   1031 matches
+      match + bm25 + sort + limit         0.78 ms   IRREDUCIBLE — ranking cannot
+                                                    rank what it has not scored
+      fts_map rowid -> revision_id        1.75 ms
+      messages head/retracted lookup      3.80 ms
+    RankRows(100) + ResultMeta(10)        0.66 ms
+    SaveExplanations (R47/R51, 1 fsync)   0.41 ms
+    everything else                       ~2 ms     query embedding, vector
+                                                    top-K (14 us — D1's vec0),
+                                                    scoring, ten snippet reads
+                                                    from the object store, scope
+                                                    resolution, telemetry write
+
+Of that, ~3.1 ms is fixed cost that does not move with the corpus at all, and
+2.19 + 6.33 = 8.5 ms is the part that grows. Inside the growing part the only
+addressable lines are the two seeks, and only by duplicating state: 3.80 ms by
+copying head/retracted next to the rowid (candidate 1, declined — and the
+interleaved bake-off puts its real prize lower, at 1.6 ms), and the 1.75 ms
+fts_map seek only by folding the index and its rowid map into one structure.
+The df walk has no O(1) answer without a cache (candidate 2, declined).
+
+**So the residual is still O(matching documents), and what is left of it is
+inherent**: 6.1 us per matching document, of which 0.76 us is the scoring that
+ranking exists to do and the rest is two index seeks that no amount of query
+rewriting removes. A corpus where a query matches 1% of documents pays that
+1031 times at 100k and would pay it ~10,000 times at 1M; the shape of the curve
+did not change, its constant fell by 45%.
+
+### Results identical — established, not asserted
+
+- **Differential against the superseded query.** `headMessageHits` is
+  parameterised by its head FILTER the way D14 parameterised `lexicalMatch` by
+  its df SOURCE, so the pre-D15 three-join shape is kept as the oracle and the
+  rule around it exists once. `LexicalCandidatesForTest` and
+  `TrigramCandidatesForTest` run both, and every assertion is
+  `reflect.DeepEqual` over the ordered ids: the representative fixture (a
+  superseded revision, a retracted message, identifier bodies, a term in no
+  document) x 14 queries x include-retracted x k in {1,2,5,100}; 12 randomized
+  corpora built from publishes, single and paired revisions, and retractions,
+  seeded; both indexes; and the same corpus again after `reindex --lexical`
+  rebuilt fts_map from the revisions table instead of from the append path.
+- **The filter still filters**, which agreement alone would not prove: the
+  superseded body and the retracted message both still have FTS rows, neither
+  reaches the candidate pool, and `include_retracted` restores exactly the
+  retracted one.
+- **The invariant is asserted, not assumed.** Every corpus is checked for heads
+  with no revision and heads owned by another message; both are zero. A
+  deliberate violation — pointing one message's head at another message's
+  revision, which the event writer cannot do because revision_id is a primary
+  key — makes the two queries disagree, so the differential demonstrably sees
+  the drift it exists to see.
+- **End to end:** the ordered top-10 corpus keys for all 30 golden queries under
+  P0 and P2, hybrid and lexical-only — 120 result lists, each printed with its
+  term plan — are **byte-identical** to the same harness run on the parent
+  commit. `cairn bench golden`: Success@5 0.97, lexical-only top-10 0.97, the
+  same single miss. The >=0.96 ratchet is untouched.
+
+### Measured effect (dev container, before/after interleaved at each scale)
+
+`TestScorecard` search P50 / P95, with `before` run from a git worktree at the
+parent commit so there is no ambiguity about which binary produced which number:
+
+    corpus     before                after
+    2,000      3.574 / 4.881 ms      3.475 / 5.031 ms      (21 matches/query)
+    20,000     4.947 / 6.139 ms      4.536 / 6.070 ms      (207 matches/query)
+    100,000   15.563 / 17.885 ms    12.087 / 15.519 ms    (1031 matches/query)
+
+The improvement tracks the match count, which is the point: 3% at 2k, 8% at 20k,
+22% at 100k. Every other scorecard quantity is unchanged within noise (append
+2.31 -> 2.34 ms/event, ack->lexical-visible P95 1.796 -> 1.659 ms, cold recovery
+43.9 -> 44.6 s, backup 748.0 MB both). The <200 ms visibility gate now passes by
+~120x.
+
+Since D14's entry: search P50 across the three scales is 3.5 / 4.5 / 12.1 ms
+against D11-era 3.5 / 14.9 / 62.2 — 5.1x at 100k over two sprints.
+
+### Mutation-tested (break it, confirm the suite notices)
+
+Seven mutants, six caught, one equivalent:
+
+- head test dropped from the filter (superseded revisions surface) — caught by
+  all three differentials and by C2's own test;
+- retraction filter neutered — caught;
+- deterministic tie-break dropped from the ORDER BY — **survived at first**,
+  which is why `TestD15TiedCandidatesBreakByMessageID` now exists: three
+  documents with identical text score identically under bm25 and are published
+  with DESCENDING message ids, so insertion order — what an unspecified tie
+  falls back to — is the opposite of the order rulings §7 requires. Re-run:
+  caught. The tie-break predates D15, but D15 moved it into shared code, and a
+  rule with no test survives the next refactor by luck;
+- pool cut off by one — caught (by D14's union counters);
+- trigram companion queried against the word index — caught;
+- ownership check dropped from the ORACLE itself — caught, which is what stops
+  the oracle degenerating into a copy of the thing it checks.
+
+**The survivor is equivalent:** running the trigram path through the three-join
+filter returns the same rows by construction — the two filters differ only in
+cost, which is the entire claim of this change. Recorded rather than papered
+over with a test that only appears to cover it.
+
+### Judgment calls
+
+- **Nothing was duplicated, deliberately.** The plan offered a per-match saving
+  in exchange for state that can drift; the profile found a larger saving with
+  no state at all, so the question of whether the duplication is safe never had
+  to be answered.
+- **`SearchLexical` was left alone.** It needs the revision's body_hash and
+  text_class, so it cannot drop to one join, and nothing on the retrieval path
+  calls it — only tests do. Rewriting it would be a change with no measurement
+  behind it.
+- **The profiling harness is committed** (`TestD15BuildCorpus`,
+  `TestD15Profile`, `TestD15Variants`, `TestD15GoldenDump` — all env-gated and
+  skipped by default). D14's lesson and D15's were both "profile first, the
+  attribution is not where you think", and both sprints began by rebuilding the
+  same 100k corpus and the same timing scaffolding by hand. The variant bake-off
+  writes scratch tables into the projection it profiles, so it refuses to run
+  against any directory it did not build itself (a marker file the builder
+  writes).
+- **A measurement artifact, found and corrected:** the first component profile
+  timed `LexicalTopKPlan` immediately after reopening the projection, charging
+  it ~2 ms of page-cache misses that the later loops never paid. The harness now
+  warms the cache over every query before timing anything, and the numbers above
+  come from warmed runs. Run-to-run variance on this container is ~10%, which is
+  why every before/after claim here comes from an interleaved comparison and not
+  from two runs an hour apart.
+
+### No successor item raised
+
+Every remaining lever is measured and declined above, so raising a D16 would be
+raising a plan item to do the thing this sprint decided not to do. The trigger
+that would reopen it is S13's 1M-event scorecard: the residual scales with
+matching documents, that run has ~10x as many per query, and if it lands
+somewhere that matters, the arithmetic above says exactly which milliseconds are
+for sale and what each one costs.
+
+`make verify` (including `test-novec`), `make test-race` and `make eval` all
+green.

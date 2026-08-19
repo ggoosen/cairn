@@ -34,6 +34,88 @@ func (p *Projection) LexicalTopK(query string, k int, includeRetracted bool) ([]
 	return ids, err
 }
 
+// headFilter is how a matched FTS row becomes the message id of a live HEAD
+// revision — the per-match work of every candidate query, and after D14 the
+// largest single cost in a search (D15).
+//
+// Both forms below select exactly the same rows; they differ only in how many
+// index seeks they spend per MATCHING document, and the pool is cut to k only
+// AFTER the filter has run, so the work is paid on every match rather than on
+// the k that survive. The value is SQL: a compile-time constant, never caller
+// input.
+type headFilter string
+
+const (
+	// headJoinDirect asks the ONE question the candidate query needs: is there
+	// a message whose head revision is this indexed revision? A revision_id is
+	// a primary key, so it belongs to exactly one message, and a message's
+	// head_revision_id is only ever set to a revision inserted for that same
+	// message in the same transaction (see applyPayload: publish sets it beside
+	// the revisions INSERT, revise_body sets it to the last revision it just
+	// inserted). Naming the head therefore names the owner, and the revisions
+	// hop that used to sit in the middle re-derived a fact the messages row had
+	// already stated. idx_messages_head indexes it — the index D1 added for the
+	// vector path, which has joined this way since (see vec.go).
+	headJoinDirect headFilter = `JOIN messages m ON m.head_revision_id = map.revision_id`
+	// headJoinViaRevisions is the pre-D15 shape: rowid → revision → message,
+	// testing ownership and headness separately. Kept as the ORACLE the
+	// differential drives (rulings §7, the way brute-force cosine remains the
+	// vector index's oracle and D11's probe remains D14's), because dropping a
+	// join from a filter is a claim about supersession and retraction, and a
+	// claim of that kind is asserted against the superseded code, not argued.
+	headJoinViaRevisions headFilter = `JOIN revisions r ON r.revision_id = map.revision_id
+		JOIN messages m ON m.message_id = r.message_id AND m.head_revision_id = r.revision_id`
+)
+
+// headMessageHits runs one candidate query: FTS match over `table`, filtered to
+// live head revisions by hf, in bm25 order with a deterministic tie-break
+// (rulings §7). `table` and hf are compile-time constants; the match expression
+// and k are bound parameters.
+func (p *Projection) headMessageHits(table string, hf headFilter, match string, k int, includeRetracted bool) ([]string, error) {
+	rows, err := p.db.Query(`
+		SELECT m.message_id
+		FROM `+table+`
+		JOIN fts_map map ON `+table+`.rowid = map.rowid
+		`+string(hf)+`
+		WHERE `+table+` MATCH ? AND (m.retracted = 0 OR ?)
+		ORDER BY bm25(`+table+`), m.message_id
+		LIMIT ?`, match, boolInt(includeRetracted), k)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanIDs(rows)
+}
+
+// LexicalCandidatesForTest runs the word-index candidate query BOTH ways — the
+// production filter and the pre-D15 three-join oracle — so a differential can
+// assert they return the same ids in the same order. Exported for the same
+// reason LexicalPlansForTest is: an oracle a test cannot address is not one.
+func (p *Projection) LexicalCandidatesForTest(query string, k int, includeRetracted bool) (direct, viaRevisions []string, err error) {
+	match, _, err := p.lexicalMatch(ftsRevisionsIndex, query)
+	if err != nil {
+		return nil, nil, err
+	}
+	if direct, err = p.headMessageHits(ftsRevisionsIndex.table, headJoinDirect, match, k, includeRetracted); err != nil {
+		return nil, nil, err
+	}
+	viaRevisions, err = p.headMessageHits(ftsRevisionsIndex.table, headJoinViaRevisions, match, k, includeRetracted)
+	return direct, viaRevisions, err
+}
+
+// TrigramCandidatesForTest is LexicalCandidatesForTest for the C2 companion.
+func (p *Projection) TrigramCandidatesForTest(query string, k int, includeRetracted bool) (direct, viaRevisions []string, err error) {
+	q := FTSTrigramQuery(query)
+	if q == "" {
+		return nil, nil, nil
+	}
+	if direct, err = p.headMessageHits(ftsTrigramTable, headJoinDirect, q, k, includeRetracted); err != nil {
+		return nil, nil, err
+	}
+	viaRevisions, err = p.headMessageHits(ftsTrigramTable, headJoinViaRevisions, q, k, includeRetracted)
+	return direct, viaRevisions, err
+}
+
 // LexicalTopKPlan is LexicalTopK plus the D11 term plan — which query terms
 // formed the disjunction, and which the index reported as carrying no ordering
 // information. Search reports it, so widened matching stays inspectable.
@@ -43,29 +125,9 @@ func (p *Projection) LexicalTopKPlan(query string, k int, includeRetracted bool)
 	if err != nil {
 		return nil, plan, fmt.Errorf("lexical candidates: %w", err)
 	}
-	rows, err := p.db.Query(`
-		SELECT m.message_id
-		FROM fts_revisions
-		JOIN fts_map map ON fts_revisions.rowid = map.rowid
-		JOIN revisions r ON r.revision_id = map.revision_id
-		JOIN messages m ON m.message_id = r.message_id AND m.head_revision_id = r.revision_id
-		WHERE fts_revisions MATCH ? AND (m.retracted = 0 OR ?)
-		ORDER BY bm25(fts_revisions), m.message_id
-		LIMIT ?`, query, boolInt(includeRetracted), k)
+	out, err := p.headMessageHits(ftsRevisionsIndex.table, headJoinDirect, query, k, includeRetracted)
 	if err != nil {
 		return nil, plan, fmt.Errorf("lexical candidates: %w", err)
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, plan, err
-		}
-		out = append(out, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, plan, err
 	}
 	seen := map[string]bool{}
 	for _, id := range out {
@@ -125,20 +187,11 @@ func (p *Projection) TrigramMessageHits(query string, k int, includeRetracted bo
 	if q == "" {
 		return nil, nil
 	}
-	rows, err := p.db.Query(`
-		SELECT m.message_id
-		FROM fts_revisions_trigram
-		JOIN fts_map map ON fts_revisions_trigram.rowid = map.rowid
-		JOIN revisions r ON r.revision_id = map.revision_id
-		JOIN messages m ON m.message_id = r.message_id AND m.head_revision_id = r.revision_id
-		WHERE fts_revisions_trigram MATCH ? AND (m.retracted = 0 OR ?)
-		ORDER BY bm25(fts_revisions_trigram), m.message_id
-		LIMIT ?`, q, boolInt(includeRetracted), k)
+	out, err := p.headMessageHits(ftsTrigramTable, headJoinDirect, q, k, includeRetracted)
 	if err != nil {
 		return nil, fmt.Errorf("trigram candidates: %w", err)
 	}
-	defer rows.Close()
-	return scanIDs(rows)
+	return out, nil
 }
 
 // VecBlob encodes float32 little-endian (the DDL's vectors.vec format).

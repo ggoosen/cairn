@@ -104,6 +104,12 @@ var (
 	ftsDerivativesIndex = ftsIndex{"fts_derivatives", "fts_derivatives_map", "fts_derivatives_vocab"}
 )
 
+// ftsTrigramTable is the C2 companion over the SAME bodies, sharing fts_map's
+// rowids. It has no vocabulary companion of its own: D11's term filter is a
+// claim about tokens and is never applied to a substring index (D14), so
+// nothing asks it for a document frequency.
+const ftsTrigramTable = "fts_revisions_trigram"
+
 // indexedDocs is the FTS index's document count — the N in bm25's idf.
 // max(rowid) is an O(log N) b-tree lookup on the map table, whose rowids are
 // assigned by INSERT and never deleted (retraction and supersession are
@@ -345,6 +351,17 @@ func (p *Projection) LexicalPlansForTest(raw string, derivatives bool) (vocab, p
 		return LexicalPlan{}, LexicalPlan{}, err
 	}
 	return vocab, probe, nil
+}
+
+// LexicalMatchForTest computes the production term plan (D14's df source) and
+// the MATCH expression it produces, so a profile can time the term-selection
+// stage on its own rather than inferring it by subtraction.
+func (p *Projection) LexicalMatchForTest(raw string, derivatives bool) (string, LexicalPlan, error) {
+	idx := ftsRevisionsIndex
+	if derivatives {
+		idx = ftsDerivativesIndex
+	}
+	return p.lexicalMatch(idx, raw)
 }
 
 // IndexTokenForTest exposes the query-term fold (D14) so its ASCII-only
