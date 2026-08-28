@@ -6902,3 +6902,60 @@ for sale and what each one costs.
 
 `make verify` (including `test-novec`), `make test-race` and `make eval` all
 green.
+
+### Competitive review → D16–D19 added to the plan (2026-08-19)
+
+Reviewed agentmemory (27.4k stars, Apache-2.0), Anthropic's `memory_20250818`
+tool, SplatRAG, and a nine-system "company brain" survey (GBrain, mem0, Letta,
+Zep/Graphiti, Sylph, DIY git+markdown, Pletor, Gorgias Cortex, Slite Agent).
+
+**Where Cairn is ahead, and it is not retrieval.** The convergence on
+architecture is near-total — agentmemory independently uses RRF at the SAME
+k=60, the same MiniLM-L6-v2 at 384 dimensions, the same BM25-still-works
+fallback, and session-diversification equivalent to S8's saturation penalties.
+Two teams landing on one design is evidence the design is right, not that
+either wins. Cairn's real separation is integrity: a signed append-only log
+with proven zero acknowledged-event loss, provenance on every fetch, capability
+confinement, and ranking that reconciles bit-exactly. Nothing in the field
+offers that, and for memory an agent ACTS on it is the difference that matters.
+
+**The one unambiguous gap: dreaming and pruning.** The survey's four-part frame
+is getting signals / remembering / dreaming & pruning / speaking & searching.
+Cairn is strongest in the field on remembering, strong on searching, weak on
+signals — and has NO third stage at all. Verified: the background loops are
+outbox poll, TTL housekeeping, embedding enrichment and sync anti-entropy, all
+mechanical; the thing named "maintenance worker" is the degradation ladder,
+which sheds work under pressure rather than consolidating. Nine independent
+teams all built a consolidation stage. That is the strongest external signal
+this project has received about anything.
+
+**Zep supplies the mechanism.** "When a fact changes, the old one gets an end
+date instead of being overwritten, so you can still ask what was true last
+March." That is supersession as an EVENT rather than an erasure — exactly the
+shape an append-only log wants, and it gives the memory tool's pruning effect
+without the audit loss its delete/str_replace cause. Recorded as D16.
+
+**Anthropic's memory tool is a socket, not a rival.** Six file commands,
+client-side, no search or ranking — retrieval is a directory listing. A
+developer must supply the storage. Cairn can be that storage under an
+interface Claude already drives (D19). Note also that the docs' own security
+requirements — path-traversal refusal, secret stripping, size caps, expiry —
+are four features Cairn already has, which is independent confirmation of the
+threat model.
+
+Added: **D16** supersession/staleness/consolidation (sprint S19, ready),
+**D17** live capture hooks (folded into S6 — same privacy model as C3, so one
+crossed review covers both, not two), **D18** skills package and **D19**
+memory-tool facade (sprint S20, ready). EVAL amended rather than extended:
+LongMemEval added to E3's corpora (public, human-labelled, long-horizon, and a
+competitor publishes 95.2% R@5 on it, so it yields a comparable number), and
+E9's recall-under-growth curve gains the distractor form the field uses —
+real unrelated documents measure interference, synthetic filler only measures
+dilution.
+
+**Declined deliberately:** 54 MCP tools (Cairn serves 12; every tool is
+surface, and their own shim falls back to 7 "core" ones); LLM compression or
+agent self-editing of stored memory (§3.7 non-goal, and unreconcilable under
+R47/R51); pubsub fan-out sync (a downgrade from signed replication with fork
+detection); Gaussian-splat framing (the 3-d field is PCA for visualisation,
+not a retrieval mechanism).

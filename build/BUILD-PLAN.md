@@ -31,7 +31,7 @@ two-machine rig · **[data]** needs real usage data first.
 
 The rest of this file is the specification. This part is the order to work
 it, as sprints, plus the honest reason each blocked item is blocked.
-The sprints are exhaustive: **S1–S18 cover every item in Part II**, so
+The sprints are exhaustive: **S1–S20 cover every item in Part II**, so
 finishing them is finishing the backlog.
 
 **Twelve sprints shipped or closed on 2026-08-16** — S1 defect clearance
@@ -51,9 +51,15 @@ no schema change and no duplicated state. Both candidates the item named were
 measured and declined, and the arithmetic for what is left is recorded. See
 PROGRESS.md.
 
-**Four remain, all gated on the operator:** S6 on a privacy review, S10 on two
-machines, S11 on kill-criteria sign-off then corpora, and S13/S14 behind
-those. No unblocked agent work is left in the plan.
+**Seven remain.** Two are ready and need nothing from anyone — **S19**
+(dreaming and pruning) and **S20** (reach). The other five are gated on the
+operator: S6 on a privacy review, S10 on two machines, S11 on kill-criteria
+sign-off then corpora, and S13/S14 behind those.
+
+S19 and S20 came out of a competitive review on 2026-08-19 (agentmemory, the
+Anthropic memory tool, SplatRAG, and a nine-system "company brain" survey).
+That review's one unambiguous finding: **every comparable system has a
+consolidation stage and Cairn has none.**
 
 ## Sprints
 
@@ -67,13 +73,45 @@ Run them in order. Each ships as its own commit(s) with PROGRESS.md updated,
 and `make verify` + `make test-race` green before moving on.
 
 **The sprint set is exhaustive.** Every item in Part II belongs to exactly
-one sprint — see Coverage at the end of this part — so finishing S1–S18 is
+one sprint — see Coverage at the end of this part — so finishing S1–S20 is
 finishing the backlog, with no separate track running alongside. Every
 remaining sprint names its gate in the heading.
+
+### S19 — Dreaming and pruning [ready]
+
+The one architectural stage every comparable system has and Cairn does not.
+Nine independently-built "company brains" all run a consolidation pass;
+Cairn's only answer to memory going stale is a freshness half-life in the
+ranking function, which handles age but not wrongness.
+
+- **D16** supersession, staleness and a consolidation pass (§4)
+
+**Exit:** a fact superseded by a later one stops surfacing ahead of it, the
+demotion is visible in `why-ranked` arithmetic, and the history remains
+fetchable. E9's supersession-accuracy and stale-confidence metrics can be
+computed against a mesh that represents supersession rather than one that
+cannot express it.
+
+**Watch:** this is a ranking-affecting change and R47/R51 reconciliation
+applies. Do not let "consolidation" become an LLM rewriting stored memory —
+that is a §3.7 non-goal and breaks external recomputation.
+
+### S20 — Reach [ready]
+
+Two small surfaces that decide whether anyone but the operator can use Cairn.
+
+- **D18** skills / slash-command package (§4)
+- **D19** Anthropic memory-tool facade (§4)
+
+**Exit:** a fresh agent discovers Cairn's verbs without being told about them;
+a developer using the Messages API can point `memory_20250818` at Cairn and
+get durability and provenance under an interface Claude already drives.
 
 ### S6 — Capture [gated: crossed review of the privacy model]
 
 - **C3** session-transcript ingest (§2)
+- **D17** live capture hooks (§4) — same privacy model as C3, so it takes the
+  same review rather than a second one
 
 **Exit:** the §2 acceptance criteria, of which the load-bearing one is that a
 seeded fake API key never reaches the object store.
@@ -157,7 +195,9 @@ or the sprint set is wrong.
 | S5 ✅ shipped | D1 | agent |
 | S17 ✅ shipped | D14 | agent |
 | S18 ✅ shipped | D15 | agent |
-| S6 | C3 | agent, after review |
+| S19 | D16 | agent |
+| S20 | D18, D19 | agent |
+| S6 | C3, D17 | agent, after review |
 | S7 ✅ shipped | D6 | agent + operator (signing) |
 | S16 ✅ shipped | D12, D13 | agent |
 | S8 ✅ shipped | P2 penalties | agent |
@@ -370,6 +410,15 @@ tractable: **mine free human-authored ground truth** — GitHub duplicate-issue
 links (a maintainer marking #B a duplicate of #A *is* a relevance judgment by
 someone with no stake in Cairn), Stack Overflow duplicate markers,
 documentation cross-references, and real anonymized session transcripts.
+
+**Also acquire LongMemEval** (added 2026-08-19 from the competitive review).
+It is public, human-labelled and long-horizon — the closest thing to what E9
+wants that this project does not have to build — and a competitor publishes
+95.2% R@5 on it, so it yields a directly comparable number rather than one
+only meaningful against ourselves. Note that competitor's own BM25-only
+baseline at 86.2% R@5: if our vector ablation shows nothing like that ~9-point
+gap, that is a finding about our embedder, not about hybrid retrieval.
+
 Corpora are versioned and checksummed. Gates E4/E5/E9.
 
 **E4 — intrinsic quality: ablations + baselines (M) [code].** Proper IR
@@ -447,6 +496,12 @@ simulated clock crosses their window. That is the hook being honest.
   claim that additive freshness "never annihilates old canonical material".
 - **Recall-under-growth (interference).** Same query set; grow the
   surrounding corpus 10× → 100× → 1000× while **holding the budget fixed**.
+  Run it in the **distractor form** the field uses (added 2026-08-19): hold a
+  labelled benchmark corpus fixed and mix in N rows of unrelated material —
+  SplatRAG reports SciFact R@10 0.88 with 5,000 Urban Dictionary rows in the
+  same store. Synthetic filler measures dilution; real unrelated documents
+  measure interference, which is the harder and more honest question, and it
+  makes the result comparable to a published one.
   Selectivity demand rises with N, so this is the scariest curve in the plan:
   does a mesh that works at 1k messages still work at 100k? Cheap (T0, no
   agent) and the most likely place to find a real limit — **land it with E4**.
@@ -540,6 +595,137 @@ an honest note rather than block on it.
 `brew install` on a clean machine yields a working `cairn` with no Xcode
 toolchain present. The FIX-F4 guard still holds — a release artifact must be
 a `sqlite_fts5` build, and the workflow must assert that.
+
+### D16 — supersession, staleness, and a consolidation pass (L) [code]
+
+**Provenance:** a competitive review on 2026-08-19 of nine independently-built
+"company brains" (GBrain, mem0, Letta, Zep/Graphiti, Sylph, DIY git+markdown,
+Pletor, Gorgias Cortex, Slite Agent), plus Anthropic's memory tool. Every one
+of them has a consolidation stage — GBrain re-links nightly and flags stale,
+Letta runs a second agent to tidy, Gorgias turns wrong answers into PRs, Slite
+routes staleness to a page owner, the memory tool has Claude delete and rewrite
+its own files. Cairn's entire answer is a freshness half-life, which handles
+**age** but not **wrongness**: a superseded fact written last week still ranks
+high.
+
+Two structural gaps, both verified:
+
+- **`relates_to` has no projection table** (`grep` finds nothing in
+  `schema.sql`). Cross-message supersession is not queryable at all — only
+  revisions *within* one message's chain. B-supersedes-A across two sends is
+  invisible to ranking.
+- **Compaction does not feed retrieval.** `Compaction` in `rankq.go` computes
+  stats and `cairn compact` writes a markdown file; search and digest never
+  read it. The current-state view exists as a document, not a surface.
+
+**What. Three parts, in this order.**
+
+1. **Supersession as an event with an end date.** Zep/Graphiti's model, and it
+   is the right one for an append-only log: *"when a fact changes, the old one
+   gets an end date instead of being overwritten, so you can still ask what was
+   true last March."* Give the relation a projection table with validity
+   bounds; a superseded message is demoted in ranking, not removed, and its
+   history stays fetchable. This yields the memory tool's pruning EFFECT while
+   keeping the audit trail its `delete`/`str_replace` destroys.
+2. **A staleness signal.** Age alone is not staleness — an unrevised
+   architectural decision is old and correct. Prefer signals the log already
+   carries (superseded-by, retraction, contradiction between a message and a
+   later revision of the same subject) over a timer.
+3. **A consolidation pass** on the enricher's cadence: recompute the
+   supersession graph, surface what has gone stale, and make the current-state
+   view queryable rather than a written file.
+
+**Non-negotiable: no LLM rewrites stored memory.** Several systems here have an
+agent that edits its own memory; §3.7 forbids it and R47/R51 make it
+impossible — a model's rewrite cannot be reconciled by an external verifier.
+Consolidation computes *relations and rankings* over immutable content. The
+sanctioned place for distillation stays the agent-side handoff note (C1).
+
+**Acceptance.** A fact superseded by a later one stops outranking it, and the
+demotion appears as a why-ranked component that an external recomputation
+reproduces exactly. History remains fetchable and attributed. `cairn doctor`
+stays clean. Golden corpus and the ≥0.96 ratchet unchanged, with any movement
+explained case by case. A projection schema bump is expected; exercise the
+auto-rebuild.
+
+**Sequencing note.** E9 already defines *supersession accuracy* (returns B /
+returns A / returns both undifferentiated) and *stale-confidence rate*. Those
+measure what this gap costs, and running them first would let evidence size the
+work. But they sit behind S11's operator gate, and part 1 is a structural
+absence rather than a tuning question — so build supersession, and let E9 size
+parts 2 and 3.
+
+### D17 — live capture hooks (M) [code, after the C3 review]
+
+C3 ingests transcript **files** after the fact. Competing systems register
+lifecycle **hooks** that fire during the session — `SessionStart`,
+`UserPromptSubmit`, `PostToolUse`, `PostToolUseFailure`, `SessionEnd` — so
+capture costs the agent nothing and misses nothing. Cairn has no programmatic
+hook surface at all; C1 is a docs convention asking the agent to remember to
+write, and an agent that forgets writes nothing.
+
+**What.** A `cairn hook <event>` verb that a harness invokes, mapping events
+onto sends at the right text class, through the same redaction pass and the
+same digest exclusion C3 specifies. Idempotent and cheap: a hook that blocks or
+fails must never break the host session.
+
+**Gate.** This is C3's privacy model applied to a live stream instead of a
+file, so it takes the **same** crossed review — one review covering both, not
+two. Do not build it before that review.
+
+**Acceptance.** A real agent session with hooks wired produces findable
+knowledge with transcript provenance; a seeded fake API key never reaches the
+object store; digests for every view are byte-unchanged; a killed or hung
+daemon leaves the host session unharmed.
+
+### D18 — skills / slash-command package (S) [code]
+
+Competing systems ship distributable skills (`/recall`, `/remember`,
+`/recap`, `/forget`) that agents discover on their own. Cairn ships prose in
+CLAUDE.md that a human has to paste. The verbs already exist; this is
+packaging, and it is the cheapest reach item on the board.
+
+**What.** A small set of skills wrapping existing verbs — recall (search +
+fetch), remember (send), recap (digest), handoff (the C1 note) — installable
+the way `cairn mcp-install` installs MCP config, and per-view like it.
+
+**Acceptance.** A fresh agent with no CLAUDE.md instructions discovers and
+uses Cairn's verbs. Installation is idempotent and reversible. No skill grants
+more than the session's capability tier already allows (R21).
+
+### D19 — Anthropic memory-tool facade (M) [code]
+
+Anthropic's `memory_20250818` tool is six file operations — `view`, `create`,
+`str_replace`, `insert`, `delete`, `rename` — over a `/memories` directory,
+executed **client-side by the developer's own handler**. There is no search,
+no ranking, no embedding: retrieval is a directory listing and a file read.
+
+That makes it a socket, not a competitor. A developer using the Messages API
+must supply storage; today they get a filesystem stub. Cairn can be that
+storage — directory listing over topics, file read over fetch, create over
+send — adding signed durability, provenance, budgets and hybrid search
+**underneath an interface Claude already knows how to drive**. It is C4's
+memory-provider pattern aimed at the API itself, and it reaches every API
+developer through one integration rather than one plugin per harness.
+
+**What.** A `cairn memory-tool` surface implementing the six commands over
+Cairn's own store, with the docs' own security requirements met by machinery
+Cairn already has: path-traversal refusal (`ValidViewName`), size caps (hard
+budgets), expiry (ephemeral TTL), and secret-stripping (C3's redaction).
+
+**Two semantic mismatches to resolve, not paper over.**
+
+- `delete` and `str_replace` mean **erase** and **edit in place**; Cairn's log
+  is append-only. Map them onto retraction and revision, and say so plainly in
+  the docs — a caller expecting erasure must not be told it happened. If a
+  caller genuinely needs erasure, the ephemeral class is the honest answer.
+- `view` on a directory returns a listing, not a ranked answer. Serve it as a
+  listing; do not smuggle ranking into a call whose contract is enumeration.
+
+**Acceptance.** The reference tool-use loop from Anthropic's docs runs against
+Cairn end to end. Path traversal is refused. A `delete` leaves the log intact
+and the content unfetchable through the facade, with the mapping documented.
+Nothing in the facade can exceed the capability tier of the session behind it.
 
 ### DEBT non-goals
 
