@@ -816,3 +816,23 @@ const (
 	// same millisecond — the TestF3 flake) while costing 25 fewer bytes.
 	SocketNameShortHexChars = 16
 )
+
+// D18 — the skills / slash-command package (S20). Appended as its own block.
+const (
+	// SkillUnitPrefix namespaces every installed skill so a Cairn skill can
+	// never collide with an operator's own skill of the same leaf name
+	// ("recall" is a word other people will also want).
+	SkillUnitPrefix = "cairn-"
+	// SkillMarker identifies a skill file as cairn-managed. Uninstall removes
+	// ONLY files carrying it and refuses anything else — the same
+	// "never clobber state you did not write" posture R54 §6 takes with MCP
+	// client config, applied to a file we own outright.
+	SkillMarker = "cairn:skill managed"
+	// SkillDefaultView is the last-resort view name, used only when a skill is
+	// rendered with no target context. In the normal path a target's skills
+	// default to the TARGET'S OWN name, which is the same per-app view
+	// `cairn mcp-install` writes (DEPLOY-E1) — so the skills a harness reads
+	// and the MCP server it launches address one view, not two.
+	SkillDefaultView = "mcp"
+)
+

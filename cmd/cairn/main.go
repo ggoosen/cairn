@@ -149,6 +149,8 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newMCPCmd(&dir))
 	root.AddCommand(newMCPInstallCmd(&dir))
 	root.AddCommand(newMCPUninstallCmd(&dir))
+	root.AddCommand(newSkillsInstallCmd(&dir))
+	root.AddCommand(newSkillsUninstallCmd(&dir))
 	root.AddCommand(newRunCmd(&dir))
 	root.AddCommand(newSessionCmd(&dir))
 	root.AddCommand(newSetupCmd(&dir))

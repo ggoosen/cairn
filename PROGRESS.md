@@ -6959,3 +6959,62 @@ agent self-editing of stored memory (§3.7 non-goal, and unreconcilable under
 R47/R51); pubsub fan-out sync (a downgrade from signed replication with fork
 detection); Gaussian-splat framing (the 3-d field is PCA for visualisation,
 not a retrieval mechanism).
+
+## D18 — the skills package: the verbs, made discoverable (2026-08-29) — DONE [S20]
+
+**The gap.** Every verb an agent needs already existed. What did not exist was
+any way for an agent to FIND them: onboarding was prose in a `CLAUDE.md` that a
+human had to paste into each project, so a fresh session nobody had briefed used
+none of the mesh. Competing memory systems ship `/recall`, `/remember`, `/recap`,
+`/forget` as installable units an agent discovers on its own. This is that
+packaging and nothing else — `internal/skillsinstall` renders four skills
+(recall, remember, recap, handoff), each a wrapper over a verb that already
+shipped.
+
+**Shape borrowed wholesale from `cairn mcp-install` (R54).** A registry of
+targets (`claude-code` → `~/.claude/skills/<unit>/SKILL.md`, `codex` →
+`~/.codex/prompts/<unit>.md`), per-view install defaulting to one view per
+target named after it (the same DEPLOY-E1 default `mcp-install` writes, so the
+skills a harness reads and the MCP server it launches address ONE view),
+idempotent (identical content writes nothing and backs up nothing), backed up
+before any overwrite, and reversible. `Env` is `mcpinstall.Env` reused verbatim
+— a second copy of "where is HOME" would be a second thing to get wrong.
+
+**Never clobbers what it did not write.** Every installed file carries a
+`cairn:skill managed` marker. A file without one is refused by BOTH install and
+uninstall and reported, rather than overwritten or deleted — the same posture
+R54 §6 takes with third-party MCP config, applied to a file whose name we happen
+to want.
+
+**R21 is the load-bearing constraint, and it is enforced twice.** A skill body
+contains no capability, no handle and no token: it is text naming a command the
+agent's own process runs under whatever `CAIRN_SESSION` that process already
+carries. Textually, `TestD18SkillsTeachNoEscalatingFlag` asserts no body teaches
+`--operator-override`, `--force-class`, `--durable` (R55: the durable
+subscription tier is operator-only) or a `CAIRN_SESSION=` assignment, and that
+every body restates the R18/R53 untrusted-content rule. Behaviourally,
+`TestD18SkillCannotEscalateCapability` mints a read-only handle, confirms the
+digest the recap skill names SUCCEEDS, and confirms the publish the remember
+skill names is refused with a capability error. A convenience over a verb, never
+a privilege.
+
+**Verified for real, not only by unit test.** Installed into a temp `HOME` with
+the built binary: first run wrote 8 files across both targets, a second
+identical run reported "already up to date" for all 8 and wrote nothing, a
+hand-written `cairn-recap.md` was left byte-identical by both install and
+uninstall (with a non-zero exit and a named error), a `--view other` install was
+reported STALE by `--status`, and `skills-uninstall --all` removed exactly the
+managed files and their now-empty unit directories, leaving the backups and the
+foreign file in place.
+
+**Judgment calls.**
+- *Two targets, not four.* Claude Code and Codex read skills/prompts from a
+  documented per-user directory. Claude Desktop has no such directory (its
+  MCP-config entry in `mcpinstall` has no skills analogue), so it is absent
+  rather than guessed at.
+- *`--actor <view>` is in the remember/handoff bodies.* It is the recorded
+  principal, not a capability — attribution is what makes a note rankable — and
+  it keeps a skill-written note attributable to the harness that wrote it.
+- *Default view = the target's name.* The alternative (one shared default) would
+  have split one agent's digest, interest and telemetry across the view its MCP
+  server uses and the view its skills name.
