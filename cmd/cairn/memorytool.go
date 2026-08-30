@@ -88,7 +88,7 @@ func newMemoryToolCmd(dirFlag *string) *cobra.Command {
 			}
 
 			run := func(raw []byte) error {
-				out := memorytool.Result{}
+				var out memorytool.Result
 				c, derr := memorytool.Decode(raw)
 				if derr != nil {
 					out = memorytool.Result{Content: "Error: " + derr.Error(), IsError: true}

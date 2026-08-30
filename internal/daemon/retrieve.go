@@ -219,7 +219,7 @@ func fillP2Components(rec *componentsRecord, s rank.Scored, profile rank.Profile
 // "returned both undifferentiated". Absent fields on an unsuperseded message
 // keep the stored record byte-identical to a pre-D16 one.
 func fillSupersessionEvidence(rec *componentsRecord, s rank.Scored) {
-	rec.SupBy, rec.SupAt = s.Components.SupBy, s.Components.SupAt
+	rec.SupBy, rec.SupAt = s.SupBy, s.SupAt
 }
 
 // Search: FTS top-100 + vector top-100 → RRF k=60 → percentile → P0 search
@@ -529,7 +529,7 @@ func (d *Daemon) finishRetrieval(scored []rank.Scored, rows map[string]projectio
 			Rank: i + 1, MessageID: s.MessageID, RevisionID: row.HeadRevisionID,
 			BodyHash: row.BodyHash, TextClass: row.TextClass, Score: s.Score, Mandatory: s.Mandatory,
 			Sender: mm.Sender, CreatedAt: row.CreatedAt, Topics: mm.Topics, Snippet: snippets[s.MessageID],
-			SupersededBy: s.Components.SupBy, SupersededAt: s.Components.SupAt,
+			SupersededBy: s.SupBy, SupersededAt: s.SupAt,
 		})
 		rec := buildExplanationRecord(s, profile, row.CreatedAt)
 		blob, err := json.Marshal(rec)

@@ -105,7 +105,7 @@ func TestD16SupersededStopsOutrankingItsSuccessor(t *testing.T) {
 	if newRank == 0 {
 		t.Fatal("the superseding message is missing from search")
 	}
-	if !(newRank < oldRank) {
+	if newRank >= oldRank {
 		t.Fatalf("superseded fact still outranks its successor: old at %d, new at %d", oldRank, newRank)
 	}
 	// and the agent is TOLD, on the result itself

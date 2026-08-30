@@ -53,6 +53,25 @@ package rank
 //
 // Recorded in PROGRESS.md under "Author rulings needed".
 
+// MEASURED 2026-08-19 (PROGRESS.md "D16 verification"): the conservative
+// reading above does NOT satisfy D16's acceptance criterion. End to end on a
+// real daemon, superseding A by B moved A from 0.7900 to 0.6755 and B from
+// 0.0400 to 0.0755 — the demotion fires, but the stale fact still outranks its
+// replacement. The cause is structural, not a bug: percentile normalisation
+// runs over the CANDIDATE SET, so two matching documents normalise to R=1.0
+// and R=0.0, a 0.75 gap under P2 that no 0.15-bounded additive term can close.
+// Re-running with 25 extra unrelated messages gave identical numbers, so this
+// is not a small-corpus artifact — it is what percentile does whenever few
+// documents match, which is the normal shape of a specific query.
+//
+// So the ruling above is not merely about magnitude. A bounded additive term
+// cannot deliver the criterion in principle; only a hard ordering constraint
+// (a superseded message never ranks above the one superseding it, recorded as
+// a why-ranked component so R47/R51 still reconciles) or digest-only exclusion
+// can. The comment above is right that burying a fact is deletion in all but
+// name — which is an argument for the ORDERING constraint over a bigger
+// number, since ordering demotes without hiding.
+
 import "github.com/ggoosen/cairn/internal/config"
 
 // hasSupersession reports whether this profile scores the supersession term.

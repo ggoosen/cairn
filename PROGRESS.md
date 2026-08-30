@@ -7136,3 +7136,62 @@ with a key runs the Python loop in `docs/memory-tool.md` unchanged.
   the reason.
 - *A new daemon op rather than reusing search.* See above — the alternative was
   to decide a directory's contents by rank.
+
+### D16 verification — the demotion fires, the reordering does not (2026-08-19)
+
+S19 was cut off by a rate limit before mutation testing or reconciliation. I
+ran the outstanding verification. Gates first: `make verify`, `make test-race`
+(0 races), `make eval` all green on the combined tree, and 7 lint findings
+from the interrupted work fixed line by line (one ineffectual assignment in
+cmd/cairn/memorytool.go, six selector nits — no blanket rewrite, since a
+file-wide `.Components.` removal broke the build during D14).
+
+Then a real end-to-end test, and it found something the unit tests did not.
+
+Two facts, the second superseding the first:
+
+    before:  staging-blue (old)  0.7900     staging-green (new)  0.0400
+    after:   staging-blue (old)  0.6755     staging-green (new)  0.0755
+
+The demotion FIRES — the superseded message loses 0.1145 — and the CLI
+correctly reports "demoted, not deleted", and the superseded message stays
+fetchable. **But the stale fact still outranks its replacement**, which is
+precisely what D16's acceptance criterion forbids: "a fact superseded by a
+later one stops surfacing ahead of it."
+
+Not a bug — a structural mismatch, verified rather than guessed:
+
+- `SupersessionPenaltyCap = 0.15`, a bounded additive penalty on the same
+  pattern as S8's duplicate penalty.
+- Percentile normalisation runs over the CANDIDATE SET, not the corpus, so two
+  matching documents normalise to R=1.0 and R=0.0. Under the P2 profile
+  (0.75·R) that is a 0.75 gap before any penalty applies.
+- Re-run with 25 extra unrelated messages: identical numbers. The gap is not a
+  small-corpus artifact; it is what percentile does whenever few documents
+  match, which is the normal shape of a specific query.
+- So a 0.15 penalty cannot close a 0.75 gap, and the canonical supersession
+  case — two near-identical facts, one replacing the other — is exactly where
+  the gap is widest.
+
+**RULING NEEDED: how strong is supersession?** Spec §9.1 defines neither the
+term nor its weight. Three shapes, none obviously right:
+
+1. A larger weight. Simple, but ANY bounded additive term has this failure in
+   principle; it only moves the threshold.
+2. A hard ordering constraint: a superseded message may never rank above the
+   message that superseded it, applied as a post-sort rule the way S8's
+   re-sort works. Exact and explainable, and reconcilable under R47/R51 if the
+   constraint is recorded as a why-ranked component rather than hidden in a
+   comparator.
+3. Exclusion from the DIGEST only, keeping it in search. This matches E9's own
+   principle that "the digest is allowed to forget; search is not" — the
+   working set drops the stale fact, the memory keeps it.
+
+Conservative interim, already shipped: the bounded penalty. It under-demotes
+and never over-demotes, so nothing is hidden that should be visible. Marked
+`// RULING-NEEDED:` in internal/rank/supersede.go.
+
+**D16 is therefore NOT shippable as it stands** — its own acceptance criterion
+is unmet, and I am recording that rather than restating the criterion to match
+what was built. E9's supersession-accuracy metric would now score this as
+"returns A (stale)", which is the failure mode that metric exists to catch.

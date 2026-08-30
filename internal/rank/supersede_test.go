@@ -137,15 +137,15 @@ func TestD16P0ProfilesUnaffected(t *testing.T) {
 					t.Fatalf("%s (uniform=%v): supersession changed a P0 result: %s/%v became %s/%v",
 						p, uniform, plain[i].MessageID, plain[i].Score, sup[i].MessageID, sup[i].Score)
 				}
-				if sup[i].Components.Sup != 0 {
+				if sup[i].Sup != 0 {
 					t.Fatalf("%s: P0 scored a supersession feature (%v); the pass must be skipped, not zero-weighted",
-						p, sup[i].Components.Sup)
+						p, sup[i].Sup)
 				}
 			}
 			// but the EVIDENCE is still carried, or a P0 trace would say
 			// "not superseded" about a message a live successor replaced
 			for _, s := range sup {
-				if s.MessageID == "a" && s.Components.SupBy != "b" {
+				if s.MessageID == "a" && s.SupBy != "b" {
 					t.Fatalf("%s: P0 dropped the supersession evidence; the trace would state a falsehood", p)
 				}
 			}
