@@ -127,6 +127,36 @@ CREATE TABLE source_refs (
   message_id TEXT NOT NULL REFERENCES messages(message_id)
 );
 
+-- D16 (S19): cross-message supersession, as a relation with an END DATE.
+-- Projected from message.supersede. Zep/Graphiti's model, and the right one for
+-- an append-only log: when a fact changes the old one is given an end date
+-- rather than overwritten, so "what was true last March" is still answerable
+-- and the superseded message stays fetchable, attributed and searchable. It is
+-- DEMOTED in ranking (the SUP term), never removed — which is the whole reason
+-- this beats the delete-and-rewrite pruning the field's memory tools do.
+--
+-- valid_until is the end date: the wall time of the supersession event, which
+-- is when the mesh asserted the old fact stopped being current. Every row is an
+-- assertion; a message superseded twice has two rows, and the EARLIEST one that
+-- still has a live successor is the end date ranking uses.
+--
+-- Both message ids carry FOREIGN KEYs deliberately (R49): a supersession that
+-- replicates ahead of either message parks as RETRYABLE and self-heals when the
+-- message arrives, rather than projecting a relation that points at nothing.
+CREATE TABLE supersessions (
+  event_id                 TEXT PRIMARY KEY REFERENCES events(event_id),
+  message_id               TEXT NOT NULL REFERENCES messages(message_id),
+  superseded_by_message_id TEXT NOT NULL REFERENCES messages(message_id),
+  reason                   TEXT,
+  actor_principal_id       TEXT,
+  valid_until              TEXT NOT NULL      -- RFC3339 end date of the superseded fact
+);
+-- The ranking join asks "is there a live successor to this message?" per
+-- candidate, so message_id is the hot column; the reverse index serves the
+-- current-state walk and the census.
+CREATE INDEX idx_supersessions_msg ON supersessions(message_id);
+CREATE INDEX idx_supersessions_by ON supersessions(superseded_by_message_id);
+
 CREATE TABLE signals (
   event_id TEXT PRIMARY KEY REFERENCES events(event_id),
   message_id TEXT NOT NULL,

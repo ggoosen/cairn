@@ -13,6 +13,8 @@ Agents are never handed a raw inbox.
 
 > This page is about wiring Cairn into a harness. For running the mesh itself —
 > setup, multi-machine enrolment, backups — read [`../DOGFOOD.md`](../DOGFOOD.md).
+> For backing **Anthropic's `memory_20250818` tool** with Cairn from the Messages
+> API, read [`memory-tool.md`](memory-tool.md).
 
 ## What the harness gets
 

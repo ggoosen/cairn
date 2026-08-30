@@ -130,6 +130,17 @@
       "description": "Targets the logical message; hides all revisions from default retrieval; history preserved; not undoable in P0 (restore is P1)."
     },
 
+    "message.supersede": {
+      "type": "object",
+      "required": ["message_id", "superseded_by_message_id"],
+      "properties": {
+        "message_id": { "$ref": "#/$defs/uuid", "description": "the SUPERSEDED message — the fact that ends" },
+        "superseded_by_message_id": { "$ref": "#/$defs/uuid", "description": "the SUPERSEDING message — the fact that replaces it" },
+        "reason": { "type": "string" }
+      },
+      "description": "D16: cross-message supersession. The superseded fact gets an END DATE (this event's wall_time) instead of being overwritten \u2014 nothing is deleted, no body is rewritten, and the history stays fetchable and attributed. Distinct from message.revise_body, which supersedes a revision WITHIN one message's chain; this relates two logical messages. Distinct from message.retract, which hides content: a superseded message is still returned, still quotable, and merely demoted in ranking (the SUP term, spec \u00a79.1 penalty shape). message_id == superseded_by_message_id is malformed and is rejected at the write boundary."
+    },
+
     "topic.create": {
       "type": "object",
       "required": ["topic_id", "name"],

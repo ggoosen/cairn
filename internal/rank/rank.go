@@ -36,7 +36,13 @@ const (
 type weightSet struct {
 	R, S, F, P, I, N float64
 	Dup, Sat         float64
-	halfLife         time.Duration
+	// Sup is the D16 supersession demotion, NEGATIVE for the same reason
+	// Dup/Sat are: the feature is an ordinary [0,1] number and the weight IS
+	// the cap, so the printed product is the demotion itself. P0 profiles leave
+	// it at 0 — see internal/rank/supersede.go for why that is a conservative
+	// reading of a spec gap rather than a preference.
+	Sup      float64
+	halfLife time.Duration
 }
 
 // IsP2 reports whether the profile uses the full additive model.
@@ -48,10 +54,10 @@ func (p Profile) weights() weightSet {
 		return weightSet{R: config.DigestWeightR, F: config.DigestWeightF, P: config.DigestWeightP, halfLife: config.DigestFreshnessHalfLife}
 	case ProfileSearchP2:
 		return weightSet{R: config.SearchP2WeightR, S: config.SearchP2WeightS, F: config.SearchP2WeightF, I: config.SearchP2WeightI, N: config.SearchP2WeightN,
-			Dup: -config.PenaltyCap, Sat: -config.PenaltyCap, halfLife: config.SearchFreshnessHalfLife}
+			Dup: -config.PenaltyCap, Sat: -config.PenaltyCap, Sup: -config.SupersessionPenaltyCap, halfLife: config.SearchFreshnessHalfLife}
 	case ProfileDigestP2:
 		return weightSet{R: config.DigestP2WeightR, S: config.DigestP2WeightS, F: config.DigestP2WeightF, I: config.DigestP2WeightI, N: config.DigestP2WeightN,
-			Dup: -config.PenaltyCap, Sat: -config.PenaltyCap, halfLife: config.DigestFreshnessHalfLife}
+			Dup: -config.PenaltyCap, Sat: -config.PenaltyCap, Sup: -config.SupersessionPenaltyCap, halfLife: config.DigestFreshnessHalfLife}
 	default:
 		return weightSet{R: config.SearchWeightR, F: config.SearchWeightF, P: config.SearchWeightP, halfLife: config.SearchFreshnessHalfLife}
 	}
@@ -63,12 +69,13 @@ func (p Profile) weights() weightSet {
 type PublicWeights struct {
 	R, S, F, P, I, N float64
 	Dup, Sat         float64 // negative: the §9.1 penalty cap (S8)
+	Sup              float64 // negative: the D16 supersession demotion cap
 }
 
 // Weights returns the profile's term weights.
 func (p Profile) Weights() PublicWeights {
 	w := p.weights()
-	return PublicWeights{R: w.R, S: w.S, F: w.F, P: w.P, I: w.I, N: w.N, Dup: w.Dup, Sat: w.Sat}
+	return PublicWeights{R: w.R, S: w.S, F: w.F, P: w.P, I: w.I, N: w.N, Dup: w.Dup, Sat: w.Sat, Sup: w.Sup}
 }
 
 // score computes the additive score for one candidate's components under a
@@ -82,14 +89,17 @@ func (p Profile) Weights() PublicWeights {
 // weight rounded, then summed in this term order), on every platform and in
 // every language an auditor might verify with.
 //
-// S8: the two penalty products are LAST and carry negative weights, so the sum
-// order the trace describes is R, S, F, P_eff, I, N, DUP, SAT. Adding them
-// after the bonus terms (rather than folding them in anywhere else) is what
-// makes the printed order the arithmetic order.
+// S8/D16: the three penalty products are LAST and carry negative weights, so
+// the sum order the trace describes is R, S, F, P_eff, I, N, DUP, SAT, SUP.
+// Adding them after the bonus terms (rather than folding them in anywhere else)
+// is what makes the printed order the arithmetic order. SUP is APPENDED to that
+// order rather than inserted into it, so every score computed before D16 is
+// reproduced bit-for-bit: a profile without a supersession weight adds a
+// trailing +0.
 func (w weightSet) score(c Components) float64 {
 	return float64(w.R*c.R) + float64(w.S*c.S) + float64(w.F*c.F) +
 		float64(w.P*c.Peff) + float64(w.I*c.I) + float64(w.N*c.N) +
-		float64(w.Dup*c.Dup) + float64(w.Sat*c.Sat)
+		float64(w.Dup*c.Dup) + float64(w.Sat*c.Sat) + float64(w.Sup*c.Sup)
 }
 
 // Candidate is one message entering ranking. LexRank/VecRank are 1-based
@@ -119,6 +129,15 @@ type Candidate struct {
 	DupKey    string
 	ThreadKey string
 
+	// D16: the LIVE supersession, as the projection reports it. SupersededBy is
+	// the message that replaced this one and SupersededAt is the end date of
+	// the superseded fact. Both empty = still current. Unlike the S8 penalty
+	// keys these are INTRINSIC to the candidate rather than positional, so the
+	// SUP feature needs no base-order pass and is order-independent by
+	// construction.
+	SupersededBy string
+	SupersededAt string
+
 	Mandatory string // "" | "recipient" | "pin" — inclusion class, not a score bonus
 }
 
@@ -126,12 +145,12 @@ type Candidate struct {
 // in persistence — floats never enter event payloads; these live in the
 // projection's rank_explanations table).
 type Components struct {
-	R       float64
-	S       float64 // P2 salience (§9.2)
-	F       float64
-	Peff    float64
-	I       float64 // P2 operator intent
-	N       float64 // P2 novelty
+	R    float64
+	S    float64 // P2 salience (§9.2)
+	F    float64
+	Peff float64
+	I    float64 // P2 operator intent
+	N    float64 // P2 novelty
 	// S8 penalties (P2 only), each a [0,1] feature multiplied by a NEGATIVE
 	// weight equal to the §9.1 cap. DupAhead/SatAhead are the counts they were
 	// derived from — printed in the trace so the feature itself is recomputable,
@@ -140,11 +159,18 @@ type Components struct {
 	Sat      float64
 	DupAhead int
 	SatAhead int
-	RRF      float64
-	LexRank  int
-	VecRank  int
-	Score    float64
-	Profile  Profile
+	// D16 supersession demotion (P2 only), the same shape: a [0,1] feature
+	// times a NEGATIVE weight equal to the cap. SupBy/SupAt are the EVIDENCE —
+	// which live message ended this fact, and when — so the feature is
+	// recomputable by looking the relation up, not merely asserted.
+	Sup     float64
+	SupBy   string
+	SupAt   string
+	RRF     float64
+	LexRank int
+	VecRank int
+	Score   float64
+	Profile Profile
 }
 
 // Scored pairs a candidate with its components, ordered per rulings §7:
@@ -220,6 +246,7 @@ func Rank(cands []Candidate, profile Profile, now time.Time) []Scored {
 			VecRank: c.VecRank,
 			Profile: profile,
 		}
+		w.applySupersession(&comp, c)
 		comp.Score = w.score(comp)
 		scored[i] = Scored{Candidate: c, Components: comp}
 	}
@@ -249,6 +276,7 @@ func RankUniformR(cands []Candidate, profile Profile, now time.Time) []Scored {
 			VecRank: c.VecRank,
 			Profile: profile,
 		}
+		w.applySupersession(&comp, c)
 		comp.Score = w.score(comp)
 		scored[i] = Scored{Candidate: c, Components: comp}
 	}

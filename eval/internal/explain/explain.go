@@ -83,12 +83,19 @@ const (
 	// summed LAST, or the recompute stops matching the score.
 	TermDup = "DUP"
 	TermSat = "SAT"
+	// D16 (spec §9.1 shape, but §9.1 does not name it): the supersession
+	// demotion. Same shape again — a [0,1] feature times a negative weight —
+	// and it MUST be summed, and summed after DUP/SAT, or the recompute stops
+	// matching the score. Missing it here would reconcile a score no agent
+	// received, which is exactly the R51 clause-1 defect this package exists
+	// to be immune to.
+	TermSup = "SUP"
 )
 
 // AllTerms lists every additive term in the order why-ranked prints them,
 // which is also the order rank.weightSet.score sums them (R51: the sum order
 // is load-bearing for exact reconciliation).
-var AllTerms = []string{TermR, TermS, TermF, TermPeff, TermI, TermN, TermDup, TermSat}
+var AllTerms = []string{TermR, TermS, TermF, TermPeff, TermI, TermN, TermDup, TermSat, TermSup}
 
 // Parse reads one `cairn why-ranked` output.
 func Parse(out string) (*Explanation, error) {

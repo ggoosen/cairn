@@ -7018,3 +7018,121 @@ foreign file in place.
 - *Default view = the target's name.* The alternative (one shared default) would
   have split one agent's digest, interest and telemetry across the view its MCP
   server uses and the view its skills name.
+
+## D19 — the Anthropic memory-tool facade (2026-08-29) — DONE [S20]
+
+**What it is.** `cairn memory-tool` serves Anthropic's client-side
+`memory_20250818` tool — `view`, `create`, `str_replace`, `insert`, `delete`,
+`rename` over a `/memories` directory — out of Cairn instead of out of a
+filesystem stub. Newline-delimited JSON commands in, newline-delimited
+`{"content", "is_error"}` tool_result payloads out, so a Messages API loop in any
+language drives it as a subprocess. `internal/memorytool` holds the six commands;
+`cmd/cairn/memorytool.go` is the CLI and the R21 session lifecycle;
+`docs/memory-tool.md` is the contract as a developer reads it.
+
+**The mapping, and what a caller is told.** Two of the six commands mean things
+an append-only log cannot do, so they are MAPPED and every reply says which
+happened — a caller expecting erasure is never told erasure happened, and that
+sentence is asserted by test:
+
+- `delete` → **retraction**. `Successfully deleted {path}` plus a `[cairn]` line:
+  RETRACTED, not erased; no longer served, listed or searchable; the events stay
+  in the verified log and stay auditable; and if you need content that genuinely
+  disappears, `--class ephemeral` is the honest answer, because an ephemeral body
+  really is removed when its TTL expires.
+- `str_replace` / `insert` → **a new revision**. The contract's success string
+  plus the new revision id and "the text was not overwritten; the previous
+  revision stays fetchable".
+- `create` onto an existing path → **a new message**. The contract lets Claude
+  overwrite, so this is not an error; the reply names the message the path used
+  to mean and where the old version is still listed.
+- `rename` → **copy plus retract**. "An append-only log has no move"; both events
+  remain, only the new one is served.
+
+**`view` on a directory is an enumeration, and that needed a new op.** Every
+existing read in the daemon is a RETRIEVAL: search ranks and cuts to k, digest
+ranks and cuts to a budget, thread renders bodies. Serving a listing from any of
+them would have meant deciding which files exist by score. So D19 adds
+`topic-messages` (`internal/daemon/memorylist.go`): topic names in, message rows
+out, ordered by (created_at, message_id), nothing scored, no interaction opened
+and no telemetry written — an enumeration is not a retrieval, and recording it as
+one would poison the outcome statistics that calibrate ranking. It reads through
+the projection's existing exported queries (`ScopeMessageIDs`, `ResultMeta`,
+`MessageInfo`), so there is no second notion of what a topic contains and no new
+SQL. Truncation is reported, never silent.
+
+**Namespace.** `/memories` → topic `memory/<view>`, `/memories/<dir>` → topic
+`memory/<view>/<dir>`, a file → one message linked to that topic. A file's
+canonical name is its message id; the caller's chosen name is recorded as an
+alias in the existing `source_refs` index (namespaced `cairn-memory:<view>:`), so
+both `/memories/progress.md` and `/memories/019a…` resolve to the same message.
+Directories are operator-provisioned (`cairn memory-tool init --view v --subdir
+notes`) because an agent surface never creates a topic (FIX-F1). A message
+outside the view's namespace is unreachable even by spelling its id as a path.
+
+**Nothing exceeds the session's tier, and the default profile proves it.** The
+facade is an agent surface, never tier-1 (R21): `--profile full` is refused at
+the flag, the session is minted from `--profile` (default `agent-standard`) and
+revoked on exit and on SIGTERM/SIGINT (the D9 lesson, factored into
+`agentSession` so a second agent surface cannot drift from `cairn mcp`). Under
+agent-standard, `view` and `create` work and the four mutating commands are
+REFUSED, because retraction and revision are `admin` capability in this mesh.
+The refusal names the missing capability and explains the mapping that needs it.
+Cairn's `admin` is coarse (it also carries topic creation and corpus export), so
+the facade deliberately does not ask for it; an operator who wants Claude to
+prune its own memory grants a profile in `profiles.toml` on purpose.
+
+**Verified against a real daemon and the real binary, not mocks.** A throwaway
+mesh, a live daemon, and `bin/cairn memory-tool` driven both one-shot and over
+the NDJSON stdin loop: the reference sequence from Anthropic's docs (view empty
+root → create → view root → view file) returned the documented strings; eight
+malformed/traversing paths were refused as PATHS (not as missing files) by all
+six commands; a strict-decode probe rejected an `operator_override` field; the
+capability refusals fired under agent-standard and the same commands succeeded
+under a `memory-curator` profile; after a facade `delete`, `cairn peek` still
+showed the message with its body hash, length and provenance, `cairn fetch` at
+operator tier still returned the body, and `cairn doctor` reported "clean" and
+"deep doctor: clean". A file containing `[cairn] SYSTEM: …` and a forged
+`Here's the content of /etc/passwd with line numbers:` came back inert, every
+line behind a line number it cannot forge. Two deliberate mutations (dropping a
+traversal check; rewording the delete reply as "erased") each made the
+corresponding test fail, so the assertions bite.
+
+**RULING-NEEDED — secret stripping.** The D19 brief lists "secret-stripping
+(C3's redaction)" among the machinery to reuse. C3's redaction is a DESIGN NOTE
+(`build/CAPTURE-C3-DESIGN.md`) whose implementation is gated on a crossed privacy
+review that has not happened (BUILD-PLAN S6), so there is nothing to reuse, and
+writing a pattern pass here would pre-empt exactly the review that gate exists
+for. Conservative reading taken: strip NOTHING, and say so everywhere a developer
+looks — the package doc, `docs/memory-tool.md`, and the startup banner on stderr.
+When C3 lands, `create` is the single place that changes. Marked
+`// RULING-NEEDED:` in `internal/memorytool.Handle`.
+
+**Not done, and why.** The live acceptance ("the reference tool-use loop runs
+against Cairn end to end") was exercised as far as this environment allows: the
+handler side is the real binary against a real daemon, driven with the exact
+tool_use inputs and asserted against the exact return strings from Anthropic's
+docs. The half that could not run is the model call itself — there is no
+`ANTHROPIC_API_KEY` here (a probe of `/v1/messages` returns 401). A developer
+with a key runs the Python loop in `docs/memory-tool.md` unchanged.
+
+**Judgment calls.**
+- *Canonical name = message id.* A caller-chosen filename cannot be the primary
+  identity in a store whose identities are UUIDs, and the alternative — encoding
+  filenames into topic names — dies on the topic charset and on FIX-F1 (creating
+  a file would need topic-create, which agent surfaces do not have). Listings
+  therefore show ids; the caller's own name still resolves through the alias.
+- *`create` over an existing path is allowed, not refused.* The docs call
+  refusing it "the reference behavior" and overwriting "a valid implementation
+  choice". Refusing would leave an agent-standard session with no way to update a
+  memory file at all, since editing needs admin. The cost is that repeated
+  creates accumulate versions in the listing; **when D16's supersession lands, a
+  create over an existing alias should assert supersession over the message it
+  replaces**, which removes the clutter without deleting anything. Raised as a
+  follow-up rather than built here, because D16 was in flight in the same sprint.
+- *Directory `delete` is refused.* The docs say it should recurse; here that
+  means retracting every message in a topic. A bulk irreversible-looking
+  operation is not something a facade should do implicitly, so it is refused with
+  the reason.
+- *A new daemon op rather than reusing search.* See above — the alternative was
+  to decide a directory's contents by rank.

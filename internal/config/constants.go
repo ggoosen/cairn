@@ -314,7 +314,7 @@ const (
 // ---------------------------------------------------------------------------
 
 const (
-	ProjectionSchemaVersion = 9 // v9: fts5vocab companions, the document-frequency source for the D11 term probe (D14); v8: vec_map, the rowid bridge to the sqlite-vec index (D1); v7: fts_revisions_trigram companion index (CAPTURE C2); v6: parked_events.retryable (R49/FIX-J1); v5: attachment durability class (N7); v4: derivatives+summaries (N4); v3: subscriptions (N3); v2: parked_events
+	ProjectionSchemaVersion = 10 // v10: supersessions, the cross-message relation with an end date (D16); v9: fts5vocab companions, the document-frequency source for the D11 term probe (D14); v8: vec_map, the rowid bridge to the sqlite-vec index (D1); v7: fts_revisions_trigram companion index (CAPTURE C2); v6: parked_events.retryable (R49/FIX-J1); v5: attachment durability class (N7); v4: derivatives+summaries (N4); v3: subscriptions (N3); v2: parked_events
 
 	// FTSTokenize: unicode61 with tokenchars `_ - # @` (rulings §6). The DDL
 	// carries this string literally (schema.sql cannot interpolate a Go
@@ -817,6 +817,49 @@ const (
 	SocketNameShortHexChars = 16
 )
 
+// D16 — supersession, staleness, and the consolidation pass (S19). Appended as
+// its own block.
+const (
+	// SupersessionPenaltyCap is the weight of the SUP term: the demotion a
+	// message carries once a LATER, live message has superseded it. Negative in
+	// the weight set, so — exactly like the S8 penalties — "capped at 0.15" is a
+	// property of the weight rather than a clamp hidden in the arithmetic, and
+	// the printed product IS the demotion.
+	//
+	// WHY 0.15, and why that is a RULING-NEEDED rather than a choice. Spec §9.1
+	// names two penalties (duplicate, thread saturation) and caps each at 0.15;
+	// it says NOTHING about supersession, because §9.1 predates the idea. The
+	// conservative reading is therefore to introduce no new magnitude class: the
+	// one penalty bound the spec states is the bound this one takes. A
+	// supersession demotion large enough to bury the old fact would also be a
+	// deletion in all but name, and D16 is explicit that this is demotion, not
+	// deletion — the superseded message stays fetchable, attributed, and
+	// findable, it simply stops outranking its successor.
+	SupersessionPenaltyCap = 0.15
+	// SupersededPenaltyValue is the [0,1] SUP feature carried by a message that
+	// has been superseded. Binary, for the same reason S8's duplicate feature is
+	// binary: supersession is a RELATION an auditor can look up, not a
+	// similarity with a threshold to argue about. Either a live message says it
+	// replaced this one, or none does.
+	SupersededPenaltyValue = 1.0
+	// SupersessionMaxChainDepth bounds the current-state walk (A superseded by
+	// B superseded by C …). A mesh can produce a CYCLE — two devices each
+	// asserting their message supersedes the other's, neither having seen the
+	// other — so the walk is depth-bounded rather than trusted to terminate.
+	// Reaching the bound is reported by the census, never silently truncated.
+	SupersessionMaxChainDepth = 64
+)
+
+const (
+	// ConsolidateInterval paces the D16 consolidation pass. It rides the
+	// enricher's goroutine (rulings §6: background work never blocks an agent)
+	// but NOT the enricher's 2 s cadence — the pass is a census over the whole
+	// supersession graph, and the graph only changes when a supersession event
+	// is applied. Five minutes is a compromise between "the staleness census an
+	// operator reads is current" and "a daemon idles cheaply".
+	ConsolidateInterval = 5 * time.Minute
+)
+
 // D18 — the skills / slash-command package (S20). Appended as its own block.
 const (
 	// SkillUnitPrefix namespaces every installed skill so a Cairn skill can
@@ -836,3 +879,44 @@ const (
 	SkillDefaultView = "mcp"
 )
 
+// D19 — the Anthropic memory-tool facade (S20). Appended as its own block.
+//
+// The numbers here are the ones the tool's published contract fixes (the
+// /memories root, the 16,000-character view truncation Claude is told to
+// expect) plus the two Cairn adds because the docs name them as the
+// developer's own responsibility: a size cap on what one memory file may hold
+// and a bound on how many entries one directory listing enumerates.
+const (
+	// MemoryToolRoot is the memory directory prefix the tool's contract fixes.
+	// It is a PREFIX the handler maps onto real storage, not a filesystem path;
+	// nothing under it is ever resolved against the local filesystem.
+	MemoryToolRoot = "/memories"
+	// MemoryToolTopicRoot is the topic namespace memory files live in:
+	// <root>/<view>[/<dir>]. Confining the facade to one namespace is what
+	// keeps a memory-tool session from writing into the operator's topics.
+	MemoryToolTopicRoot = "memory"
+	// MemoryToolViewMaxChars truncates the text of one `view`. Claude's own
+	// tool description tells it that views of files longer than 16,000
+	// characters are truncated and that it should page with view_range, so
+	// this is the figure the model already expects.
+	MemoryToolViewMaxChars = 16000
+	// MemoryToolMaxFileChars caps what one memory file may hold, in
+	// characters. The docs make file size the developer's responsibility;
+	// 64 KiB-ish of text is far more than a memory note and far less than a
+	// corpus, and a create over it is refused BEFORE it reaches the log —
+	// an append-only store cannot take a mistake back.
+	MemoryToolMaxFileChars = 65536
+	// MemoryToolListMaxEntries bounds one directory listing. A listing is an
+	// enumeration, so going over the bound is REPORTED in the listing rather
+	// than silently trimmed — a truncated enumeration that does not say so is
+	// indistinguishable from a small directory.
+	MemoryToolListMaxEntries = 500
+	// MemoryToolMaxLines is the line ceiling the tool's docs name: a view of a
+	// file with more lines than this returns the docs' own error string rather
+	// than a listing no model can use.
+	MemoryToolMaxLines = 999999
+	// MemoryToolAliasPrefix namespaces the source_ref path under which a
+	// memory file's CALLER-CHOSEN name is recorded, so two views may both
+	// hold a "/memories/progress.md" without colliding in one flat index.
+	MemoryToolAliasPrefix = "cairn-memory:"
+)

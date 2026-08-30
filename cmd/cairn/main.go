@@ -121,6 +121,9 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newSendCmd(&dir))
 	root.AddCommand(newReplyCmd(&dir))
 	root.AddCommand(newRetractCmd(&dir))
+	root.AddCommand(newSupersedeCmd(&dir))    // D16
+	root.AddCommand(newSupersessionCmd(&dir)) // D16
+	root.AddCommand(newConsolidateCmd(&dir))  // D16
 	root.AddCommand(newTopicCmd(&dir))
 	root.AddCommand(newLinkCmd(&dir))
 	root.AddCommand(newUnlinkCmd(&dir))
@@ -151,6 +154,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newMCPUninstallCmd(&dir))
 	root.AddCommand(newSkillsInstallCmd(&dir))
 	root.AddCommand(newSkillsUninstallCmd(&dir))
+	root.AddCommand(newMemoryToolCmd(&dir))
 	root.AddCommand(newRunCmd(&dir))
 	root.AddCommand(newSessionCmd(&dir))
 	root.AddCommand(newSetupCmd(&dir))

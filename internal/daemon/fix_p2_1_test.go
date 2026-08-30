@@ -56,7 +56,7 @@ func reconcileAgainstReturned(t *testing.T, text string, returned float64) map[s
 	if total == "" {
 		t.Fatalf("no total line in why-ranked output:\n%s", text)
 	}
-	for _, name := range []string{"R", "S", "F", "P_eff", "I", "N", "DUP", "SAT"} {
+	for _, name := range []string{"R", "S", "F", "P_eff", "I", "N", "DUP", "SAT", "SUP"} {
 		if _, ok := comp[name]; !ok {
 			t.Fatalf("scored term %q missing from why-ranked trace (every scored term must be printed):\n%s", name, text)
 		}
@@ -70,7 +70,8 @@ func reconcileAgainstReturned(t *testing.T, text string, returned float64) map[s
 	// that happens to fuse the same way the scorer did.
 	sum := float64(v("R")*w("R")) + float64(v("S")*w("S")) + float64(v("F")*w("F")) +
 		float64(v("P_eff")*w("P_eff")) + float64(v("I")*w("I")) + float64(v("N")*w("N")) +
-		float64(v("DUP")*w("DUP")) + float64(v("SAT")*w("SAT"))
+		float64(v("DUP")*w("DUP")) + float64(v("SAT")*w("SAT")) +
+		float64(v("SUP")*w("SUP")) // D16: appended LAST, as the scorer adds it
 	if got, want := rank.Dec(sum), rank.Dec(returned); got != want {
 		t.Fatalf("trace does not reconcile with the RETURNED score: printed components recompute to %s, returned score is %s\n%s", got, want, text)
 	}

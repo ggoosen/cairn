@@ -247,11 +247,18 @@ var opConfinement = map[string]confineMode{
 	// retrieval over a collection
 	"search": confineScoped, "digest": confineScoped, "thread": confineScoped,
 	"saved-run": confineScoped, "topic-list": confineScoped,
+	// D19: the grant is checked against the REQUESTED topic names at dispatch
+	// (an enumeration takes topics as its argument, so there is nothing to
+	// post-filter — an out-of-grant topic is a refusal, not a short list).
+	"topic-messages": confineScoped,
 
 	// one named message
 	"peek": confineResource, "fetch": confineResource, "why-ranked": confineResource,
 	"signal": confineResource, "outcome": confineResource, "summary-show": confineResource,
 	"derivative-list": confineResource, "retract": confineResource, "revise": confineResource,
+	// D16: both name ONE message, so the grant's topics decide, exactly as for
+	// retract (a write against that message) and why-ranked (a read about it).
+	"supersede": confineResource, "supersession": confineResource,
 
 	// no mesh content
 	"status": confineOpen, "sync-status": confineOpen, "peer-list": confineOpen,
@@ -272,7 +279,11 @@ var opConfinement = map[string]confineMode{
 	// `export-corpus` (D5) joins them: it writes EVERY live message to disk,
 	// which is the whole mesh by another route. Adoption is an operator
 	// ceremony, so a confined session has no business running it.
+	// D16 `consolidate` joins them for the same reason `compact` is here: the
+	// census counts EVERY message in the mesh, so a confined session would
+	// learn the size of what it may not see.
 	"map": confineRefuse, "compact": confineRefuse, "source-ref": confineRefuse,
+	"consolidate":   confineRefuse,
 	"export-corpus": confineRefuse,
 
 	// Everything else is refused BY DEFAULT (confineRefuse is the zero value):

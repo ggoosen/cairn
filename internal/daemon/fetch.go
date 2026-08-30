@@ -31,6 +31,13 @@ type FetchResult struct {
 	// live recipient at publish time, so the body was never delivered here.
 	// Distinct from content_expired (a TTL-explained absence).
 	NotDelivered bool `json:"ephemeral_not_delivered,omitempty"`
+	// D16: a later, live message superseded this fact. The body is STILL
+	// returned and the manifest is unchanged in every other respect — that is
+	// the point of representing supersession as a relation with an end date
+	// rather than as a delete: the agent gets the content, its provenance, and
+	// the warning, and can go read the successor.
+	SupersededBy string `json:"superseded_by,omitempty"`
+	SupersededAt string `json:"superseded_at,omitempty"`
 }
 
 // Fetch writes views/<agent>/fetched/{<id>.manifest.json, <id>.body.md}.
@@ -63,6 +70,8 @@ func (d *Daemon) Fetch(messageID, agentView string) (*FetchResult, error) {
 		Retracted:    info.Retracted,
 		ManifestPath: filepath.Join(fetchedDir, info.MessageID+".manifest.json"),
 		BodyPath:     filepath.Join(fetchedDir, info.MessageID+".body.md"),
+		SupersededBy: info.SupersededBy,
+		SupersededAt: info.SupersededAt,
 	}
 
 	refs := []object.Ref{{Hash: info.BodyHash, TextClass: info.TextClass, CreatedAt: parseWall(info.CreatedAt)}}
@@ -79,7 +88,7 @@ func (d *Daemon) Fetch(messageID, agentView string) (*FetchResult, error) {
 		return nil, fmt.Errorf("fetching body: %w", err)
 	}
 
-	manifest, err := json.MarshalIndent(map[string]any{
+	man := map[string]any{
 		"message_id":              res.MessageID,
 		"revision_id":             res.RevisionID,
 		"body_hash":               res.BodyHash,
@@ -90,7 +99,15 @@ func (d *Daemon) Fetch(messageID, agentView string) (*FetchResult, error) {
 		"ephemeral_not_delivered": res.NotDelivered,
 		"text_class":              info.TextClass,
 		"retrieved_at":            d.now().UTC().Format(config.WallTimeFormat),
-	}, "", "  ")
+	}
+	// D16: recorded only when the relation exists, so a manifest for a current
+	// message is byte-identical to a pre-D16 one and nothing downstream has to
+	// learn a new always-present key to keep working.
+	if res.SupersededBy != "" {
+		man["superseded_by"] = res.SupersededBy
+		man["superseded_at"] = res.SupersededAt
+	}
+	manifest, err := json.MarshalIndent(man, "", "  ")
 	if err != nil {
 		return nil, err
 	}
@@ -215,6 +232,12 @@ func (d *Daemon) Run(ctx context.Context, processOutbox func() error) error {
 	go func() {
 		ticker := time.NewTicker(config.EnrichInterval)
 		defer ticker.Stop()
+		// D16: the consolidation pass shares this goroutine but not its
+		// cadence. The enricher runs every 2 s because embeddings queue behind
+		// every send; the supersession graph only moves when a supersede event
+		// is applied, so a census on the enricher's tick would be 150 pointless
+		// full-graph scans per five minutes.
+		lastConsolidate := time.Time{}
 		for {
 			select {
 			case <-ctx.Done():
@@ -238,6 +261,16 @@ func (d *Daemon) Run(ctx context.Context, processOutbox func() error) error {
 				if !lvl.SkipSummaries() {
 					if _, err := d.SummaryCheckOnce(config.EnrichBatch); err != nil {
 						fmt.Fprintf(d.warn, "WARNING: summary check: %v\n", err)
+					}
+				}
+				// D16 consolidation. Shed at the FIRST rung with the other
+				// optional enrichment: it is read-only and cheap, but it is
+				// also a report nobody is waiting on, and under debt the
+				// answer to "should we do optional work?" is no.
+				if !lvl.SkipAutoLinks() && d.now().Sub(lastConsolidate) >= config.ConsolidateInterval {
+					lastConsolidate = d.now()
+					if _, err := d.ConsolidateOnce(); err != nil {
+						fmt.Fprintf(d.warn, "WARNING: consolidation: %v\n", err)
 					}
 				}
 			}

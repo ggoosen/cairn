@@ -65,6 +65,8 @@ type Request struct {
 	Kind       string `json:"kind,omitempty"` // signal kind
 	Weight     int    `json:"weight,omitempty"`
 	Actor      string `json:"actor,omitempty"`
+	// D16: the successor in `supersede` — MessageID names the fact that ends.
+	SupersededBy string `json:"superseded_by,omitempty"`
 
 	// exports
 	Path string `json:"path,omitempty"`
@@ -107,6 +109,9 @@ type Request struct {
 	AgentView          string `json:"agent_view,omitempty"` // fetch/digest view
 	InteractionID      string `json:"interaction_id,omitempty"`
 	ThreadID           string `json:"thread_id,omitempty"` // RETR-D4 thread expansion
+	// D19: the topic names `topic-messages` enumerates (never a glob — the
+	// caller resolves globs through topic-list first, exactly as search does).
+	TopicNames []string `json:"topics,omitempty"`
 }
 
 // Response is the IPC reply.
@@ -138,6 +143,11 @@ type Response struct {
 	Thread       *ThreadOutput                `json:"thread,omitempty"`       // RETR-D4 thread expansion
 	Topics       []projection.TopicInfo       `json:"topics,omitempty"`       // RETR-D5 topic list
 	Interactions []telemetry.InteractionRow   `json:"interactions,omitempty"` // P4-G6 query log
+	// D19 topic-messages: the enumeration, and the count BEFORE the caller's
+	// limit — a truncated listing that does not say so is indistinguishable
+	// from a small directory.
+	TopicMessages []TopicMessage `json:"topic_messages,omitempty"`
+	Total         int            `json:"total,omitempty"`
 
 	// D3 capability selectors. Refused is a TYPED refusal ("you may not ask"),
 	// which an agent must be able to tell from an empty result ("nothing
@@ -145,6 +155,13 @@ type Response struct {
 	// was allowed — a clamp or a scope applied silently is a lie by omission.
 	Refused    *Refusal          `json:"refused,omitempty"`
 	Capability *CapabilityNotice `json:"capability,omitempty"`
+
+	// D16 consolidation: the supersession census and one message's chain to
+	// the fact that is current now.
+	Census       *projection.SupersessionCensus     `json:"supersession_census,omitempty"`
+	Supersession []projection.SupersessionAssertion `json:"supersessions,omitempty"`
+	Chain        []string                           `json:"current_version_chain,omitempty"`
+	Cycled       bool                               `json:"supersession_cycle,omitempty"`
 }
 
 // StagedAttachment is the stage-attachment reply: the stored object's hash and
@@ -738,6 +755,38 @@ func (d *Daemon) dispatchOp(req Request, ctx reqContext) Response {
 		}
 		return Response{OK: true, EventID: id}
 
+	case "supersede":
+		// D16. A WRITE op, so it takes the same publish request the other
+		// mutations do; the daemon refuses self-supersession, retracted
+		// participants and duplicates before anything is appended.
+		id, err := d.Supersede(req.MessageID, req.SupersededBy, req.Reason, pubReq)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, EventID: id}
+
+	case "supersession":
+		// Read-only: what ended this fact, when, who said so, and where the
+		// chain of successors currently leads. This is the surface that makes
+		// "you can still ask what was true last March" true of a superseded
+		// message rather than only of the raw log.
+		hist, err := d.proj.SupersessionHistory(req.MessageID)
+		if err != nil {
+			return fail(err)
+		}
+		chain, cycled, err := d.proj.CurrentVersion(req.MessageID)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Supersession: hist, Chain: chain, Cycled: cycled}
+
+	case "consolidate":
+		c, err := d.ConsolidateOnce()
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, Census: &c}
+
 	case "signal":
 		id, err := d.Signal(req.MessageID, req.Kind, req.Weight, req.Actor)
 		if err != nil {
@@ -987,6 +1036,24 @@ func (d *Daemon) dispatchOp(req Request, ctx reqContext) Response {
 			topics = kept
 		}
 		return Response{OK: true, Topics: topics}
+
+	case "topic-messages":
+		// D19: an ENUMERATION, not a retrieval — see internal/daemon/memorylist.go.
+		// The confinement is applied to the requested topics BEFORE the query,
+		// so a confined session enumerating outside its grant gets a typed
+		// refusal rather than a short list it cannot tell from an empty one.
+		if ctx.confine.ConfinesTopics() {
+			for _, name := range req.TopicNames {
+				if !ctx.confine.MatchesTopic(name) {
+					return ctx.confine.refuse(req.Op, "topic "+name+" is outside the grant")
+				}
+			}
+		}
+		msgs, total, err := d.TopicMessages(req.TopicNames, req.K)
+		if err != nil {
+			return fail(err)
+		}
+		return Response{OK: true, TopicMessages: msgs, Total: total}
 
 	case "interaction-list":
 		if d.tel == nil {

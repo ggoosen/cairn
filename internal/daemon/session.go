@@ -46,6 +46,7 @@ var opCapability = map[string]string{
 	"search": capRead, "digest": capRead, "peek": capRead, "fetch": capRead,
 	"why-ranked": capRead, "status": capRead, "source-ref": capRead,
 	"thread": capRead, "topic-list": capRead, // RETR-D4/D5
+	"topic-messages": capRead, // D19: enumerate a topic's live messages (no ranking)
 	// P4-G6: the query log names principals and queries — operator-tier
 	"interaction-list": capAdmin,
 	"saved-list":       capRead, "saved-run": capRead, // P2-4
@@ -58,6 +59,12 @@ var opCapability = map[string]string{
 	"stage-attachment": capSend, // G6: streamed attachment staging accompanies a publish
 	"signal":           capSignal,
 	"outcome":          capOutcome,
+
+	// D16: asserting that one message supersedes another changes what every
+	// agent's retrieval ranks first, so it is operator-tier like retract.
+	// Reading the relation is read-tier, like why-ranked, and `consolidate` is
+	// operator-tier because it is a census over the whole mesh.
+	"supersede": capAdmin, "supersession": capRead, "consolidate": capAdmin,
 
 	"retract": capAdmin, "topic-create": capAdmin, "topic-ensure": capAdmin,
 	"link": capAdmin, "unlink": capAdmin, "pin": capAdmin, "unpin": capAdmin,

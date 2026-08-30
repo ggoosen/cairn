@@ -105,16 +105,24 @@ type RankedResult struct {
 	CreatedAt  string   `json:"created_at,omitempty"`
 	Topics     []string `json:"topics,omitempty"`
 	Snippet    string   `json:"snippet,omitempty"` // first SearchSnippetChars scalars of the body
+	// D16 staleness signal, PROFILE-INDEPENDENT: a live message has superseded
+	// this one, and this is the end date of the fact it carries. Present on
+	// every profile — the demotion is opt-in, the WARNING is not — so an agent
+	// that is handed a superseded fact is told so, and E9 can tell "returned
+	// the old one, marked" from "returned both undifferentiated". Empty on a
+	// current message, which keeps unsuperseded output byte-identical.
+	SupersededBy string `json:"superseded_by,omitempty"`
+	SupersededAt string `json:"superseded_at,omitempty"`
 }
 
 // componentsRecord is the stored why_ranked arithmetic (decimal strings).
 type componentsRecord struct {
-	R       string `json:"R"`
-	S       string `json:"S,omitempty"` // P2 salience
-	F       string `json:"F"`
-	Peff    string `json:"P_eff"`
-	I       string `json:"I,omitempty"` // P2 operator intent
-	N       string `json:"N,omitempty"` // P2 novelty
+	R    string `json:"R"`
+	S    string `json:"S,omitempty"` // P2 salience
+	F    string `json:"F"`
+	Peff string `json:"P_eff"`
+	I    string `json:"I,omitempty"` // P2 operator intent
+	N    string `json:"N,omitempty"` // P2 novelty
 	// S8 penalties (P2 only). DupKey/DupAhead and ThreadKey/SatAhead are the
 	// EVIDENCE for the feature values: an auditor recomputes DUP and SAT from
 	// them without re-running retrieval, which is what makes a penalty part of
@@ -125,11 +133,21 @@ type componentsRecord struct {
 	SatAhead  int    `json:"sat_ahead,omitempty"`
 	DupKey    string `json:"dup_key,omitempty"`
 	ThreadKey string `json:"thread_key,omitempty"`
-	RRF       string `json:"RRF"`
-	LexRank   int    `json:"lex_rank"`
-	VecRank   int    `json:"vec_rank"`
-	Score     string `json:"score"`
-	Weights   struct {
+	// D16 supersession demotion. Sup/Weights.Sup are the SCORED term and appear
+	// only under a profile that scores it; SupBy/SupAt are the EVIDENCE — which
+	// live message ended this fact, and the end date — and are recorded under
+	// EVERY profile, because an explanation that read "not superseded" for a
+	// superseded message would be false about the item even where it is true
+	// about the score. Both omitted entirely when nothing supersedes the
+	// message, so an unsuperseded corpus stores byte-identical records.
+	Sup     string `json:"SUP,omitempty"`
+	SupBy   string `json:"superseded_by,omitempty"`
+	SupAt   string `json:"superseded_at,omitempty"`
+	RRF     string `json:"RRF"`
+	LexRank int    `json:"lex_rank"`
+	VecRank int    `json:"vec_rank"`
+	Score   string `json:"score"`
+	Weights struct {
 		R   string `json:"R"`
 		S   string `json:"S,omitempty"`
 		F   string `json:"F"`
@@ -138,6 +156,7 @@ type componentsRecord struct {
 		N   string `json:"N,omitempty"`
 		Dup string `json:"DUP,omitempty"`
 		Sat string `json:"SAT,omitempty"`
+		Sup string `json:"SUP,omitempty"`
 	} `json:"weights"`
 	CreatedAt string `json:"created_at"`
 	Mandatory string `json:"mandatory,omitempty"`
@@ -148,7 +167,32 @@ type componentsRecord struct {
 // an absent decimal string parses to 0).
 func (rec componentsRecord) penaltyProduct() float64 {
 	return float64(rank.ParseDec(rec.Dup)*rank.ParseDec(rec.Weights.Dup)) +
-		float64(rank.ParseDec(rec.Sat)*rank.ParseDec(rec.Weights.Sat))
+		float64(rank.ParseDec(rec.Sat)*rank.ParseDec(rec.Weights.Sat)) +
+		float64(rank.ParseDec(rec.Sup)*rank.ParseDec(rec.Weights.Sup))
+}
+
+// buildExplanationRecord assembles the stored why_ranked record for one scored
+// result. It exists as ONE function because there are TWO retrieval surfaces —
+// search and digest — that each persist an explanation, and until D16 they each
+// assembled it inline from the same three helpers. The digest's copy was one
+// call short: it filled the P2 terms but not the supersession EVIDENCE, so a
+// digest trace for a superseded message printed "SUP 1 × -0.15 = -0.15   (not
+// superseded)" — arithmetic that reconciled perfectly while the annotation
+// beside it stated the opposite of the truth. The live external verifier caught
+// it; a second call site would let the next term do the same thing. So the
+// assembly is one function now and the surfaces call it.
+func buildExplanationRecord(s rank.Scored, profile rank.Profile, createdAt string) componentsRecord {
+	var rec componentsRecord
+	rec.R, rec.F, rec.Peff, rec.RRF = rank.Dec(s.R), rank.Dec(s.F), rank.Dec(s.Peff), rank.Dec(s.RRF)
+	rec.LexRank, rec.VecRank = s.Components.LexRank, s.Components.VecRank
+	rec.Score = rank.Dec(s.Score)
+	wR, wF, wP := profileWeights(profile)
+	rec.Weights.R, rec.Weights.F, rec.Weights.P = rank.Dec(wR), rank.Dec(wF), rank.Dec(wP)
+	fillP2Components(&rec, s, profile)
+	fillSupersessionEvidence(&rec, s)
+	rec.CreatedAt = createdAt
+	rec.Mandatory = s.Mandatory
+	return rec
 }
 
 // fillP2Components adds the S/I/N and S8 penalty component + weight strings when
@@ -165,6 +209,17 @@ func fillP2Components(rec *componentsRecord, s rank.Scored, profile rank.Profile
 	rec.Weights.Dup, rec.Weights.Sat = rank.Dec(w.Dup), rank.Dec(w.Sat)
 	rec.DupAhead, rec.SatAhead = s.DupAhead, s.SatAhead
 	rec.DupKey, rec.ThreadKey = s.DupKey, s.ThreadKey
+	rec.Sup, rec.Weights.Sup = rank.Dec(s.Sup), rank.Dec(w.Sup)
+}
+
+// fillSupersessionEvidence records WHICH live message ended this fact and WHEN,
+// under every profile. Unlike the S8 penalty keys this is not merely an input
+// to a score an auditor recomputes — it is the staleness signal itself, and E9
+// reads it to tell "returned the superseded fact, marked as superseded" from
+// "returned both undifferentiated". Absent fields on an unsuperseded message
+// keep the stored record byte-identical to a pre-D16 one.
+func fillSupersessionEvidence(rec *componentsRecord, s rank.Scored) {
+	rec.SupBy, rec.SupAt = s.Components.SupBy, s.Components.SupAt
 }
 
 // Search: FTS top-100 + vector top-100 → RRF k=60 → percentile → P0 search
@@ -286,6 +341,11 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 		// only by a profile that has penalty weights), so a profile switch never
 		// leaves them stale.
 		c.DupKey, c.ThreadKey = row.BodyHash, row.ThreadKey
+		// D16: the live supersession, likewise unconditional — the EVIDENCE is
+		// carried under every profile (a P0 trace must still be able to say
+		// what ended this fact), and only the profile's weight decides whether
+		// it scores.
+		c.SupersededBy, c.SupersededAt = row.SupersededBy, row.SupersededAt
 		if profile.IsP2() {
 			c.Salience = p2[id].Salience
 			c.Novelty = p2[id].Novelty
@@ -431,9 +491,18 @@ func (d *Daemon) finishRetrieval(scored []rank.Scored, rows map[string]projectio
 			}
 			topics = strings.Join(names, ",")
 		}
-		return fmt.Sprintf("%d\t%s\t%s\t%s\t%s\t%s\tfrom=%s\tat=%s\ttopics=%s\n",
+		// D16: the staleness marker is appended ONLY when the fact has been
+		// superseded, so a corpus with no supersessions renders byte-identical
+		// payloads and spends no budget on the feature. Both ids are Cairn's
+		// own UUIDs and its own timestamp — never mesh-authored text — so this
+		// cell needs no R53 collapse.
+		sup := ""
+		if s.SupersededBy != "" {
+			sup = fmt.Sprintf("\tsuperseded_by=%s\tsuperseded_at=%s", s.SupersededBy, s.SupersededAt)
+		}
+		return fmt.Sprintf("%d\t%s\t%s\t%s\t%s\t%s\tfrom=%s\tat=%s\ttopics=%s%s\n",
 			i+1, s.MessageID, row.HeadRevisionID, row.BodyHash, rank.Dec(s.Score), m,
-			inlineMeta(mm.Sender), row.CreatedAt, topics) + quoteLines(snippets[s.MessageID])
+			inlineMeta(mm.Sender), row.CreatedAt, topics, sup) + quoteLines(snippets[s.MessageID])
 	}
 	header := fmt.Sprintf("interaction\t%s\tmode\t%s\n", interactionID, mode)
 	included, payload := rank.TakeWithinBudget(len(scored), spec.Limits(),
@@ -460,16 +529,9 @@ func (d *Daemon) finishRetrieval(scored []rank.Scored, rows map[string]projectio
 			Rank: i + 1, MessageID: s.MessageID, RevisionID: row.HeadRevisionID,
 			BodyHash: row.BodyHash, TextClass: row.TextClass, Score: s.Score, Mandatory: s.Mandatory,
 			Sender: mm.Sender, CreatedAt: row.CreatedAt, Topics: mm.Topics, Snippet: snippets[s.MessageID],
+			SupersededBy: s.Components.SupBy, SupersededAt: s.Components.SupAt,
 		})
-		var rec componentsRecord
-		rec.R, rec.F, rec.Peff, rec.RRF = rank.Dec(s.R), rank.Dec(s.F), rank.Dec(s.Peff), rank.Dec(s.RRF)
-		rec.LexRank, rec.VecRank = s.Components.LexRank, s.Components.VecRank
-		rec.Score = rank.Dec(s.Score)
-		wR, wF, wP := profileWeights(profile)
-		rec.Weights.R, rec.Weights.F, rec.Weights.P = rank.Dec(wR), rank.Dec(wF), rank.Dec(wP)
-		fillP2Components(&rec, s, profile)
-		rec.CreatedAt = row.CreatedAt
-		rec.Mandatory = s.Mandatory
+		rec := buildExplanationRecord(s, profile, row.CreatedAt)
 		blob, err := json.Marshal(rec)
 		if err != nil {
 			return nil, err
@@ -743,6 +805,9 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 			Mandatory: mandatory[id],
 			DupKey:    row.BodyHash, // S8: content identity (spec §9.1)
 			ThreadKey: row.ThreadKey,
+			// D16: the live supersession (evidence always, score by profile)
+			SupersededBy: row.SupersededBy,
+			SupersededAt: row.SupersededAt,
 		}
 		if digestProfile.IsP2() {
 			c.Salience = p2[id].Salience
@@ -822,15 +887,7 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 	var expl []projection.ExplanationRow
 	for i := 0; i < included; i++ {
 		s := scored[i]
-		var rec componentsRecord
-		rec.R, rec.F, rec.Peff, rec.RRF = rank.Dec(s.R), rank.Dec(s.F), rank.Dec(s.Peff), rank.Dec(s.RRF)
-		rec.LexRank, rec.VecRank = s.Components.LexRank, s.Components.VecRank
-		rec.Score = rank.Dec(s.Score)
-		wR, wF, wP := profileWeights(digestProfile)
-		rec.Weights.R, rec.Weights.F, rec.Weights.P = rank.Dec(wR), rank.Dec(wF), rank.Dec(wP)
-		fillP2Components(&rec, s, digestProfile)
-		rec.CreatedAt = rows[s.MessageID].CreatedAt
-		rec.Mandatory = s.Mandatory
+		rec := buildExplanationRecord(s, digestProfile, rows[s.MessageID].CreatedAt)
 		blob, _ := json.Marshal(rec)
 		expl = append(expl, projection.ExplanationRow{MessageID: s.MessageID, ComponentsJSON: string(blob), FinalRank: i + 1})
 	}
@@ -878,6 +935,12 @@ func (d *Daemon) renderDigestEntry(pos int, s rank.Scored, row projection.RankRo
 		// target — satisfied asynchronously as peers replicate.
 		tag += " [replication-pending]"
 	}
+	if row.SupersededBy != "" {
+		// D16: a live message has replaced this fact. The entry is still here —
+		// demotion, never deletion — but the reader is told, under every
+		// profile, before reading the excerpt.
+		tag += " [superseded]"
+	}
 	fmt.Fprintf(&b, "%d. %s%s score=%s\n", pos, s.MessageID, tag, rank.Dec(s.Score))
 	topics := ""
 	if len(meta.Topics) > 0 {
@@ -888,6 +951,9 @@ func (d *Daemon) renderDigestEntry(pos int, s rank.Scored, row projection.RankRo
 		topics = " · " + strings.Join(names, ", ")
 	}
 	fmt.Fprintf(&b, "   from %s · %s%s\n", inlineMeta(meta.Sender), row.CreatedAt, topics)
+	if row.SupersededBy != "" {
+		fmt.Fprintf(&b, "   superseded by %s at %s\n", row.SupersededBy, row.SupersededAt)
+	}
 	body, err := d.store.Get(row.BodyHash)
 	if err == nil {
 		lines := strings.Split(strings.TrimRight(string(body), "\n"), "\n")
@@ -955,6 +1021,12 @@ func (d *Daemon) WhyRanked(interactionID, messageID string) (string, error) {
 	term("SAT", rec.Sat, rec.Weights.Sat, fmt.Sprintf("   (%s; full at %s; cap %s)",
 		penaltyEvidence(rec.SatAhead, "thread", rec.ThreadKey),
 		rank.Dec(config.ThreadSaturationFullAt), rank.Dec(config.PenaltyCap)))
+	// D16: the supersession demotion, APPENDED after the S8 penalties because
+	// that is where the scorer adds it — the printed order is the arithmetic
+	// order (R51). The annotation carries the relation an auditor looks up to
+	// reproduce the feature, and says explicitly when a profile does not score
+	// it, so a zero here is never mistaken for "nothing superseded this".
+	term("SUP", rec.Sup, rec.Weights.Sup, supersessionEvidence(rec.SupBy, rec.SupAt, profile))
 	if rec.Mandatory != "" {
 		fmt.Fprintf(&b, "  mandatory: %s (inclusion class — not an additive score term)\n", rec.Mandatory)
 	}
@@ -973,6 +1045,23 @@ func penaltyEvidence(ahead int, sharing, key string) string {
 		return fmt.Sprintf("1 earlier result shares %s %s", sharing, key)
 	}
 	return fmt.Sprintf("%d earlier results share %s %s", ahead, sharing, key)
+}
+
+// supersessionEvidence renders the D16 relation behind the SUP term: which live
+// message ended this fact and when, which is what makes the feature value
+// recomputable by lookup rather than asserted. A profile that does not score
+// supersession says so in as many words — otherwise "SUP 0 × 0 = 0" on a
+// superseded message would read as "nothing superseded this", which is a false
+// statement in the one surface §9 exists to keep honest.
+func supersessionEvidence(supBy, supAt, profile string) string {
+	if supBy == "" {
+		return fmt.Sprintf("   (not superseded; cap %s)", rank.Dec(config.SupersessionPenaltyCap))
+	}
+	if !rank.Profile(profile).IsP2() {
+		return fmt.Sprintf("   (superseded by %s at %s; NOT weighted under %s)", supBy, supAt, profile)
+	}
+	return fmt.Sprintf("   (superseded by %s at %s; cap %s)", supBy, supAt,
+		rank.Dec(config.SupersessionPenaltyCap))
 }
 
 // --- enrichment ---------------------------------------------------------------

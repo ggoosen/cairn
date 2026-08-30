@@ -507,11 +507,35 @@ type RankRow struct {
 	// a message that is nobody's root and nobody's reply keys uniquely on itself
 	// and can never saturate against anything.
 	ThreadKey string
+
+	// D16 supersession. SupersededBy names the LIVE message that replaced this
+	// one and SupersededAt is the end date of the superseded fact (the
+	// supersession event's wall time). Both empty means "still current" —
+	// either nothing supersedes it, or everything that did has since been
+	// retracted, which revives it by construction rather than by a second
+	// pass. When several supersessions apply, the EARLIEST live one wins: the
+	// fact stopped being current the first time a successor replaced it.
+	SupersededBy string
+	SupersededAt string
 }
 
 // RankRows fetches rank inputs for a set of message IDs (agentView drives
 // the recipient flag; pass "" to skip).
 func (p *Projection) RankRows(messageIDs []string, agentView string) (map[string]RankRow, error) {
+	return p.rankRows(messageIDs, agentView, true)
+}
+
+// RankRowsPreD16ForTest is the SAME statement without D16's two supersession
+// subqueries — the pre-D16 shape, kept as the oracle the way D15 kept its
+// three-join filter, so "what did the supersession lookup cost?" is measured
+// against the real predecessor rather than against a second query written from
+// memory. It exists for the differential and the profile; nothing on the
+// retrieval path calls it.
+func (p *Projection) RankRowsPreD16ForTest(messageIDs []string, agentView string) (map[string]RankRow, error) {
+	return p.rankRows(messageIDs, agentView, false)
+}
+
+func (p *Projection) rankRows(messageIDs []string, agentView string, withSupersession bool) (map[string]RankRow, error) {
 	out := map[string]RankRow{}
 	if len(messageIDs) == 0 {
 		return out, nil
@@ -523,12 +547,31 @@ func (p *Projection) RankRows(messageIDs []string, agentView string) (map[string
 	for _, id := range messageIDs {
 		args = append(args, id)
 	}
+	// D16: the LIVE supersession, if any. A successor that has since been
+	// retracted is not a live fact and cannot end this one, so the join filters
+	// it out and the message reverts to current — no cached "is superseded"
+	// flag exists to go stale. Ordered by (valid_until, event_id) so the answer
+	// is the EARLIEST end date and is deterministic when two supersessions
+	// share a wall time.
+	supCols := `, NULL, NULL`
+	if withSupersession {
+		supCols = `,
+		       (SELECT sp.superseded_by_message_id FROM supersessions sp
+		          JOIN messages sm ON sm.message_id = sp.superseded_by_message_id AND sm.retracted = 0
+		         WHERE sp.message_id = m.message_id
+		         ORDER BY sp.valid_until, sp.event_id LIMIT 1),
+		       (SELECT sp.valid_until FROM supersessions sp
+		          JOIN messages sm ON sm.message_id = sp.superseded_by_message_id AND sm.retracted = 0
+		         WHERE sp.message_id = m.message_id
+		         ORDER BY sp.valid_until, sp.event_id LIMIT 1)`
+	}
 	rows, err := p.db.Query(`
 		SELECT m.message_id, m.head_revision_id, r.body_hash, m.text_class, m.declared_priority,
 		       r.created_at, m.created_event_id, COALESCE(m.thread_id, m.message_id),
 		       EXISTS(SELECT 1 FROM recipients rc WHERE rc.message_id = m.message_id AND rc.agent_view = ?),
 		       EXISTS(SELECT 1 FROM pins pn WHERE pn.object_hash = r.body_hash AND pn.removed = 0),
-		       EXISTS(SELECT 1 FROM signals s WHERE s.message_id = m.message_id AND s.kind = 'priority_confirm')
+		       EXISTS(SELECT 1 FROM signals s WHERE s.message_id = m.message_id AND s.kind = 'priority_confirm')`+
+		supCols+`
 		FROM messages m JOIN revisions r ON r.revision_id = m.head_revision_id
 		WHERE m.message_id IN (`+placeholders+`)`, args...)
 	if err != nil {
@@ -538,11 +581,13 @@ func (p *Projection) RankRows(messageIDs []string, agentView string) (map[string
 	for rows.Next() {
 		var rr RankRow
 		var recip, pin, pc int
+		var supBy, supAt sql.NullString
 		if err := rows.Scan(&rr.MessageID, &rr.HeadRevisionID, &rr.BodyHash, &rr.TextClass, &rr.Priority,
-			&rr.CreatedAt, &rr.CreatedEventID, &rr.ThreadKey, &recip, &pin, &pc); err != nil {
+			&rr.CreatedAt, &rr.CreatedEventID, &rr.ThreadKey, &recip, &pin, &pc, &supBy, &supAt); err != nil {
 			return nil, err
 		}
 		rr.Recipient, rr.PinActive, rr.PriorityConf = recip == 1, pin == 1, pc == 1
+		rr.SupersededBy, rr.SupersededAt = supBy.String, supAt.String
 		out[rr.MessageID] = rr
 	}
 	return out, rows.Err()
@@ -838,6 +883,14 @@ type CompactionStats struct {
 	RemovedTopicLinks   int
 	ActivePins          int
 	ActiveSubscriptions int
+	// D16: the current-state view's whole point is what is TRUE NOW, and
+	// "superseded by a later fact" is the second way a message stops being
+	// that (after retraction). Counted here so `cairn compact` reports it
+	// alongside the revisions and retractions it already compacts away —
+	// except that a superseded message is not compacted away at all: it stays
+	// live, fetchable and searchable, and is merely no longer current.
+	SupersededMessages int
+	CurrentMessages    int
 }
 
 // Compaction computes the current-state compaction stats.
@@ -857,6 +910,10 @@ func (p *Projection) Compaction() (CompactionStats, error) {
 		{`SELECT count(*) FROM topic_links WHERE removed=1`, &c.RemovedTopicLinks},
 		{`SELECT count(DISTINCT object_hash) FROM pins WHERE removed=0`, &c.ActivePins},
 		{`SELECT count(*) FROM subscriptions WHERE disabled=0`, &c.ActiveSubscriptions},
+		{`SELECT count(DISTINCT sp.message_id) FROM ` + liveSupersessionJoin + `
+		   JOIN messages m ON m.message_id = sp.message_id AND m.retracted = 0`, &c.SupersededMessages},
+		{`SELECT count(*) FROM messages m WHERE m.retracted = 0
+		    AND NOT EXISTS (SELECT 1 FROM ` + liveSupersessionJoin + ` WHERE sp.message_id = m.message_id)`, &c.CurrentMessages},
 	} {
 		if err := q(pair.sql, pair.dst); err != nil {
 			return c, err

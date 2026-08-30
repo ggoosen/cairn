@@ -117,6 +117,13 @@ type Daemon struct {
 
 	forks map[cairnlog.Origin]*ForkRecord // N8: detected equivocations (guarded by d.mu)
 
+	// consolidation is D16's last completed pass (guarded by d.mu). In memory
+	// only: it is derived from the projection, which is derived from the log,
+	// so persisting it would be a third copy of a fact two places already hold
+	// — and nothing ranking reads consults it, so it can never make a stale
+	// fact look current.
+	consolidation consolidationState
+
 	// liveness is the D2 origin-liveness beacon: the highest (generation,
 	// sequence) ever observed per origin, plus any recorded regression. It
 	// carries its OWN lock (like durab) because it is written from the

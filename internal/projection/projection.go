@@ -513,6 +513,40 @@ func (p *Projection) applyPayload(tx *sql.Tx, env *event.Envelope) error {
 		_, err := tx.Exec(`UPDATE messages SET retracted=1, retracted_event_id=? WHERE message_id=?`, env.EventID, pl.MessageID)
 		return err
 
+	case "message.supersede":
+		// D16: the superseded fact gets an END DATE, and nothing else moves.
+		// No body is rewritten, no row is deleted, no flag hides the message —
+		// it stays searchable, fetchable and attributed, and ranking demotes it
+		// (the SUP term) because a live successor exists. That is the entire
+		// mechanism: an assertion, with a date, over immutable content.
+		var pl struct {
+			MessageID             string `json:"message_id"`
+			SupersededByMessageID string `json:"superseded_by_message_id"`
+			Reason                string `json:"reason"`
+		}
+		if err := json.Unmarshal(env.Payload, &pl); err != nil {
+			return err
+		}
+		if pl.MessageID == "" || pl.SupersededByMessageID == "" {
+			// TERMINAL: a malformed payload no later event can heal.
+			return fmt.Errorf("message.supersede: both message_id and superseded_by_message_id are required")
+		}
+		if pl.MessageID == pl.SupersededByMessageID {
+			// TERMINAL, and deliberately not silently dropped: a message that
+			// supersedes itself would demote itself forever with no successor
+			// to rank ahead of it. Rejected at the write boundary too; a peer
+			// that writes one anyway parks and doctor goes red.
+			return fmt.Errorf("message.supersede: a message cannot supersede itself (%s)", pl.MessageID)
+		}
+		// The FOREIGN KEYs do the dependency work (R49): a supersession that
+		// replicated ahead of either message parks RETRYABLE and self-heals.
+		_, err := tx.Exec(`INSERT OR REPLACE INTO supersessions
+				(event_id, message_id, superseded_by_message_id, reason, actor_principal_id, valid_until)
+				VALUES (?,?,?,?,?,?)`,
+			env.EventID, pl.MessageID, pl.SupersededByMessageID, nullable(pl.Reason),
+			nullable(env.ActorPrincipalID), env.WallTime)
+		return err
+
 	case "topic.create":
 		var pl struct {
 			TopicID string `json:"topic_id"`

@@ -583,22 +583,37 @@ type MessageInfo struct {
 	CreatedAt        string `json:"created_at"`
 	CreatedEventID   string `json:"created_event_id"`
 	Retracted        bool   `json:"retracted"`
+	// D16: the live supersession. A superseded message is NOT hidden — this is
+	// the difference between supersession and retraction, and the reason
+	// history stays answerable: the body, the sender, the created event and the
+	// signature are all still here, and these two fields say which later fact
+	// replaced this one and when it stopped being current.
+	SupersededBy string `json:"superseded_by,omitempty"`
+	SupersededAt string `json:"superseded_at,omitempty"`
 }
 
 // MessageInfo returns metadata for a message and its head revision.
 func (p *Projection) MessageInfo(messageID string) (*MessageInfo, error) {
 	var mi MessageInfo
-	var thread, reply, sender sql.NullString
+	var thread, reply, sender, supBy, supAt sql.NullString
 	var retracted int
 	err := p.db.QueryRow(`
 		SELECT m.message_id, m.thread_id, m.reply_to_message_id, m.head_revision_id,
 		       r.body_hash, r.body_len, r.body_mime, m.text_class, m.declared_priority,
-		       m.sender_principal_id, m.created_at, m.created_event_id, m.retracted
+		       m.sender_principal_id, m.created_at, m.created_event_id, m.retracted,
+		       (SELECT sp.superseded_by_message_id FROM supersessions sp
+		          JOIN messages sm ON sm.message_id = sp.superseded_by_message_id AND sm.retracted = 0
+		         WHERE sp.message_id = m.message_id
+		         ORDER BY sp.valid_until, sp.event_id LIMIT 1),
+		       (SELECT sp.valid_until FROM supersessions sp
+		          JOIN messages sm ON sm.message_id = sp.superseded_by_message_id AND sm.retracted = 0
+		         WHERE sp.message_id = m.message_id
+		         ORDER BY sp.valid_until, sp.event_id LIMIT 1)
 		FROM messages m JOIN revisions r ON r.revision_id = m.head_revision_id
 		WHERE m.message_id = ?`, messageID).Scan(
 		&mi.MessageID, &thread, &reply, &mi.HeadRevisionID,
 		&mi.BodyHash, &mi.BodyLen, &mi.BodyMime, &mi.TextClass, &mi.Priority,
-		&sender, &mi.CreatedAt, &mi.CreatedEventID, &retracted)
+		&sender, &mi.CreatedAt, &mi.CreatedEventID, &retracted, &supBy, &supAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("message %s not found", messageID)
 	}
@@ -607,6 +622,7 @@ func (p *Projection) MessageInfo(messageID string) (*MessageInfo, error) {
 	}
 	mi.ThreadID, mi.ReplyToMessageID, mi.Sender = thread.String, reply.String, sender.String
 	mi.Retracted = retracted == 1
+	mi.SupersededBy, mi.SupersededAt = supBy.String, supAt.String
 	return &mi, nil
 }
 
