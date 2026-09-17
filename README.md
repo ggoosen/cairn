@@ -10,6 +10,7 @@
 [![Status](https://img.shields.io/badge/status-pre--alpha-orange.svg)](#status)
 [![Local-first](https://img.shields.io/badge/data-100%25%20local%20%C2%B7%20offline-success.svg)](#how-its-built)
 [![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
+[![M8ven Live Monitored](https://m8ven.ai/badge/mcp/ggoosen-cairn-1ttvdp)](https://m8ven.ai/mcp/ggoosen-cairn-1ttvdp)
 
 *Append-only signed event log · offline hybrid search · crash-safe by construction · no cloud, ever.*
 
