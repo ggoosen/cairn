@@ -11,7 +11,7 @@ import (
 // agent harness actually does with a pile of text — grep it — and a baseline
 // that quietly acquired ranking would stop being the thing it is supposed to
 // represent. Nothing here is tuned, and nothing here may be tuned against a
-// corpus: EVAL-PLAN §8 forbids tuning on the evaluation set, and that
+// corpus: BUILD-PLAN §3.7 forbids tuning on the evaluation set, and that
 // prohibition binds the baselines as much as Cairn.
 //
 // The one concession to realism is the two-pass fallback in matchOrder: an

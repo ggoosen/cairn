@@ -28,9 +28,21 @@ const (
 
 // weightSet holds every additive term's weight. P0 profiles set S/I/N to 0 and
 // carry a P (priority) term; P2 profiles set P to 0 and carry S/I/N (§9.1).
+//
+// Dup/Sat are the S8 penalty weights and are NEGATIVE: the features they
+// multiply are ordinary [0,1] features, and the weight IS the §9.1 cap, so
+// "capped at 0.15" is a property of the weight rather than a clamp buried in
+// the arithmetic. P0 profiles leave them at 0 — §9.1 gives P0 no penalty term.
 type weightSet struct {
 	R, S, F, P, I, N float64
-	halfLife         time.Duration
+	Dup, Sat         float64
+	// Sup is the D16 supersession demotion, NEGATIVE for the same reason
+	// Dup/Sat are: the feature is an ordinary [0,1] number and the weight IS
+	// the cap, so the printed product is the demotion itself. P0 profiles leave
+	// it at 0 — see internal/rank/supersede.go for why that is a conservative
+	// reading of a spec gap rather than a preference.
+	Sup      float64
+	halfLife time.Duration
 }
 
 // IsP2 reports whether the profile uses the full additive model.
@@ -41,9 +53,11 @@ func (p Profile) weights() weightSet {
 	case ProfileDigest:
 		return weightSet{R: config.DigestWeightR, F: config.DigestWeightF, P: config.DigestWeightP, halfLife: config.DigestFreshnessHalfLife}
 	case ProfileSearchP2:
-		return weightSet{R: config.SearchP2WeightR, S: config.SearchP2WeightS, F: config.SearchP2WeightF, I: config.SearchP2WeightI, N: config.SearchP2WeightN, halfLife: config.SearchFreshnessHalfLife}
+		return weightSet{R: config.SearchP2WeightR, S: config.SearchP2WeightS, F: config.SearchP2WeightF, I: config.SearchP2WeightI, N: config.SearchP2WeightN,
+			Dup: -config.PenaltyCap, Sat: -config.PenaltyCap, Sup: -config.SupersessionPenaltyCap, halfLife: config.SearchFreshnessHalfLife}
 	case ProfileDigestP2:
-		return weightSet{R: config.DigestP2WeightR, S: config.DigestP2WeightS, F: config.DigestP2WeightF, I: config.DigestP2WeightI, N: config.DigestP2WeightN, halfLife: config.DigestFreshnessHalfLife}
+		return weightSet{R: config.DigestP2WeightR, S: config.DigestP2WeightS, F: config.DigestP2WeightF, I: config.DigestP2WeightI, N: config.DigestP2WeightN,
+			Dup: -config.PenaltyCap, Sat: -config.PenaltyCap, Sup: -config.SupersessionPenaltyCap, halfLife: config.DigestFreshnessHalfLife}
 	default:
 		return weightSet{R: config.SearchWeightR, F: config.SearchWeightF, P: config.SearchWeightP, halfLife: config.SearchFreshnessHalfLife}
 	}
@@ -51,13 +65,17 @@ func (p Profile) weights() weightSet {
 
 // PublicWeights exposes a profile's additive term weights for why_ranked
 // persistence (§9.4 — every number must be recomputable). P0 profiles report
-// S=I=N=0; P2 profiles report P=0.
-type PublicWeights struct{ R, S, F, P, I, N float64 }
+// S=I=N=0 and no penalty weights; P2 profiles report P=0.
+type PublicWeights struct {
+	R, S, F, P, I, N float64
+	Dup, Sat         float64 // negative: the §9.1 penalty cap (S8)
+	Sup              float64 // negative: the D16 supersession demotion cap
+}
 
 // Weights returns the profile's term weights.
 func (p Profile) Weights() PublicWeights {
 	w := p.weights()
-	return PublicWeights{R: w.R, S: w.S, F: w.F, P: w.P, I: w.I, N: w.N}
+	return PublicWeights{R: w.R, S: w.S, F: w.F, P: w.P, I: w.I, N: w.N, Dup: w.Dup, Sat: w.Sat, Sup: w.Sup}
 }
 
 // score computes the additive score for one candidate's components under a
@@ -70,9 +88,18 @@ func (p Profile) Weights() PublicWeights {
 // IEEE-754 recompute of the why-ranked trace produces (each printed value ×
 // weight rounded, then summed in this term order), on every platform and in
 // every language an auditor might verify with.
+//
+// S8/D16: the three penalty products are LAST and carry negative weights, so
+// the sum order the trace describes is R, S, F, P_eff, I, N, DUP, SAT, SUP.
+// Adding them after the bonus terms (rather than folding them in anywhere else)
+// is what makes the printed order the arithmetic order. SUP is APPENDED to that
+// order rather than inserted into it, so every score computed before D16 is
+// reproduced bit-for-bit: a profile without a supersession weight adds a
+// trailing +0.
 func (w weightSet) score(c Components) float64 {
 	return float64(w.R*c.R) + float64(w.S*c.S) + float64(w.F*c.F) +
-		float64(w.P*c.Peff) + float64(w.I*c.I) + float64(w.N*c.N)
+		float64(w.P*c.Peff) + float64(w.I*c.I) + float64(w.N*c.N) +
+		float64(w.Dup*c.Dup) + float64(w.Sat*c.Sat) + float64(w.Sup*c.Sup)
 }
 
 // Candidate is one message entering ranking. LexRank/VecRank are 1-based
@@ -93,6 +120,24 @@ type Candidate struct {
 	Intent   float64
 	Novelty  float64
 
+	// S8 penalty keys (spec §9.1), both reproducible from published values:
+	// DupKey is the head revision's body content address — two candidates
+	// sharing one ARE the same text — and ThreadKey is the projection thread id
+	// (a root message keys on its own id, so a standalone message never
+	// saturates against itself). Empty means "no key", which exempts the
+	// candidate from that penalty. P0 profiles ignore both.
+	DupKey    string
+	ThreadKey string
+
+	// D16: the LIVE supersession, as the projection reports it. SupersededBy is
+	// the message that replaced this one and SupersededAt is the end date of
+	// the superseded fact. Both empty = still current. Unlike the S8 penalty
+	// keys these are INTRINSIC to the candidate rather than positional, so the
+	// SUP feature needs no base-order pass and is order-independent by
+	// construction.
+	SupersededBy string
+	SupersededAt string
+
 	Mandatory string // "" | "recipient" | "pin" — inclusion class, not a score bonus
 }
 
@@ -100,12 +145,27 @@ type Candidate struct {
 // in persistence — floats never enter event payloads; these live in the
 // projection's rank_explanations table).
 type Components struct {
-	R       float64
-	S       float64 // P2 salience (§9.2)
-	F       float64
-	Peff    float64
-	I       float64 // P2 operator intent
-	N       float64 // P2 novelty
+	R    float64
+	S    float64 // P2 salience (§9.2)
+	F    float64
+	Peff float64
+	I    float64 // P2 operator intent
+	N    float64 // P2 novelty
+	// S8 penalties (P2 only), each a [0,1] feature multiplied by a NEGATIVE
+	// weight equal to the §9.1 cap. DupAhead/SatAhead are the counts they were
+	// derived from — printed in the trace so the feature itself is recomputable,
+	// not merely asserted.
+	Dup      float64
+	Sat      float64
+	DupAhead int
+	SatAhead int
+	// D16 supersession demotion (P2 only), the same shape: a [0,1] feature
+	// times a NEGATIVE weight equal to the cap. SupBy/SupAt are the EVIDENCE —
+	// which live message ended this fact, and when — so the feature is
+	// recomputable by looking the relation up, not merely asserted.
+	Sup     float64
+	SupBy   string
+	SupAt   string
 	RRF     float64
 	LexRank int
 	VecRank int
@@ -186,24 +246,12 @@ func Rank(cands []Candidate, profile Profile, now time.Time) []Scored {
 			VecRank: c.VecRank,
 			Profile: profile,
 		}
+		w.applySupersession(&comp, c)
 		comp.Score = w.score(comp)
 		scored[i] = Scored{Candidate: c, Components: comp}
 	}
 
-	sort.SliceStable(scored, func(a, b int) bool {
-		sa, sb := scored[a], scored[b]
-		if ca, cb := mandatoryClass(sa.Mandatory), mandatoryClass(sb.Mandatory); ca != cb {
-			return ca < cb
-		}
-		if sa.Score != sb.Score {
-			return sa.Score > sb.Score
-		}
-		if !sa.CreatedAt.Equal(sb.CreatedAt) {
-			return sa.CreatedAt.After(sb.CreatedAt)
-		}
-		return sa.EventID < sb.EventID
-	})
-	return scored
+	return orderWithPenalties(scored, w)
 }
 
 // RankUniformR is Rank with R fixed at 1.0 for every candidate — the
@@ -228,9 +276,29 @@ func RankUniformR(cands []Candidate, profile Profile, now time.Time) []Scored {
 			VecRank: c.VecRank,
 			Profile: profile,
 		}
+		w.applySupersession(&comp, c)
 		comp.Score = w.score(comp)
 		scored[i] = Scored{Candidate: c, Components: comp}
 	}
+	return orderWithPenalties(scored, w)
+}
+
+// orderWithPenalties is the shared tail of both ranking entry points: sort into
+// the BASE order (penalty terms still zero), apply the S8 positional penalties
+// against that order, and sort again on the penalised scores. Under a profile
+// with no penalty weights the middle step is a no-op and the second sort finds
+// the slice already ordered, so P0 results are bit-identical to pre-S8.
+func orderWithPenalties(scored []Scored, w weightSet) []Scored {
+	sortScored(scored)
+	applyPenalties(scored, w)
+	sortScored(scored)
+	return scored
+}
+
+// sortScored is the ruling §7 order: mandatory class → score → wall time →
+// event_id. Total (event ids are unique), so the base ordering the penalty pass
+// counts against is deterministic.
+func sortScored(scored []Scored) {
 	sort.SliceStable(scored, func(a, b int) bool {
 		sa, sb := scored[a], scored[b]
 		if ca, cb := mandatoryClass(sa.Mandatory), mandatoryClass(sb.Mandatory); ca != cb {
@@ -244,7 +312,6 @@ func RankUniformR(cands []Candidate, profile Profile, now time.Time) []Scored {
 		}
 		return sa.EventID < sb.EventID
 	})
-	return scored
 }
 
 // mandatoryClass orders inclusion classes: recipients first, then pins,
@@ -321,56 +388,4 @@ func Dec(f float64) string { return strconv.FormatFloat(f, 'g', -1, 64) }
 func ParseDec(s string) float64 {
 	f, _ := strconv.ParseFloat(s, 64)
 	return f
-}
-
-// BudgetChars counts Unicode scalar values (rulings §7: budget_chars is
-// scalars, not bytes).
-func BudgetChars(s string) int { return len([]rune(s)) }
-
-// TakeWithinBudget renders items one at a time via render(i) and returns
-// the largest prefix whose TOTAL payload (header + items + the truncation
-// marker when items were dropped) fits budget. Returns the included count
-// and the final payload. render must be deterministic.
-type BudgetRender struct {
-	Header string // counted always
-	Marker string // appended when truncated; counted when present
-}
-
-func TakeWithinBudget(n int, budget int, br BudgetRender, render func(i int) string) (included int, payload string) {
-	if budget <= 0 {
-		return 0, ""
-	}
-	parts := make([]string, 0, n)
-	total := BudgetChars(br.Header)
-	if total > budget {
-		return 0, ""
-	}
-	for i := 0; i < n; i++ {
-		piece := render(i)
-		cost := BudgetChars(piece)
-		markerCost := 0
-		if i < n-1 {
-			markerCost = BudgetChars(br.Marker)
-		}
-		if total+cost+markerCost > budget {
-			// adding this item (plus a marker if more remain) would exceed
-			break
-		}
-		parts = append(parts, piece)
-		total += cost
-	}
-	included = len(parts)
-	out := br.Header
-	for _, p := range parts {
-		out += p
-	}
-	if included < n {
-		// the marker is part of the budgeted payload too: append it only if
-		// it fits (a budget too small for even the marker returns the bare
-		// header — never a single char over budget)
-		if BudgetChars(out)+BudgetChars(br.Marker) <= budget {
-			out += br.Marker
-		}
-	}
-	return included, out
 }

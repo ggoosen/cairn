@@ -20,6 +20,7 @@ import (
 	"github.com/ggoosen/cairn/internal/fsx"
 	"github.com/ggoosen/cairn/internal/identity"
 	"github.com/ggoosen/cairn/internal/outbox"
+	"github.com/ggoosen/cairn/internal/rank"
 )
 
 // call resolves the cairn dir and sends one IPC request to the daemon.
@@ -77,6 +78,71 @@ func printJSON(cmd *cobra.Command, v any) error {
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), string(blob))
 	return nil
+}
+
+// reportCapability (D3) prints what the session's resource selectors did to a
+// request. A clamp or a scope applied silently is a lie by omission: the agent
+// reading this output must know it saw a confined view, not the whole mesh.
+func reportCapability(cmd *cobra.Command, resp *daemon.Response) {
+	if resp == nil || resp.Capability == nil {
+		return
+	}
+	c := resp.Capability
+	if len(c.TopicGrant) > 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "capability: scoped to topic grant %v (%d matching topic(s))\n",
+			c.TopicGrant, len(c.ScopedTopics))
+	}
+	if c.BudgetClamped {
+		fmt.Fprintf(cmd.ErrOrStderr(), "capability: budget_chars %d → %d (session cap)\n",
+			c.BudgetRequested, c.BudgetGranted)
+	}
+	if c.BudgetCeilingChars > 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "capability: budget_tokens honored, with the session's %d-character cap as a second hard limit\n",
+			c.BudgetCeilingChars)
+	}
+	if c.Withheld > 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "capability: %d item(s) withheld as out of scope\n", c.Withheld)
+	}
+}
+
+// addBudgetTokensFlag registers D4's second budget. Exactly one of the two
+// may be given: the daemon REFUSES a request carrying both rather than
+// picking a winner, and these two flags are how a caller can express that
+// mistake, so the CLI must be able to send it.
+func addBudgetTokensFlag(cmd *cobra.Command, v *int) {
+	cmd.Flags().IntVar(v, "budget-tokens", 0,
+		"budget in TOKENS over the COMPLETE payload, counted by "+config.TokenizerApprox+
+			" (an APPROXIMATION that over-estimates; the response names it). Mutually exclusive with --budget")
+}
+
+// budgetFlag resolves --budget against --budget-tokens. A --budget the user
+// did NOT type (its default) is dropped when --budget-tokens is given, so the
+// defaulted flag cannot manufacture the "both budgets" refusal; a --budget the
+// user DID type is passed through and refused by the daemon, which is the
+// single place that decision is made.
+func budgetFlag(cmd *cobra.Command, chars, tokens int) int {
+	if tokens > 0 && !cmd.Flags().Changed("budget") {
+		return 0
+	}
+	return chars
+}
+
+// reportBudget prints the budget the daemon actually applied, on stderr so it
+// never contaminates a piped payload. The TOKENIZER is named because a token
+// count against an unnamed tokenizer is not a measurement.
+func reportBudget(cmd *cobra.Command, r rank.Report) {
+	if r.Limit <= 0 {
+		return
+	}
+	approx := ""
+	if r.Approximate {
+		approx = " — APPROXIMATE"
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "budget: %d/%d %s (tokenizer %s%s)\n",
+		r.Used, r.Limit, r.Mode, r.Tokenizer, approx)
+	if r.CeilingChars > 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "budget: session ceiling of %d chars also applied\n", r.CeilingChars)
+	}
 }
 
 // groupGuard (FIX-F5 ruling 3): a parent command invoked with an unknown
@@ -326,17 +392,21 @@ func newTopicCmd(dirFlag *string) *cobra.Command {
 }
 
 func newThreadCmd(dirFlag *string) *cobra.Command {
-	var budget int
+	var budget, budgetTokens int
 	cmd := &cobra.Command{
 		Use:   "thread <thread-id>",
 		Short: "Read a whole conversation (every live message of a thread, budget-capped)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := call(dirFlag, daemon.Request{Op: "thread", ThreadID: args[0], BudgetChars: budget})
+			chars := budgetFlag(cmd, budget, budgetTokens)
+			resp, err := call(dirFlag, daemon.Request{Op: "thread", ThreadID: args[0],
+				BudgetChars: chars, BudgetTokens: budgetTokens})
 			if err != nil {
 				return err
 			}
+			reportCapability(cmd, resp)
 			fmt.Fprint(cmd.OutOrStdout(), resp.Thread.Payload)
+			reportBudget(cmd, resp.Thread.Budget)
 			if resp.Thread.Omitted > 0 {
 				fmt.Fprintf(cmd.ErrOrStderr(), "omitted: %d (raise --budget to see more)\n", resp.Thread.Omitted)
 			}
@@ -344,6 +414,7 @@ func newThreadCmd(dirFlag *string) *cobra.Command {
 		},
 	}
 	cmd.Flags().IntVar(&budget, "budget", 4000, "budget_chars over the COMPLETE payload")
+	addBudgetTokensFlag(cmd, &budgetTokens)
 	return cmd
 }
 
@@ -455,7 +526,7 @@ func newSignalCmd(dirFlag *string) *cobra.Command {
 }
 
 func newSearchCmd(dirFlag *string) *cobra.Command {
-	var k, budget int
+	var k, budget, budgetTokens int
 	var includeRetracted bool
 	var topics []string
 	var sender, thread string
@@ -466,18 +537,22 @@ func newSearchCmd(dirFlag *string) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resp, err := call(dirFlag, daemon.Request{
 				Op: "search", Search2: &daemon.SearchOptions{
-					Query: args[0], K: k, BudgetChars: budget, IncludeRetracted: includeRetracted,
-					Topics: topics, Sender: sender, ThreadID: thread,
+					Query: args[0], K: k,
+					BudgetChars: budgetFlag(cmd, budget, budgetTokens), BudgetTokens: budgetTokens,
+					IncludeRetracted: includeRetracted,
+					Topics:           topics, Sender: sender, ThreadID: thread,
 				},
 			})
 			if err != nil {
 				return err
 			}
+			reportCapability(cmd, resp)
 			return printJSON(cmd, resp.Search)
 		},
 	}
 	cmd.Flags().IntVar(&k, "k", 10, "max results")
 	cmd.Flags().IntVar(&budget, "budget", 0, "budget_chars over the COMPLETE payload (0 = unbudgeted)")
+	addBudgetTokensFlag(cmd, &budgetTokens)
 	cmd.Flags().BoolVar(&includeRetracted, "include-retracted", false, "include retracted messages (capability-gated in P1)")
 	cmd.Flags().StringSliceVar(&topics, "topic", nil, "scope: only messages in these topics (existing names; repeatable)")
 	cmd.Flags().StringVar(&sender, "sender", "", "scope: only messages from this principal")
@@ -486,18 +561,21 @@ func newSearchCmd(dirFlag *string) *cobra.Command {
 }
 
 func newDigestCmd(dirFlag *string) *cobra.Command {
-	var budget int
+	var budget, budgetTokens int
 	var view string
 	cmd := &cobra.Command{
 		Use:   "digest",
 		Short: "Generate the ranked, budget-capped digest for an agent view (writes views/<view>/digest.md)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			resp, err := call(dirFlag, daemon.Request{Op: "digest", AgentView: view, BudgetChars: budget})
+			resp, err := call(dirFlag, daemon.Request{Op: "digest", AgentView: view,
+				BudgetChars: budgetFlag(cmd, budget, budgetTokens), BudgetTokens: budgetTokens})
 			if err != nil {
 				return err
 			}
+			reportCapability(cmd, resp)
 			fmt.Fprint(cmd.OutOrStdout(), resp.Digest.Payload)
+			reportBudget(cmd, resp.Digest.Budget)
 			if resp.Digest.OmittedMandatory > 0 {
 				fmt.Fprintf(cmd.ErrOrStderr(), "omitted_mandatory_count: %d\n", resp.Digest.OmittedMandatory)
 			}
@@ -505,6 +583,7 @@ func newDigestCmd(dirFlag *string) *cobra.Command {
 		},
 	}
 	cmd.Flags().IntVar(&budget, "budget", 4000, "budget_chars over the COMPLETE digest")
+	addBudgetTokensFlag(cmd, &budgetTokens)
 	cmd.Flags().StringVar(&view, "view", "operator", "agent view")
 	return cmd
 }
@@ -599,6 +678,23 @@ func newExportCmd(dirFlag *string) *cobra.Command {
 			return nil
 		},
 	}
+	// D5: the bulk half. `export <id>` renders ONE message for round-trip
+	// editing (front matter and all); `export corpus` renders EVERY live
+	// message as a plain body under its topic path — the shape
+	// `cairn ingest scan` consumes, and the first step of adopting a
+	// standalone mesh into another one (scripts/cairn-adopt-standalone.sh).
+	cmd.AddCommand(&cobra.Command{
+		Use:   "corpus",
+		Short: "Export every live message as plain Markdown under its topic path (the form `cairn ingest scan` consumes)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resp, err := call(dirFlag, daemon.Request{Op: "export-corpus"})
+			if err != nil {
+				return err
+			}
+			return printJSON(cmd, resp.Status)
+		},
+	})
 	cmd.AddCommand(&cobra.Command{
 		Use:   "ingest <path>",
 		Short: "Ingest an edited export: base==head → revision; clean diff3 → machine-merged; conflict → conflicts/",

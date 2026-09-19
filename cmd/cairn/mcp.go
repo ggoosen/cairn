@@ -14,7 +14,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -64,8 +67,36 @@ func newMCPCmd(dirFlag *string) *cobra.Command {
 					return err
 				}
 				token = resp.Status["session"].(string)
-				defer func() {
-					_, _ = daemon.Call(clientDir, daemon.Request{Op: "session-revoke", TargetSession: token})
+				// D9: a `defer` alone does not run when the process is killed
+				// by a signal, which is exactly how MCP clients tear down a
+				// stdio server — so every respawn leaked precisely one session
+				// record, and the dev node accumulated 2,673 of them. Catch
+				// SIGTERM/SIGINT, revoke, then exit. SIGKILL still cannot be
+				// caught, which is why the daemon also reaps sessions whose
+				// bound process is gone.
+				var once sync.Once
+				revoke := func() {
+					once.Do(func() {
+						_, _ = daemon.Call(clientDir, daemon.Request{Op: "session-revoke", TargetSession: token})
+					})
+				}
+				defer revoke()
+				sigCh := make(chan os.Signal, 1)
+				signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+				defer signal.Stop(sigCh)
+				go func() {
+					sig, ok := <-sigCh
+					if !ok {
+						return
+					}
+					revoke()
+					// Exit the way a signalled process is expected to (128+n),
+					// not 0: a client must not read a kill as a clean stop.
+					code := 128
+					if s, ok := sig.(syscall.Signal); ok {
+						code += int(s)
+					}
+					os.Exit(code)
 				}()
 			}
 

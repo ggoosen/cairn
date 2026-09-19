@@ -51,6 +51,11 @@ CREATE TABLE messages (
 );
 CREATE INDEX idx_messages_thread ON messages(thread_id);
 CREATE INDEX idx_messages_created ON messages(created_at);
+-- D1: every vector query joins head_revision_id → revision, on both the vec0
+-- and the brute-force path. Without this SQLite builds a transient automatic
+-- index for that join on EVERY query, which is exactly the per-query O(corpus)
+-- cost the vector index exists to remove.
+CREATE INDEX idx_messages_head ON messages(head_revision_id);
 
 CREATE TABLE revisions (
   revision_id TEXT PRIMARY KEY,
@@ -122,6 +127,36 @@ CREATE TABLE source_refs (
   message_id TEXT NOT NULL REFERENCES messages(message_id)
 );
 
+-- D16 (S19): cross-message supersession, as a relation with an END DATE.
+-- Projected from message.supersede. Zep/Graphiti's model, and the right one for
+-- an append-only log: when a fact changes the old one is given an end date
+-- rather than overwritten, so "what was true last March" is still answerable
+-- and the superseded message stays fetchable, attributed and searchable. It is
+-- DEMOTED in ranking (the SUP term), never removed — which is the whole reason
+-- this beats the delete-and-rewrite pruning the field's memory tools do.
+--
+-- valid_until is the end date: the wall time of the supersession event, which
+-- is when the mesh asserted the old fact stopped being current. Every row is an
+-- assertion; a message superseded twice has two rows, and the EARLIEST one that
+-- still has a live successor is the end date ranking uses.
+--
+-- Both message ids carry FOREIGN KEYs deliberately (R49): a supersession that
+-- replicates ahead of either message parks as RETRYABLE and self-heals when the
+-- message arrives, rather than projecting a relation that points at nothing.
+CREATE TABLE supersessions (
+  event_id                 TEXT PRIMARY KEY REFERENCES events(event_id),
+  message_id               TEXT NOT NULL REFERENCES messages(message_id),
+  superseded_by_message_id TEXT NOT NULL REFERENCES messages(message_id),
+  reason                   TEXT,
+  actor_principal_id       TEXT,
+  valid_until              TEXT NOT NULL      -- RFC3339 end date of the superseded fact
+);
+-- The ranking join asks "is there a live successor to this message?" per
+-- candidate, so message_id is the hot column; the reverse index serves the
+-- current-state walk and the census.
+CREATE INDEX idx_supersessions_msg ON supersessions(message_id);
+CREATE INDEX idx_supersessions_by ON supersessions(superseded_by_message_id);
+
 CREATE TABLE signals (
   event_id TEXT PRIMARY KEY REFERENCES events(event_id),
   message_id TEXT NOT NULL,
@@ -145,6 +180,16 @@ CREATE TABLE fts_map (
   rowid INTEGER PRIMARY KEY,
   revision_id TEXT NOT NULL UNIQUE
 );
+
+-- D14: fts5vocab companion in 'row' mode — (term, doc, cnt) per indexed term,
+-- where `doc` is the number of documents containing the term. It is the D11
+-- term-discrimination probe's document-frequency source: asking the index for
+-- df, rather than counting matching rowids up to a LIMIT that is itself half
+-- the corpus. Nothing is stored — fts5vocab is a VIEW over the FTS index's own
+-- b-tree — so it costs no space, cannot drift from the index it reads, and
+-- reports terms exactly as the tokenizer emitted them (folded, tokenchars
+-- applied), which is why query terms are folded in Go before lookup.
+CREATE VIRTUAL TABLE fts_revisions_vocab USING fts5vocab('fts_revisions', 'row');
 -- CAPTURE C2 companion index over the SAME body text, sharing fts_map's
 -- rowid so ONE insert feeds both indexes in one transaction. unicode61
 -- splits on word boundaries and can never match INSIDE a token, which is
@@ -159,14 +204,29 @@ CREATE VIRTUAL TABLE fts_revisions_trigram USING fts5(
 );
 
 -- Vectors: one row per (revision, model). Never compare across models.
--- If sqlite-vec is available this becomes a vec0 virtual table; otherwise
--- this plain table + in-process brute-force cosine (<5k candidates).
+-- This table is the SOURCE OF TRUTH for embeddings and the brute-force
+-- oracle's input; it is written whether or not sqlite-vec is available
+-- (D1). The vec0 virtual table below is a derived INDEX over it.
 CREATE TABLE vectors (
   revision_id TEXT NOT NULL,
   embedding_model_id TEXT NOT NULL,
   dim INTEGER NOT NULL,
   vec BLOB NOT NULL,                  -- float32 little-endian
   PRIMARY KEY (revision_id, embedding_model_id)
+);
+
+-- D1: rowid bridge to the sqlite-vec index. vec0 virtual tables are keyed by
+-- INTEGER rowid, our vectors by revision_id, so one stable mapping lives here
+-- (same shape as fts_map, and for the same reason). The vec0 table itself is
+-- created LAZILY, in internal/projection/vec.go, because its dimension is not
+-- known until the first vector arrives and because the extension may not be
+-- present at all — when it is absent this table simply stays empty and the
+-- brute-force scan over `vectors` answers, which is the sanctioned fallback
+-- (rulings §7). Rebuilt from `vectors` whenever the two disagree, so the vec0
+-- index is as derived as everything else here.
+CREATE TABLE vec_map (
+  rowid INTEGER PRIMARY KEY,
+  revision_id TEXT NOT NULL UNIQUE
 );
 
 -- Enrichment state for retrieval_mode + reindex --semantic backfill.
@@ -261,6 +321,11 @@ CREATE TABLE fts_derivatives_map (
   rowid INTEGER PRIMARY KEY,
   derivative_id TEXT NOT NULL UNIQUE
 );
+
+-- D14: the derivatives index gets the same df source, against its OWN
+-- document population (a term common in bodies may be rare in extracted
+-- attachment text).
+CREATE VIRTUAL TABLE fts_derivatives_vocab USING fts5vocab('fts_derivatives', 'row');
 
 -- Receiver summary topical-consistency check (P1 N4; spec §8.4).
 -- sender_summary is event-derived (untrusted claim); the check columns are

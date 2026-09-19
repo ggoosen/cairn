@@ -16,7 +16,9 @@ import (
 	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/daemon"
 	"github.com/ggoosen/cairn/internal/identity"
+	"github.com/ggoosen/cairn/internal/netstate"
 	"github.com/ggoosen/cairn/internal/peer"
+	"github.com/ggoosen/cairn/internal/rank"
 )
 
 // setupPairedPair inits mesh-owner A (with the given role) on a loopback
@@ -30,6 +32,14 @@ func setupPairedPair(t *testing.T, ownerRole string) (*daemon.Daemon, string) {
 // setupPairedPairCfg is setupPairedPair with a hook to mutate B's device config
 // (role, remote_query, sync_peers) BEFORE B's daemon starts.
 func setupPairedPairCfg(t *testing.T, ownerRole string, configB func(dev *config.DeviceConfig, addr string)) (*daemon.Daemon, string) {
+	t.Helper()
+	return setupPairedPairSense(t, ownerRole, configB, nil)
+}
+
+// setupPairedPairSense is setupPairedPairCfg with an injected P3-6 metered/
+// battery sensor for B (nil = the real platform probe), so the POLICY can be
+// exercised on any OS while the PROBES stay platform-tested.
+func setupPairedPairSense(t *testing.T, ownerRole string, configB func(dev *config.DeviceConfig, addr string), sense netstate.Sensor) (*daemon.Daemon, string) {
 	t.Helper()
 	t.Setenv("CAIRN_SYNC_ALLOW_LOOPBACK", "1")
 	t.Setenv("CAIRN_FAKE_VOLUME_STATUS", "encrypted")
@@ -58,7 +68,7 @@ func setupPairedPairCfg(t *testing.T, ownerRole string, configB func(dev *config
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := peer.PairDial(addr, inv.CairnID, payload, priv); err != nil {
+	if _, err := peer.PairDial(addr, inv.CairnID, payload, priv, inviteTrust(t, inv)); err != nil {
 		t.Fatalf("pair: %v", err)
 	}
 	if configB != nil {
@@ -71,14 +81,18 @@ func setupPairedPairCfg(t *testing.T, ownerRole string, configB func(dev *config
 			t.Fatal(err)
 		}
 	}
-	dB := startDaemon(t, dirB)
+	dB, err := daemon.Start(daemon.Options{Dir: dirB, PowerSense: sense})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { dB.Close() })
 	return dB, addr
 }
 
 func TestP33cRemoteSearchAgainstFullNode(t *testing.T) {
 	dB, addr := setupPairedPair(t, "") // owner A is a full node
 
-	out, err := dB.RemoteSearch(addr, "roastery approval", 2000)
+	out, err := dB.RemoteSearch(addr, "roastery approval", mustSpec(t, 2000, 0))
 	if err != nil {
 		t.Fatalf("remote search: %v", err)
 	}
@@ -90,7 +104,7 @@ func TestP33cRemoteSearchAgainstFullNode(t *testing.T) {
 func TestP33cThinNodeRefusesRemoteSearch(t *testing.T) {
 	dB, addr := setupPairedPair(t, "thin") // owner A is a THIN node
 
-	if _, err := dB.RemoteSearch(addr, "roastery approval", 2000); err == nil ||
+	if _, err := dB.RemoteSearch(addr, "roastery approval", mustSpec(t, 2000, 0)); err == nil ||
 		!strings.Contains(err.Error(), "thin") {
 		t.Fatalf("thin node did not refuse remote search: %v", err)
 	}
@@ -162,4 +176,15 @@ func TestP33eMeteredThinNodeSuppressesRemoteQuery(t *testing.T) {
 	if !strings.Contains(out.PartialReason, "metered") {
 		t.Fatalf("partial reason does not explain metered suppression: %q", out.PartialReason)
 	}
+}
+
+// mustSpec builds a budget spec for the tests that call the daemon API
+// directly (D4: a budget is a mode plus a limit, not a bare int).
+func mustSpec(t *testing.T, chars, tokens int) rank.Spec {
+	t.Helper()
+	spec, err := rank.NewSpec(chars, tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return spec
 }

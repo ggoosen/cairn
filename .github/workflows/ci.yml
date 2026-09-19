@@ -39,7 +39,7 @@ jobs:
           go-version-file: go.mod
       - run: make fuzz FUZZTIME=30s
 
-  # The evaluation harness (build/EVAL-PLAN.md) is a separate module, so the
+  # The evaluation harness (build/BUILD-PLAN.md) is a separate module, so the
   # jobs above never see it — `./...` stops at the module boundary. It gets
   # its own job rather than being folded into `verify`, so that a harness
   # failure can never be confused with a daemon failure, and so the main
@@ -54,6 +54,74 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make eval
+
+  # D6: the release path, rehearsed on every push. A release pipeline that only
+  # ever runs when someone tags is a pipeline nobody has tested — and its
+  # failure mode (a published artifact that cannot search, or a formula with a
+  # stale checksum) lands on users, not on CI. So the packaging scripts run
+  # here against a real binary: package it, verify the tarball, unpack it, run
+  # a real daemon out of the unpacked copy and search, then render and lint the
+  # Homebrew formula. Everything except the parts that need macOS, Homebrew and
+  # a GitHub release.
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # D13: built the way a RELEASE is built — with the tag linked in. The
+      # release workflow only runs when someone pushes a tag, so without this
+      # the stamping mechanism would be exercised for the first time by a real
+      # release. A renamed symbol or a mistyped -X path fails silently: the
+      # linker accepts it and the tag is simply absent.
+      - run: make build CAIRN_VERSION=v0.0.0-ci
+      - name: Assert the release build stamps its tag
+        run: |
+          V="$(./bin/cairn --version)"
+          echo "version: $V"
+          case "$V" in v0.0.0-ci*) ;; *) echo "FAIL: a stamped build did not name its tag: $V"; exit 1 ;; esac
+          case "$V" in *p1*) ;; *) echo "FAIL: the stamped build dropped its commit stamp: $V"; exit 1 ;; esac
+          # And an UNSTAMPED build must claim no tag — the other half of D13.
+          go build -tags sqlite_fts5 -o bin/cairn-unstamped ./cmd/cairn
+          U="$(./bin/cairn-unstamped --version)"
+          echo "unstamped version: $U"
+          case "$U" in p1-*) ;; *) echo "FAIL: an unstamped build reports $U, expected p1-<commit>"; exit 1 ;; esac
+          rm -f bin/cairn-unstamped
+      - name: Package and verify a release tarball
+        run: |
+          packaging/package.sh --binary bin/cairn --os linux --arch amd64 \
+            --version 0.0.0-ci --outdir dist
+          ( cd dist && shasum -a 256 -c checksums.txt )
+          mkdir -p dist/unpacked
+          tar xzf dist/cairn_0.0.0-ci_linux_amd64.tar.gz -C dist/unpacked
+          packaging/release-smoke.sh dist/unpacked/cairn
+      - name: Render and lint the Homebrew formula
+        run: |
+          # Two platforms have no artifact here, so their checksums are
+          # placeholders of the right SHAPE — the lint's job at this stage is
+          # the formula's structure, not these values. The real release renders
+          # from checksums of real bytes and the same lint runs again there.
+          {
+            printf '%s  cairn_0.0.0-ci_darwin_arm64.tar.gz\n' "$(printf placeholder-darwin-arm64 | shasum -a 256 | cut -d' ' -f1)"
+            grep linux_amd64 dist/checksums.txt
+            printf '%s  cairn_0.0.0-ci_linux_arm64.tar.gz\n' "$(printf placeholder-linux-arm64 | shasum -a 256 | cut -d' ' -f1)"
+          } > dist/ci-checksums.txt
+          packaging/mkformula.sh --tag v0.0.0-ci --repo "${{ github.repository }}" \
+            --checksums dist/ci-checksums.txt -o dist/cairn.rb
+          ruby packaging/formula-lint.rb dist/cairn.rb
+          # `brew style` if this runner happens to carry Homebrew, and a LOUD
+          # note if it does not — a silently skipped check reads exactly like a
+          # passing one in a log. It is advisory either way: the formula lives
+          # in a custom tap, and PolyForm Noncommercial is not a licence
+          # homebrew-core would accept.
+          BREW="$(command -v brew || true)"
+          [ -n "$BREW" ] || [ ! -x /home/linuxbrew/.linuxbrew/bin/brew ] || BREW=/home/linuxbrew/.linuxbrew/bin/brew
+          if [ -n "$BREW" ]; then
+            "$BREW" style dist/cairn.rb || echo "NOTE: brew style reported issues (advisory)"
+          else
+            echo "NOTE: no Homebrew on this runner — brew style SKIPPED. formula-lint above is the only formula check that ran."
+          fi
 
   lint:
     runs-on: ubuntu-latest

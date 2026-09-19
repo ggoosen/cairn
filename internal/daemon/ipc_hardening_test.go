@@ -134,11 +134,16 @@ func TestViewNameTraversalRejected(t *testing.T) {
 }
 
 // shortTempDir is t.TempDir() for tests that BIND the unix socket. macOS
-// caps sun_path at ~104 bytes and t.TempDir() sits under $TMPDIR
+// caps sun_path at 104 bytes and t.TempDir() sits under $TMPDIR
 // (/var/folders/<2>/<32>/T/<TestName>/001 — already ~90 bytes), so the
 // socket path overflows and bind fails with no visible error. Production is
 // unaffected: XDG_RUNTIME_DIR is unset on macOS, so SocketDir() takes the
 // short os.TempDir() fallback by design.
+//
+// D12: os.MkdirTemp("/tmp", …) — NOT os.MkdirTemp("", …). The empty root
+// honors $TMPDIR, which is 5 bytes on Linux and 48 on macOS, so the second
+// form yields a "short" dir only on the platform nobody ships on. That is
+// exactly the mistake TestD5AdoptStandaloneScript made.
 func shortTempDir(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "cairn-sock")
@@ -170,7 +175,12 @@ func TestSocketDirHardened(t *testing.T) {
 }
 
 func TestSocketDirSymlinkRefused(t *testing.T) {
-	base := t.TempDir()
+	// D12: shortTempDir, not t.TempDir() — the socket dir Serve prepares is
+	// now the one it will actually BIND, so a runtime dir too long for
+	// sun_path would be skipped by the ladder and this test would silently
+	// stop exercising the refusal on macOS. The symlink must be the reason
+	// Serve fails, not the length.
+	base := shortTempDir(t)
 	if err := os.Mkdir(filepath.Join(base, "elsewhere"), 0o700); err != nil {
 		t.Fatal(err)
 	}

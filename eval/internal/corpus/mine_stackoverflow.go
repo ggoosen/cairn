@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Stack Overflow duplicate mining (EVAL-PLAN §5-E3).
+// Stack Overflow duplicate mining (BUILD-PLAN §5-E3).
 //
 // A question closed as a duplicate carries the same kind of free human
 // judgment as a GitHub duplicate link, made by people with no stake here.

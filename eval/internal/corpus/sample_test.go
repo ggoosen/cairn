@@ -16,7 +16,7 @@ import (
 //
 // WHAT THE SAMPLE IS FOR: exercising the format, the checksum verification
 // and the harness loader offline. It is NOT evidence — six documents and six
-// questions written by this project is exactly the circularity EVAL-PLAN
+// questions written by this project is exactly the circularity BUILD-PLAN
 // §2.2 exists to break — and it declares itself non-independent so that a
 // future measurement pass can refuse it for anything but plumbing.
 
@@ -89,7 +89,7 @@ func sampleManifest(notes []string) Manifest {
 }
 
 var sampleNotes = []string{
-	"NOT EVIDENCE. Six documents and six questions written by the project author: exactly the circularity EVAL-PLAN §2.2 exists to break.",
+	"NOT EVIDENCE. Six documents and six questions written by the project author: exactly the circularity BUILD-PLAN §3.2 exists to break.",
 	"Its only job is to give the corpus format, the checksum verification and the harness loader something to chew on offline.",
 	"Real corpora are MINED (github-duplicate-issues, stackoverflow-duplicates, doc-cross-references) and are acquired by the operator, not committed here.",
 }

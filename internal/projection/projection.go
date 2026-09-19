@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/mattn/go-sqlite3"
@@ -43,6 +44,8 @@ type Projection struct {
 	path       string
 	bodyFetch  BodyFetch
 	parkLogger func(ParkedEvent) // FIX-F8.3: invoked AT park time (loudness)
+	vec        vecState          // D1: sqlite-vec capability + derived-index state
+	unions     unionCounters     // D14: companion-index queries actually run
 }
 
 // SetParkLogger registers the loud-park callback (RULINGS.md R4.3): the
@@ -87,6 +90,15 @@ func Open(path string, bodyFetch BodyFetch) (*Projection, error) {
 			db.Close()
 			return nil, fmt.Errorf("%w: found %s, want %d", ErrSchemaVersion, v, config.ProjectionSchemaVersion)
 		}
+	}
+	// D1: feature-probe sqlite-vec. A failure is NOT an error — it means this
+	// machine answers vector queries by brute-force cosine, which rulings §7
+	// sanctions. Then reconcile the derived index with the vectors table,
+	// because the capability can differ from the run that wrote this file.
+	p.vecProbe(os.Getenv(EnvVectorIndex) == "off")
+	if err := p.vecSync(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("reconciling the vector index: %w", err)
 	}
 	return p, nil
 }
@@ -499,6 +511,40 @@ func (p *Projection) applyPayload(tx *sql.Tx, env *event.Envelope) error {
 		}
 		// projection FLAG — history preserved, FTS rows untouched (rulings §6)
 		_, err := tx.Exec(`UPDATE messages SET retracted=1, retracted_event_id=? WHERE message_id=?`, env.EventID, pl.MessageID)
+		return err
+
+	case "message.supersede":
+		// D16: the superseded fact gets an END DATE, and nothing else moves.
+		// No body is rewritten, no row is deleted, no flag hides the message —
+		// it stays searchable, fetchable and attributed, and ranking demotes it
+		// (the SUP term) because a live successor exists. That is the entire
+		// mechanism: an assertion, with a date, over immutable content.
+		var pl struct {
+			MessageID             string `json:"message_id"`
+			SupersededByMessageID string `json:"superseded_by_message_id"`
+			Reason                string `json:"reason"`
+		}
+		if err := json.Unmarshal(env.Payload, &pl); err != nil {
+			return err
+		}
+		if pl.MessageID == "" || pl.SupersededByMessageID == "" {
+			// TERMINAL: a malformed payload no later event can heal.
+			return fmt.Errorf("message.supersede: both message_id and superseded_by_message_id are required")
+		}
+		if pl.MessageID == pl.SupersededByMessageID {
+			// TERMINAL, and deliberately not silently dropped: a message that
+			// supersedes itself would demote itself forever with no successor
+			// to rank ahead of it. Rejected at the write boundary too; a peer
+			// that writes one anyway parks and doctor goes red.
+			return fmt.Errorf("message.supersede: a message cannot supersede itself (%s)", pl.MessageID)
+		}
+		// The FOREIGN KEYs do the dependency work (R49): a supersession that
+		// replicated ahead of either message parks RETRYABLE and self-heals.
+		_, err := tx.Exec(`INSERT OR REPLACE INTO supersessions
+				(event_id, message_id, superseded_by_message_id, reason, actor_principal_id, valid_until)
+				VALUES (?,?,?,?,?,?)`,
+			env.EventID, pl.MessageID, pl.SupersededByMessageID, nullable(pl.Reason),
+			nullable(env.ActorPrincipalID), env.WallTime)
 		return err
 
 	case "topic.create":

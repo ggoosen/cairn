@@ -11,7 +11,7 @@ import (
 	"github.com/ggoosen/cairn/eval/internal/tunables"
 )
 
-// GitHub duplicate-issue mining (EVAL-PLAN §5-E3).
+// GitHub duplicate-issue mining (BUILD-PLAN §5-E3).
 //
 // WHY THIS SOURCE. When a maintainer marks issue #B a duplicate of #A they
 // have made a relevance judgment: "the answer to this question is over

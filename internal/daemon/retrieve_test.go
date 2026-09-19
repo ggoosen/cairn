@@ -125,31 +125,17 @@ func inTop(results []daemon.RankedResult, keyToID map[string]string, relevant []
 	return false
 }
 
-// M6 acceptance: budget compliance — the returned payload NEVER exceeds
-// budget_chars (metadata, prefixes, truncation markers included), for search
-// and digest, across a sweep of budgets; mandatory overflow is reported.
+// M6 acceptance, extended by D4: budget compliance — the returned payload
+// NEVER exceeds the budget (metadata, prefixes, truncation markers included)
+// for EVERY renderer — search, digest and thread — across a sweep of budgets
+// and in BOTH modes, chars and tokens. The mode is a table dimension rather
+// than a second test, because the property is one property.
 func TestBudgetComplianceProperty(t *testing.T) {
 	d, keyToID := buildCorpusDaemon(t)
 
 	budgets := []int{1, 10, 40, 97, 250, 800, 2500, 10000, 1 << 20}
-	for _, b := range budgets {
-		out, err := d.Search(daemon.SearchOptions{Query: "authentication token", K: 25, BudgetChars: b})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := rank.BudgetChars(out.Payload); got > b {
-			t.Fatalf("search payload %d chars exceeds budget %d", got, b)
-		}
-		dout, err := d.Digest(daemon.DigestOptions{AgentView: "operator", BudgetChars: b})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := rank.BudgetChars(dout.Payload); got > b {
-			t.Fatalf("digest payload %d chars exceeds budget %d", got, b)
-		}
-	}
 
-	// RETR-D4: thread payloads obey the same hard budget
+	// RETR-D4: thread payloads obey the same hard budget as the others
 	root, err := d.Publish(daemon.PublishRequest{Actor: "operator", Body: "budget thread root"})
 	if err != nil {
 		t.Fatal(err)
@@ -162,14 +148,76 @@ func TestBudgetComplianceProperty(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, b := range budgets {
-		// the thread id IS the root message's id
-		tout, terr := d.Thread(root.MessageID, b, "")
-		if terr != nil {
-			t.Fatal(terr)
+
+	// one budgeted call per renderer, in one mode, returning payload+report
+	type renderer struct {
+		name string
+		run  func(chars, tokens int) (string, rank.Report, error)
+	}
+	renderers := []renderer{
+		{"search", func(chars, tokens int) (string, rank.Report, error) {
+			out, err := d.Search(daemon.SearchOptions{Query: "authentication token", K: 25,
+				BudgetChars: chars, BudgetTokens: tokens})
+			if err != nil {
+				return "", rank.Report{}, err
+			}
+			return out.Payload, out.Budget, nil
+		}},
+		{"digest", func(chars, tokens int) (string, rank.Report, error) {
+			out, err := d.Digest(daemon.DigestOptions{AgentView: "operator",
+				BudgetChars: chars, BudgetTokens: tokens})
+			if err != nil {
+				return "", rank.Report{}, err
+			}
+			return out.Payload, out.Budget, nil
+		}},
+		{"thread", func(chars, tokens int) (string, rank.Report, error) {
+			out, err := d.Thread(daemon.ThreadOptions{ThreadID: root.MessageID,
+				BudgetChars: chars, BudgetTokens: tokens})
+			if err != nil {
+				return "", rank.Report{}, err
+			}
+			return out.Payload, out.Budget, nil
+		}},
+	}
+
+	for _, mode := range []string{rank.BudgetModeChars, rank.BudgetModeTokens} {
+		counter, cerr := rank.CounterFor(mode)
+		if cerr != nil {
+			t.Fatal(cerr)
 		}
-		if got := rank.BudgetChars(tout.Payload); got > b {
-			t.Fatalf("thread payload %d chars exceeds budget %d", got, b)
+		for _, r := range renderers {
+			for _, b := range budgets {
+				chars, tokens := b, 0
+				if mode == rank.BudgetModeTokens {
+					chars, tokens = 0, b
+				}
+				payload, rep, err := r.run(chars, tokens)
+				if err != nil {
+					t.Fatalf("%s %s budget %d: %v", r.name, mode, b, err)
+				}
+				if got := counter.Count(payload); got > b {
+					t.Fatalf("%s payload %d %s exceeds budget %d", r.name, got, mode, b)
+				}
+				// D4: the response must NAME the tokenizer and the mode, and
+				// the reported cost must be the real one.
+				if rep.Mode != mode {
+					t.Fatalf("%s reported mode %q, want %q", r.name, rep.Mode, mode)
+				}
+				if rep.Tokenizer != counter.Name() {
+					t.Fatalf("%s reported tokenizer %q, want %q", r.name, rep.Tokenizer, counter.Name())
+				}
+				if rep.Limit != b || rep.Used != counter.Count(payload) {
+					t.Fatalf("%s report %+v does not describe its own payload", r.name, rep)
+				}
+				if (mode == rank.BudgetModeTokens) != rep.Approximate {
+					t.Fatalf("%s: approximate flag must track the approximate tokenizer (%+v)", r.name, rep)
+				}
+			}
+			// D4: both budgets at once is REFUSED, never resolved silently.
+			if _, _, err := r.run(500, 500); err == nil {
+				t.Fatalf("%s accepted budget_chars AND budget_tokens together", r.name)
+			}
 		}
 	}
 

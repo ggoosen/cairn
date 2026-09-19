@@ -97,7 +97,7 @@ func plumbingFixture() fixtureSet {
 // It REFUSES an independent corpus, on purpose. Pushing mined human-labelled
 // ground truth through the backends and recording per-query outcomes is the
 // first half of a measurement, and measurement does not begin until the kill
-// criteria in eval/claims.yaml carry an operator signoff (EVAL-PLAN §5-E1).
+// criteria in eval/claims.yaml carry an operator signoff (BUILD-PLAN §5-E1).
 // The guard is here rather than in a comment because a flag that quietly did
 // the thing would be used.
 func loadPlumbingCorpus(dir string) (fixtureSet, error) {

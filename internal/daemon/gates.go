@@ -161,6 +161,14 @@ func DeepDoctor(fsys fsx.FS, portableDir, dbPath string, now time.Time) (problem
 	forkProblems, forkInfos := ForkDoctor(portableDir)
 	problems = append(problems, forkProblems...)
 	infos = append(infos, forkInfos...)
+
+	// 7. origin liveness (D2): a peer whose own append chain moved BACKWARDS
+	// restored from a stale backup — acknowledged events are missing on the
+	// origin device itself. A PROBLEM until the origin is back at its
+	// watermark; informational once it is.
+	livProblems, livInfos := LivenessDoctor(fsys, portableDir)
+	problems = append(problems, livProblems...)
+	infos = append(infos, livInfos...)
 	return problems, infos, nil
 }
 

@@ -6,7 +6,7 @@ package backend
 //
 // IT IS NOT A CORPUS AND MUST NEVER BE USED AS ONE. It is tiny, it was
 // written by this project, and its "relevance judgments" are its author's —
-// exactly the circularity EVAL-PLAN §2.2 and §5-E3 exist to break. Any
+// exactly the circularity BUILD-PLAN §3.2 and §5-E3 exist to break. Any
 // number computed over it describes the plumbing, not Cairn. Runs against it
 // are recorded with Kind=plumbing-verification for that reason.
 func PlumbingFixture() []Item {

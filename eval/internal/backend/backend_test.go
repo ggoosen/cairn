@@ -129,7 +129,7 @@ func TestStubsFailLoudly(t *testing.T) {
 }
 
 func TestEveryPlanBaselineIsRegistered(t *testing.T) {
-	// EVAL-PLAN §5-E4 names six conditions. A baseline that quietly went
+	// BUILD-PLAN §5-E4 names six conditions. A baseline that quietly went
 	// missing would narrow the comparison without anyone noticing.
 	want := map[ID]bool{B0NoMemory: false, B1GrepTranscript: false, B2FlatNotes: false,
 		B3VectorRAG: false, B4FullContext: false, B5Cairn: false}

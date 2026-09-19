@@ -1,7 +1,7 @@
 // Package boundary asserts the property the whole harness rests on: the
 // evaluation code CANNOT reach into the daemon's internals.
 //
-// EVAL-PLAN §3 chose a separate Go module for exactly this reason — Go's
+// BUILD-PLAN §3.3 chose a separate Go module for exactly this reason — Go's
 // internal/ visibility rule turns "black box" from a convention someone has
 // to remember into something the compiler refuses to build. A harness that
 // could read internal state could measure implementation details, and could
@@ -44,7 +44,7 @@ func TestHarnessImportsNoDaemonInternals(t *testing.T) {
 	}
 	for _, line := range strings.Split(string(blob), "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), daemonInternalPrefix) {
-			t.Fatalf("harness depends on %s — black-box access is the point (EVAL-PLAN §3)", line)
+			t.Fatalf("harness depends on %s — black-box access is the point (BUILD-PLAN §3.3)", line)
 		}
 	}
 }

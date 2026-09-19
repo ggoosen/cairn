@@ -55,6 +55,13 @@ const (
 	// CLAUDE.md tell sessions to use, for the same reason.
 	DefaultBudgetChars = 1500
 
+	// AdversarialBudgetChars is the budget E6 asks its surfaces for. It is
+	// deliberately large: a tight budget would drop planted payloads before
+	// they reached the agent, and a surface that never carried an injection
+	// would report clean containment it had not actually demonstrated. E6 is
+	// measuring what happens when content DOES arrive.
+	AdversarialBudgetChars = 40000
+
 	// GrepContextChars bounds how much text the file-backed baselines (B1,
 	// B2) return around a match. It models "the agent reads the matching
 	// chunk", not "the agent reads the whole file"; it is a MODELLING
@@ -83,7 +90,7 @@ const (
 	MinedBodyChars = 500
 )
 
-// Split assignment (EVAL-PLAN §8: no tuning on the evaluation set).
+// Split assignment (BUILD-PLAN §3.7: no tuning on the evaluation set).
 const (
 	// SplitSalt fixes the dev/holdout partition. It is a CONSTANT and must
 	// never be changed to "rebalance" a corpus: a split that can be re-rolled

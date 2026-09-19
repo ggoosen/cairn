@@ -119,7 +119,7 @@ have been shipped here, and it would have been the part standing between the
 real world and every number downstream.
 
 **It keeps the harness module network-free.** The T0 tier is offline,
-deterministic and free (EVAL-PLAN §4). With no HTTP client anywhere in
+deterministic and free (BUILD-PLAN §3.3). With no HTTP client anywhere in
 `eval/`, that stops being a habit and becomes structural.
 
 **`gh` and `curl` are better at it.** Auth, pagination, rate limits and

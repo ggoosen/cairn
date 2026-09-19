@@ -8,7 +8,29 @@ GOTAGS := -tags sqlite_fts5
 # told "this volume is encrypted" by its environment.
 GOTESTTAGS := -tags sqlite_fts5,cairn_testhooks
 
-.PHONY: build test test-short test-race vet verify all install deploy fuzz eval eval-vet eval-test
+# D1: `cairn_novec` compiles sqlite-vec OUT, so the brute-force fallback that
+# rulings §7 requires is exercised on a binary where the extension genuinely
+# does not exist — not merely switched off. It is a TEST configuration, never
+# a release one; `build` and `deploy` do not use it.
+GONOVECTAGS := -tags sqlite_fts5,cairn_testhooks,cairn_novec
+
+# D13: a release artifact must be able to name the tag it was released under.
+# `cairn --version` otherwise derives everything from Go build info, which
+# knows the commit but has never heard of the tag — so a downloaded binary
+# could not say which release it was. Set CAIRN_VERSION and the tag is linked
+# in; leave it unset (every development build, every test build) and the
+# binary reports commit + dirty state and claims no tag at all.
+#
+#   make build CAIRN_VERSION=v0.3.0
+#
+# GOLDFLAGS is exported so the D13 test can link a stamped binary using the
+# SAME string this file produces, rather than a copy of it that can drift.
+CAIRN_VERSION ?=
+ifneq ($(strip $(CAIRN_VERSION)),)
+GOLDFLAGS := -ldflags=-X=main.releaseVersion=$(CAIRN_VERSION)
+endif
+
+.PHONY: build test test-short test-race test-novec vet verify all install deploy fuzz eval eval-vet eval-test print-ldflags
 
 all: vet test build
 
@@ -56,16 +78,30 @@ verify:
 	@ERR=$$(mktemp); 	if go build ./... 2>"$$ERR"; then 		echo "FAIL: plain 'go build ./...' unexpectedly succeeded"; rm -f "$$ERR"; exit 1; 	elif grep -q "sqlite_fts5" "$$ERR"; then 		echo "OK: untagged build fails with the instructive message"; rm -f "$$ERR"; 	else 		echo "FAIL: untagged build failed WITHOUT the instructive message:"; cat "$$ERR"; rm -f "$$ERR"; exit 1; 	fi
 	@echo "== running the tagged suite =="
 	$(MAKE) vet test
+	@echo "== running the suite with sqlite-vec compiled OUT (D1 fallback) =="
+	$(MAKE) test-novec
 
 build:
 	go build $(GOTAGS) ./...
-	go build $(GOTAGS) -o bin/cairn ./cmd/cairn
+	go build $(GOTAGS) $(GOLDFLAGS) -o bin/cairn ./cmd/cairn
+
+# The exact linker flags `build` would use for a given CAIRN_VERSION. The D13
+# test reads this instead of hard-coding the flag, so a rename of the stamped
+# symbol cannot leave the test passing against a string nothing else uses.
+print-ldflags:
+	@printf '%s' '$(GOLDFLAGS)'
 
 test:
 	go test $(GOTESTTAGS) ./...
 
 test-short:
 	go test $(GOTESTTAGS) -short ./...
+
+# D1: the same suite with the vector extension absent. The daemon must start
+# and serve from brute force on a machine that has no sqlite-vec, so that
+# configuration is part of the green bar rather than a claim.
+test-novec:
+	go test $(GONOVECTAGS) ./...
 
 # The embedder, enricher goroutine, IPC connections and sync sweeps share a
 # daemon: the race detector is part of the green bar, not an extra.
@@ -82,7 +118,7 @@ fuzz:
 vet:
 	go vet $(GOTESTTAGS) ./...
 
-# The evaluation harness (build/EVAL-PLAN.md) is a SEPARATE module, so the
+# The evaluation harness (build/BUILD-PLAN.md §3) is a SEPARATE module, so the
 # main targets above do not see it — `./...` does not cross a module
 # boundary. Its own targets live here, and are deliberately NOT wired into
 # `test`, `vet` or `verify`: the main suite gates every commit and its

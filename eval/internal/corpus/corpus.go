@@ -1,6 +1,6 @@
 // Package corpus is the versioned, checksummed corpus format and its loader.
 //
-// EVAL-PLAN §5-E3 exists to break the circularity described in §2.2: the
+// BUILD-PLAN §5-E3 exists to break the circularity described in §2.2: the
 // existing golden corpus was written, queried and judged by the same person
 // whose project it evaluates, so it validates configuration, not capability.
 // The fix is to MINE ground truth that already exists — a maintainer marking
@@ -43,7 +43,7 @@ const (
 	QueriesFile  = "queries.jsonl"
 )
 
-// Split names. EVAL-PLAN §8 forbids tuning on the evaluation set: weights are
+// Split names. BUILD-PLAN §3.7 forbids tuning on the evaluation set: weights are
 // calibrated on dev only, and holdout answers the claim.
 const (
 	SplitDev     = "dev"

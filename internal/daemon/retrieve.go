@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/ggoosen/cairn/internal/config"
 	"github.com/ggoosen/cairn/internal/embed"
@@ -18,10 +19,20 @@ import (
 
 // SearchOptions is one search invocation (budget over the COMPLETE payload).
 type SearchOptions struct {
-	Query            string `json:"query"`
-	K                int    `json:"k,omitempty"`
-	BudgetChars      int    `json:"budget_chars,omitempty"`
-	IncludeRetracted bool   `json:"include_retracted,omitempty"`
+	Query string `json:"query"`
+	K     int    `json:"k,omitempty"`
+	// D4: exactly one budget, never both. A request carrying both is
+	// REFUSED — resolving it by precedence would silently ignore one of the
+	// two numbers the caller wrote.
+	BudgetChars      int  `json:"budget_chars,omitempty"`
+	BudgetTokens     int  `json:"budget_tokens,omitempty"`
+	IncludeRetracted bool `json:"include_retracted,omitempty"`
+
+	// BudgetCeilingChars (D4 × D3) is the session's max_budget_chars cap,
+	// enforced as a SECOND hard limit beside the caller's budget rather than
+	// converted into it. `json:"-"`: dispatch sets it from the capability
+	// gate, never a client.
+	BudgetCeilingChars int `json:"-"`
 
 	// RETR-D3 scope (spec §7.1 search(query, scope, k)): hard pre-filters.
 	// Topics match by NAME (existing topics only — typos refuse, they do
@@ -39,6 +50,13 @@ type SearchOptions struct {
 	// Principal hierarchy (N2). Set by dispatch from the capability gate —
 	// any client-supplied value is overwritten there.
 	Principal string `json:"principal,omitempty"`
+
+	// Confine (D3) is the session's resolved topic grant, set ONLY by the
+	// dispatch capability gate — `json:"-"` so a client cannot supply it. nil
+	// means unconfined; an EMPTY non-nil slice means the grant matches no
+	// existing topic, which admits nothing (an absent filter would admit
+	// everything, which is the bug this distinction exists to prevent).
+	Confine []string `json:"-"`
 }
 
 // SearchOutput carries the ranked results plus the budget-compliant payload.
@@ -58,6 +76,16 @@ type SearchOutput struct {
 	// full peer — the peer's address. The results are that peer's complete view,
 	// not this node's local window.
 	RemoteSource string `json:"remote_source,omitempty"`
+	// Budget (D4) names the mode, the limit, the TOKENIZER that counted it and
+	// what the payload actually cost — a budget is only meaningful against a
+	// named tokenizer, so every budgeted response carries one.
+	Budget rank.Report `json:"budget"`
+	// LexicalQuery (D11) reports which query terms the lexical arm actually
+	// searched. Matching is disjunctive, so the answer to "why did this come
+	// back?" is no longer "it contained every word you typed"; this says what
+	// was searched and what the index dropped as carrying no ordering
+	// information, without an agent having to reason about bm25.
+	LexicalQuery *projection.LexicalPlan `json:"lexical_query,omitempty"`
 }
 
 // RankedResult is one scored hit. RETR-D1: sender/created/topics/snippet
@@ -77,34 +105,99 @@ type RankedResult struct {
 	CreatedAt  string   `json:"created_at,omitempty"`
 	Topics     []string `json:"topics,omitempty"`
 	Snippet    string   `json:"snippet,omitempty"` // first SearchSnippetChars scalars of the body
+	// D16 staleness signal, PROFILE-INDEPENDENT: a live message has superseded
+	// this one, and this is the end date of the fact it carries. Present on
+	// every profile — the demotion is opt-in, the WARNING is not — so an agent
+	// that is handed a superseded fact is told so, and E9 can tell "returned
+	// the old one, marked" from "returned both undifferentiated". Empty on a
+	// current message, which keeps unsuperseded output byte-identical.
+	SupersededBy string `json:"superseded_by,omitempty"`
+	SupersededAt string `json:"superseded_at,omitempty"`
 }
 
 // componentsRecord is the stored why_ranked arithmetic (decimal strings).
 type componentsRecord struct {
-	R       string `json:"R"`
-	S       string `json:"S,omitempty"` // P2 salience
-	F       string `json:"F"`
-	Peff    string `json:"P_eff"`
-	I       string `json:"I,omitempty"` // P2 operator intent
-	N       string `json:"N,omitempty"` // P2 novelty
+	R    string `json:"R"`
+	S    string `json:"S,omitempty"` // P2 salience
+	F    string `json:"F"`
+	Peff string `json:"P_eff"`
+	I    string `json:"I,omitempty"` // P2 operator intent
+	N    string `json:"N,omitempty"` // P2 novelty
+	// S8 penalties (P2 only). DupKey/DupAhead and ThreadKey/SatAhead are the
+	// EVIDENCE for the feature values: an auditor recomputes DUP and SAT from
+	// them without re-running retrieval, which is what makes a penalty part of
+	// the published arithmetic rather than an unexplained subtraction.
+	Dup       string `json:"DUP,omitempty"`
+	Sat       string `json:"SAT,omitempty"`
+	DupAhead  int    `json:"dup_ahead,omitempty"`
+	SatAhead  int    `json:"sat_ahead,omitempty"`
+	DupKey    string `json:"dup_key,omitempty"`
+	ThreadKey string `json:"thread_key,omitempty"`
+	// D16 supersession demotion. Sup/Weights.Sup are the SCORED term and appear
+	// only under a profile that scores it; SupBy/SupAt are the EVIDENCE — which
+	// live message ended this fact, and the end date — and are recorded under
+	// EVERY profile, because an explanation that read "not superseded" for a
+	// superseded message would be false about the item even where it is true
+	// about the score. Both omitted entirely when nothing supersedes the
+	// message, so an unsuperseded corpus stores byte-identical records.
+	Sup     string `json:"SUP,omitempty"`
+	SupBy   string `json:"superseded_by,omitempty"`
+	SupAt   string `json:"superseded_at,omitempty"`
 	RRF     string `json:"RRF"`
 	LexRank int    `json:"lex_rank"`
 	VecRank int    `json:"vec_rank"`
 	Score   string `json:"score"`
 	Weights struct {
-		R string `json:"R"`
-		S string `json:"S,omitempty"`
-		F string `json:"F"`
-		P string `json:"P"`
-		I string `json:"I,omitempty"`
-		N string `json:"N,omitempty"`
+		R   string `json:"R"`
+		S   string `json:"S,omitempty"`
+		F   string `json:"F"`
+		P   string `json:"P"`
+		I   string `json:"I,omitempty"`
+		N   string `json:"N,omitempty"`
+		Dup string `json:"DUP,omitempty"`
+		Sat string `json:"SAT,omitempty"`
+		Sup string `json:"SUP,omitempty"`
 	} `json:"weights"`
 	CreatedAt string `json:"created_at"`
 	Mandatory string `json:"mandatory,omitempty"`
 }
 
-// fillP2Components adds the S/I/N component + weight strings when the profile is
-// P2 (kept out of the P0 record so existing explanations are byte-identical).
+// penaltyProduct is the recorded S8 penalty contribution to the score: the two
+// products summed in scorer order. Zero on a P0 record (no penalty fields, and
+// an absent decimal string parses to 0).
+func (rec componentsRecord) penaltyProduct() float64 {
+	return float64(rank.ParseDec(rec.Dup)*rank.ParseDec(rec.Weights.Dup)) +
+		float64(rank.ParseDec(rec.Sat)*rank.ParseDec(rec.Weights.Sat)) +
+		float64(rank.ParseDec(rec.Sup)*rank.ParseDec(rec.Weights.Sup))
+}
+
+// buildExplanationRecord assembles the stored why_ranked record for one scored
+// result. It exists as ONE function because there are TWO retrieval surfaces —
+// search and digest — that each persist an explanation, and until D16 they each
+// assembled it inline from the same three helpers. The digest's copy was one
+// call short: it filled the P2 terms but not the supersession EVIDENCE, so a
+// digest trace for a superseded message printed "SUP 1 × -0.15 = -0.15   (not
+// superseded)" — arithmetic that reconciled perfectly while the annotation
+// beside it stated the opposite of the truth. The live external verifier caught
+// it; a second call site would let the next term do the same thing. So the
+// assembly is one function now and the surfaces call it.
+func buildExplanationRecord(s rank.Scored, profile rank.Profile, createdAt string) componentsRecord {
+	var rec componentsRecord
+	rec.R, rec.F, rec.Peff, rec.RRF = rank.Dec(s.R), rank.Dec(s.F), rank.Dec(s.Peff), rank.Dec(s.RRF)
+	rec.LexRank, rec.VecRank = s.Components.LexRank, s.Components.VecRank
+	rec.Score = rank.Dec(s.Score)
+	wR, wF, wP := profileWeights(profile)
+	rec.Weights.R, rec.Weights.F, rec.Weights.P = rank.Dec(wR), rank.Dec(wF), rank.Dec(wP)
+	fillP2Components(&rec, s, profile)
+	fillSupersessionEvidence(&rec, s)
+	rec.CreatedAt = createdAt
+	rec.Mandatory = s.Mandatory
+	return rec
+}
+
+// fillP2Components adds the S/I/N and S8 penalty component + weight strings when
+// the profile is P2 (kept out of the P0 record so existing explanations are
+// byte-identical — P0 has no S/I/N terms and, per §9.1, no penalties either).
 func fillP2Components(rec *componentsRecord, s rank.Scored, profile rank.Profile) {
 	if !profile.IsP2() {
 		return
@@ -112,6 +205,21 @@ func fillP2Components(rec *componentsRecord, s rank.Scored, profile rank.Profile
 	w := profile.Weights()
 	rec.S, rec.I, rec.N = rank.Dec(s.S), rank.Dec(s.I), rank.Dec(s.N)
 	rec.Weights.S, rec.Weights.I, rec.Weights.N = rank.Dec(w.S), rank.Dec(w.I), rank.Dec(w.N)
+	rec.Dup, rec.Sat = rank.Dec(s.Dup), rank.Dec(s.Sat)
+	rec.Weights.Dup, rec.Weights.Sat = rank.Dec(w.Dup), rank.Dec(w.Sat)
+	rec.DupAhead, rec.SatAhead = s.DupAhead, s.SatAhead
+	rec.DupKey, rec.ThreadKey = s.DupKey, s.ThreadKey
+	rec.Sup, rec.Weights.Sup = rank.Dec(s.Sup), rank.Dec(w.Sup)
+}
+
+// fillSupersessionEvidence records WHICH live message ended this fact and WHEN,
+// under every profile. Unlike the S8 penalty keys this is not merely an input
+// to a score an auditor recomputes — it is the staleness signal itself, and E9
+// reads it to tell "returned the superseded fact, marked as superseded" from
+// "returned both undifferentiated". Absent fields on an unsuperseded message
+// keep the stored record byte-identical to a pre-D16 one.
+func fillSupersessionEvidence(rec *componentsRecord, s rank.Scored) {
+	rec.SupBy, rec.SupAt = s.SupBy, s.SupAt
 }
 
 // Search: FTS top-100 + vector top-100 → RRF k=60 → percentile → P0 search
@@ -121,13 +229,28 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 	if opts.K <= 0 {
 		opts.K = 10
 	}
-	// RETR-D3: resolve the scope FIRST (hard filters before ranking, like
-	// digest topic filters); nil scope = unfiltered.
-	scope, err := d.proj.ScopeMessageIDs(opts.Topics, opts.Sender, opts.ThreadID)
+	// D4: exactly one budget. Refused BEFORE any work, so a malformed
+	// request costs nothing and reads the same on every surface.
+	spec, err := rank.NewSpec(opts.BudgetChars, opts.BudgetTokens)
 	if err != nil {
 		return nil, fmt.Errorf("rejected before ack: %w", err)
 	}
-	lexIDs, err := d.proj.LexicalTopK(opts.Query, config.FusionCandidatesFTS, opts.IncludeRetracted)
+	spec.Ceiling = opts.BudgetCeilingChars
+	// RETR-D3: resolve the scope FIRST (hard filters before ranking, like
+	// digest topic filters); nil scope = unfiltered.
+	scope, serr := d.proj.ScopeMessageIDs(opts.Topics, opts.Sender, opts.ThreadID)
+	if serr != nil {
+		return nil, fmt.Errorf("rejected before ack: %w", serr)
+	}
+	// D3: the capability grant is an additional HARD filter, intersected with
+	// whatever the caller asked for. It runs through the same resolver, so
+	// there is one notion of "in this topic" in the system.
+	confined, err := d.confineScope(opts.Confine)
+	if err != nil {
+		return nil, fmt.Errorf("rejected before ack: %w", err)
+	}
+	scope = intersectScope(scope, confined)
+	lexIDs, lexPlan, err := d.proj.LexicalTopKPlan(opts.Query, config.FusionCandidatesFTS, opts.IncludeRetracted)
 	if err != nil {
 		return nil, err
 	}
@@ -150,18 +273,26 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 	// lexical-only, shedding the vector query's cost even when an embedder is
 	// present. Inert at a healthy level.
 	if e := d.emb(); e != nil && !d.DegradationLevel().LexicalOnlyForced() {
-		if qvecs, err := e.Embed([]string{opts.Query}); err == nil {
-			heads, herr := d.proj.HeadVectors(e.ModelID(), opts.IncludeRetracted)
-			if herr == nil && len(heads) > 0 {
-				if scope != nil {
-					for id := range heads {
-						if !scope[id] {
-							delete(heads, id)
-						}
-					}
+		qvecs, err := e.Embed([]string{opts.Query})
+		d.noteEmbed(err) // D10: so `cairn status` can name a failing embedder
+		if err == nil {
+			// D1: the SCOPE goes into the query, not around it. Whether the
+			// candidates come from the vec0 index or the brute-force oracle,
+			// the top-K is computed over the permitted set — a confined
+			// session cannot see a neighbour it has no grant for, and a
+			// --topic search cannot be diluted by out-of-topic vectors.
+			ids, verr := d.proj.VectorTopK(e.ModelID(), qvecs[0], config.FusionCandidatesVector,
+				opts.IncludeRetracted, scope)
+			if verr == nil {
+				vecIDs = ids
+				// "full" means the semantic path RAN over an embedded corpus,
+				// not that the scope left anything in it — a narrow scope that
+				// matches nothing is still a hybrid retrieval.
+				if len(ids) > 0 {
+					mode = "full"
+				} else if has, herr := d.proj.HasVectors(e.ModelID()); herr == nil && has {
+					mode = "full"
 				}
-				vecIDs = topKCosine(heads, qvecs[0], config.FusionCandidatesVector)
-				mode = "full"
 			}
 		}
 	}
@@ -206,6 +337,15 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 		c.CreatedAt = parseWall(row.CreatedAt)
 		c.Priority = row.Priority
 		c.Suspended = row.PinActive || row.PriorityConf
+		// S8 penalty keys: set unconditionally (they cost nothing and are read
+		// only by a profile that has penalty weights), so a profile switch never
+		// leaves them stale.
+		c.DupKey, c.ThreadKey = row.BodyHash, row.ThreadKey
+		// D16: the live supersession, likewise unconditional — the EVIDENCE is
+		// carried under every profile (a P0 trace must still be able to say
+		// what ended this fact), and only the profile's weight decides whether
+		// it scores.
+		c.SupersededBy, c.SupersededAt = row.SupersededBy, row.SupersededAt
 		if profile.IsP2() {
 			c.Salience = p2[id].Salience
 			c.Novelty = p2[id].Novelty
@@ -225,11 +365,12 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 	} else if len(scored) > opts.K {
 		scored = scored[:opts.K]
 	}
-	out, err := d.finishRetrieval(scored, rows, profile, mode, opts.BudgetChars)
+	out, err := d.finishRetrieval(scored, rows, profile, mode, spec)
 	if err != nil {
 		return nil, err
 	}
-	d.recordInteraction("search", out.InteractionID, opts.Query, opts.BudgetChars, out, opts.TaskID, opts.AgentSurface, opts.AgentInstanceID, opts.Principal)
+	out.LexicalQuery = &lexPlan
+	d.recordInteraction("search", out.InteractionID, opts.Query, out.Budget, out, opts.TaskID, opts.AgentSurface, opts.AgentInstanceID, opts.Principal)
 	// P3-3d: on a thin node with remote-query enabled, prefer a full peer's
 	// complete result over our partial local one (best-effort; keeps local on
 	// failure). Last, so no lock is held across the network call.
@@ -241,7 +382,7 @@ func (d *Daemon) Search(opts SearchOptions) (*SearchOutput, error) {
 
 // recordInteraction logs telemetry (local-only; never an event). Missing
 // attribution is daemon-inferred and flagged (rulings §10).
-func (d *Daemon) recordInteraction(kind, interactionID, query string, budget int, out *SearchOutput, taskID, surface, instance, principal string) {
+func (d *Daemon) recordInteraction(kind, interactionID, query string, budget rank.Report, out *SearchOutput, taskID, surface, instance, principal string) {
 	if d.tel == nil {
 		return
 	}
@@ -264,7 +405,12 @@ func (d *Daemon) recordInteraction(kind, interactionID, query string, budget int
 	it := telemetry.Interaction{
 		InteractionID: interactionID, Kind: kind,
 		TaskID: taskID, AgentSurface: surface, AgentInstanceID: instance, Principal: principal,
-		Inferred: inferred, Query: query, BudgetRequested: budget,
+		Inferred: inferred, Query: query,
+		// D4: the limit and the payload cost are both recorded in the
+		// budget's OWN unit, so the §11 compliance gate compares like with
+		// like whichever mode the caller used.
+		BudgetRequested: budget.Limit, BudgetMode: budget.Mode,
+		BudgetTokenizer: budget.Tokenizer, PayloadUnits: budget.Used,
 		PayloadChars: rank.BudgetChars(out.Payload), ResultCount: len(out.Results),
 		RetrievalMode: out.RetrievalMode, CreatedAt: d.now(), ResultIDs: ids,
 	}
@@ -310,7 +456,7 @@ func inlineMeta(s string) string {
 // finishRetrieval renders the budget-compliant payload, stores why_ranked
 // inputs, and assembles the output. Budget covers the ENTIRE payload —
 // header, entries, truncation marker (rulings §7).
-func (d *Daemon) finishRetrieval(scored []rank.Scored, rows map[string]projection.RankRow, profile rank.Profile, mode string, budget int) (*SearchOutput, error) {
+func (d *Daemon) finishRetrieval(scored []rank.Scored, rows map[string]projection.RankRow, profile rank.Profile, mode string, spec rank.Spec) (*SearchOutput, error) {
 	interactionID := d.newUUID()
 
 	ids := make([]string, 0, len(scored))
@@ -345,26 +491,29 @@ func (d *Daemon) finishRetrieval(scored []rank.Scored, rows map[string]projectio
 			}
 			topics = strings.Join(names, ",")
 		}
-		return fmt.Sprintf("%d\t%s\t%s\t%s\t%s\t%s\tfrom=%s\tat=%s\ttopics=%s\n",
+		// D16: the staleness marker is appended ONLY when the fact has been
+		// superseded, so a corpus with no supersessions renders byte-identical
+		// payloads and spends no budget on the feature. Both ids are Cairn's
+		// own UUIDs and its own timestamp — never mesh-authored text — so this
+		// cell needs no R53 collapse.
+		sup := ""
+		if s.SupersededBy != "" {
+			sup = fmt.Sprintf("\tsuperseded_by=%s\tsuperseded_at=%s", s.SupersededBy, s.SupersededAt)
+		}
+		return fmt.Sprintf("%d\t%s\t%s\t%s\t%s\t%s\tfrom=%s\tat=%s\ttopics=%s%s\n",
 			i+1, s.MessageID, row.HeadRevisionID, row.BodyHash, rank.Dec(s.Score), m,
-			inlineMeta(mm.Sender), row.CreatedAt, topics) + quoteLines(snippets[s.MessageID])
+			inlineMeta(mm.Sender), row.CreatedAt, topics, sup) + quoteLines(snippets[s.MessageID])
 	}
 	header := fmt.Sprintf("interaction\t%s\tmode\t%s\n", interactionID, mode)
-	included := len(scored)
-	payload := header
-	for i := range scored {
-		payload += render(i)
-	}
-	if budget > 0 {
-		included, payload = rank.TakeWithinBudget(len(scored), budget,
-			rank.BudgetRender{Header: header, Marker: "TRUNCATED\n"}, render)
-	}
+	included, payload := rank.TakeWithinBudget(len(scored), spec.Limits(),
+		rank.BudgetRender{Header: header, Marker: "TRUNCATED\n"}, render)
 
 	out := &SearchOutput{
 		InteractionID: interactionID,
 		RetrievalMode: mode,
 		Payload:       payload,
 		Omitted:       len(scored) - included,
+		Budget:        spec.Report(payload),
 	}
 	if r := d.thinSearchPartialReason(); r != "" {
 		out.Partial, out.PartialReason = true, r
@@ -380,16 +529,9 @@ func (d *Daemon) finishRetrieval(scored []rank.Scored, rows map[string]projectio
 			Rank: i + 1, MessageID: s.MessageID, RevisionID: row.HeadRevisionID,
 			BodyHash: row.BodyHash, TextClass: row.TextClass, Score: s.Score, Mandatory: s.Mandatory,
 			Sender: mm.Sender, CreatedAt: row.CreatedAt, Topics: mm.Topics, Snippet: snippets[s.MessageID],
+			SupersededBy: s.SupBy, SupersededAt: s.SupAt,
 		})
-		var rec componentsRecord
-		rec.R, rec.F, rec.Peff, rec.RRF = rank.Dec(s.R), rank.Dec(s.F), rank.Dec(s.Peff), rank.Dec(s.RRF)
-		rec.LexRank, rec.VecRank = s.Components.LexRank, s.Components.VecRank
-		rec.Score = rank.Dec(s.Score)
-		wR, wF, wP := profileWeights(profile)
-		rec.Weights.R, rec.Weights.F, rec.Weights.P = rank.Dec(wR), rank.Dec(wF), rank.Dec(wP)
-		fillP2Components(&rec, s, profile)
-		rec.CreatedAt = row.CreatedAt
-		rec.Mandatory = s.Mandatory
+		rec := buildExplanationRecord(s, profile, row.CreatedAt)
 		blob, err := json.Marshal(rec)
 		if err != nil {
 			return nil, err
@@ -463,30 +605,10 @@ func applyExplorationQuota(scored []rank.Scored, k int, isNew func(id string) bo
 	return out
 }
 
-func topKCosine(heads map[string][]float32, q []float32, k int) []string {
-	type hit struct {
-		id  string
-		sim float64
-	}
-	hits := make([]hit, 0, len(heads))
-	for id, v := range heads {
-		hits = append(hits, hit{id, embed.Cosine(q, v)})
-	}
-	sort.Slice(hits, func(a, b int) bool {
-		if hits[a].sim != hits[b].sim {
-			return hits[a].sim > hits[b].sim
-		}
-		return hits[a].id < hits[b].id
-	})
-	if len(hits) > k {
-		hits = hits[:k]
-	}
-	out := make([]string, len(hits))
-	for i, h := range hits {
-		out[i] = h.id
-	}
-	return out
-}
+// D1: the in-process cosine scan that used to live here moved into
+// internal/projection (VectorTopKBruteForce), beside the vec0 path it is the
+// oracle for. Both are reached through Projection.VectorTopK, so a caller
+// cannot accidentally pick one.
 
 // --- digest ------------------------------------------------------------------
 
@@ -499,10 +621,22 @@ type ViewConfig struct {
 
 // DigestOptions parameterizes one digest generation.
 type DigestOptions struct {
-	AgentView   string `json:"agent_view"`
-	BudgetChars int    `json:"budget_chars"`
-	TaskID      string `json:"task_id,omitempty"`
-	Principal   string `json:"principal,omitempty"` // dispatch-resolved (N2)
+	AgentView string `json:"agent_view"`
+	// D4: exactly one of BudgetChars / BudgetTokens, and a digest requires
+	// one of them (unlike search, which may be unbudgeted).
+	BudgetChars  int    `json:"budget_chars"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
+	TaskID       string `json:"task_id,omitempty"`
+	Principal    string `json:"principal,omitempty"` // dispatch-resolved (N2)
+	// BudgetCeilingChars (D4 × D3): the session's max_budget_chars cap, a
+	// second hard limit rather than a conversion. Dispatch-set only.
+	BudgetCeilingChars int `json:"-"`
+	// Confine (D3) is the session's resolved topic grant — dispatch-set only
+	// (`json:"-"`). Unlike the view's own hard topic filters it also binds the
+	// MANDATORY items: an explicit recipient or a pin outside the grant would
+	// otherwise walk straight past the confinement, since mandatory items are
+	// deliberately exempt from the view's filters.
+	Confine []string `json:"-"`
 }
 
 // DigestOutput is the generated digest.
@@ -517,6 +651,8 @@ type DigestOutput struct {
 	// recent window only, not the whole corpus.
 	Partial       bool   `json:"partial,omitempty"`
 	PartialReason string `json:"partial_reason,omitempty"`
+	// Budget (D4): mode, limit, tokenizer and the payload's cost in that unit.
+	Budget rank.Report `json:"budget"`
 }
 
 // Digest generates views/<agent>/digest.md: candidates pass the view's hard
@@ -527,8 +663,15 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 	if !validViewName(opts.AgentView) {
 		return nil, fmt.Errorf("invalid agent view %q (plain names only: no separators, no ..)", opts.AgentView)
 	}
-	if opts.BudgetChars <= 0 {
-		return nil, fmt.Errorf("digest requires budget_chars > 0 (budget_tokens is unsupported_in_P0)")
+	// D4: exactly one budget, and a digest must have one — an unbudgeted
+	// digest is the whole corpus, which is precisely what a digest is not.
+	spec, err := rank.NewSpec(opts.BudgetChars, opts.BudgetTokens)
+	if err != nil {
+		return nil, err
+	}
+	spec.Ceiling = opts.BudgetCeilingChars
+	if !spec.Bounded() {
+		return nil, fmt.Errorf("digest requires a budget: pass budget_chars > 0 or budget_tokens > 0 (exactly one)")
 	}
 	cfg := d.readViewConfig(opts.AgentView)
 
@@ -578,6 +721,24 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 		}
 	}
 
+	// D3: the capability grant binds LAST, after mandatory items and
+	// subscription matches have been added — precisely because those three
+	// paths are exempt from the view's own hard filters, and a grant that
+	// anything can walk around is not a grant.
+	if confined, cerr := d.confineScope(opts.Confine); cerr != nil {
+		return nil, cerr
+	} else if confined != nil {
+		kept := candIDs[:0]
+		for _, id := range candIDs {
+			if confined[id] {
+				kept = append(kept, id)
+				continue
+			}
+			delete(mandatory, id)
+		}
+		candIDs = kept
+	}
+
 	// relevance: hybrid vs the interest query; none ⇒ R=1.0 uniformly
 	mode := "lexical_only"
 	lexRank := map[string]int{}
@@ -593,12 +754,24 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 		}
 		if e := d.emb(); e != nil {
 			if qvecs, err := e.Embed([]string{cfg.InterestQuery}); err == nil {
-				heads, herr := d.proj.HeadVectors(e.ModelID(), false)
-				if herr == nil && len(heads) > 0 {
-					for i, id := range topKCosine(heads, qvecs[0], config.FusionCandidatesVector) {
+				// D1: same routed top-K as search, but deliberately UNSCOPED
+				// (nil). The digest fuses a global lexical top-K with a global
+				// vector top-K, and reads a rank only for candidates that
+				// already survived the view's hard filters and the D3 grant —
+				// so nothing out of scope reaches the agent. Scoping only the
+				// vector half would tilt RRF toward it; scoping both is a
+				// ranking change, not an indexing one, and does not belong in
+				// a performance task.
+				ids, verr := d.proj.VectorTopK(e.ModelID(), qvecs[0], config.FusionCandidatesVector, false, nil)
+				if verr == nil {
+					for i, id := range ids {
 						vecRank[id] = i + 1
 					}
-					mode = "full"
+					if len(ids) > 0 {
+						mode = "full"
+					} else if has, herr := d.proj.HasVectors(e.ModelID()); herr == nil && has {
+						mode = "full"
+					}
 				}
 			}
 		}
@@ -630,6 +803,11 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 			LexRank:   lexRank[id],
 			VecRank:   vecRank[id],
 			Mandatory: mandatory[id],
+			DupKey:    row.BodyHash, // S8: content identity (spec §9.1)
+			ThreadKey: row.ThreadKey,
+			// D16: the live supersession (evidence always, score by profile)
+			SupersededBy: row.SupersededBy,
+			SupersededAt: row.SupersededAt,
 		}
 		if digestProfile.IsP2() {
 			c.Salience = p2[id].Salience
@@ -668,7 +846,7 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 	render := func(i int) string {
 		return d.renderDigestEntry(i+1, scored[i], rows[scored[i].MessageID], entryMeta[scored[i].MessageID], disputed[scored[i].MessageID], pendingRepl[scored[i].MessageID])
 	}
-	included, payload := rank.TakeWithinBudget(len(scored), opts.BudgetChars,
+	included, payload := rank.TakeWithinBudget(len(scored), spec.Limits(),
 		rank.BudgetRender{Header: header, Marker: "…truncated…\n"}, render)
 
 	// mandatory overflow accounting (drop-oldest-first is the sort order:
@@ -709,15 +887,7 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 	var expl []projection.ExplanationRow
 	for i := 0; i < included; i++ {
 		s := scored[i]
-		var rec componentsRecord
-		rec.R, rec.F, rec.Peff, rec.RRF = rank.Dec(s.R), rank.Dec(s.F), rank.Dec(s.Peff), rank.Dec(s.RRF)
-		rec.LexRank, rec.VecRank = s.Components.LexRank, s.Components.VecRank
-		rec.Score = rank.Dec(s.Score)
-		wR, wF, wP := profileWeights(digestProfile)
-		rec.Weights.R, rec.Weights.F, rec.Weights.P = rank.Dec(wR), rank.Dec(wF), rank.Dec(wP)
-		fillP2Components(&rec, s, digestProfile)
-		rec.CreatedAt = rows[s.MessageID].CreatedAt
-		rec.Mandatory = s.Mandatory
+		rec := buildExplanationRecord(s, digestProfile, rows[s.MessageID].CreatedAt)
 		blob, _ := json.Marshal(rec)
 		expl = append(expl, projection.ExplanationRow{MessageID: s.MessageID, ComponentsJSON: string(blob), FinalRank: i + 1})
 	}
@@ -731,6 +901,7 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 		Included:         included,
 		OmittedMandatory: omitted,
 		RetrievalMode:    mode,
+		Budget:           spec.Report(payload),
 	}
 	if r := d.thinSearchPartialReason(); r != "" {
 		dout.Partial, dout.PartialReason = true, r
@@ -739,7 +910,7 @@ func (d *Daemon) Digest(opts DigestOptions) (*DigestOutput, error) {
 	for i := 0; i < included; i++ {
 		so.Results = append(so.Results, RankedResult{MessageID: scored[i].MessageID})
 	}
-	d.recordInteraction("digest", interactionID, cfg.InterestQuery, opts.BudgetChars, so, opts.TaskID, opts.AgentView, "", opts.Principal)
+	d.recordInteraction("digest", interactionID, cfg.InterestQuery, dout.Budget, so, opts.TaskID, opts.AgentView, "", opts.Principal)
 	return dout, nil
 }
 
@@ -764,6 +935,12 @@ func (d *Daemon) renderDigestEntry(pos int, s rank.Scored, row projection.RankRo
 		// target — satisfied asynchronously as peers replicate.
 		tag += " [replication-pending]"
 	}
+	if row.SupersededBy != "" {
+		// D16: a live message has replaced this fact. The entry is still here —
+		// demotion, never deletion — but the reader is told, under every
+		// profile, before reading the excerpt.
+		tag += " [superseded]"
+	}
 	fmt.Fprintf(&b, "%d. %s%s score=%s\n", pos, s.MessageID, tag, rank.Dec(s.Score))
 	topics := ""
 	if len(meta.Topics) > 0 {
@@ -774,6 +951,9 @@ func (d *Daemon) renderDigestEntry(pos int, s rank.Scored, row projection.RankRo
 		topics = " · " + strings.Join(names, ", ")
 	}
 	fmt.Fprintf(&b, "   from %s · %s%s\n", inlineMeta(meta.Sender), row.CreatedAt, topics)
+	if row.SupersededBy != "" {
+		fmt.Fprintf(&b, "   superseded by %s at %s\n", row.SupersededBy, row.SupersededAt)
+	}
 	body, err := d.store.Get(row.BodyHash)
 	if err == nil {
 		lines := strings.Split(strings.TrimRight(string(body), "\n"), "\n")
@@ -830,11 +1010,58 @@ func (d *Daemon) WhyRanked(interactionID, messageID string) (string, error) {
 	term("P_eff", rec.Peff, rec.Weights.P, "   (executable priority, decayed)")
 	term("I", rec.I, rec.Weights.I, "   (operator intent)")
 	term("N", rec.N, rec.Weights.N, "   (novelty/exposure)")
+	// S8: the two §9.1 penalties, LAST because that is where the scorer adds
+	// them. Their weights are negative and equal to the cap, so the product is
+	// the penalty itself — capped by construction, never clamped after the fact.
+	// The annotation carries the evidence (how many earlier results shared the
+	// key, and which key), so the feature value is recomputable and not merely
+	// asserted.
+	term("DUP", rec.Dup, rec.Weights.Dup, fmt.Sprintf("   (%s; cap %s)",
+		penaltyEvidence(rec.DupAhead, "body", rec.DupKey), rank.Dec(config.PenaltyCap)))
+	term("SAT", rec.Sat, rec.Weights.Sat, fmt.Sprintf("   (%s; full at %s; cap %s)",
+		penaltyEvidence(rec.SatAhead, "thread", rec.ThreadKey),
+		rank.Dec(config.ThreadSaturationFullAt), rank.Dec(config.PenaltyCap)))
+	// D16: the supersession demotion, APPENDED after the S8 penalties because
+	// that is where the scorer adds it — the printed order is the arithmetic
+	// order (R51). The annotation carries the relation an auditor looks up to
+	// reproduce the feature, and says explicitly when a profile does not score
+	// it, so a zero here is never mistaken for "nothing superseded this".
+	term("SUP", rec.Sup, rec.Weights.Sup, supersessionEvidence(rec.SupBy, rec.SupAt, profile))
 	if rec.Mandatory != "" {
 		fmt.Fprintf(&b, "  mandatory: %s (inclusion class — not an additive score term)\n", rec.Mandatory)
 	}
 	fmt.Fprintf(&b, "  total %s\n", rec.Score)
 	return b.String(), nil
+}
+
+// penaltyEvidence renders the count a positional penalty was derived from and
+// the key it was counted over. The count is what makes the feature value
+// recomputable; the key is what lets an auditor recount it themselves.
+func penaltyEvidence(ahead int, sharing, key string) string {
+	if key == "" {
+		return "no key — exempt from this penalty"
+	}
+	if ahead == 1 {
+		return fmt.Sprintf("1 earlier result shares %s %s", sharing, key)
+	}
+	return fmt.Sprintf("%d earlier results share %s %s", ahead, sharing, key)
+}
+
+// supersessionEvidence renders the D16 relation behind the SUP term: which live
+// message ended this fact and when, which is what makes the feature value
+// recomputable by lookup rather than asserted. A profile that does not score
+// supersession says so in as many words — otherwise "SUP 0 × 0 = 0" on a
+// superseded message would read as "nothing superseded this", which is a false
+// statement in the one surface §9 exists to keep honest.
+func supersessionEvidence(supBy, supAt, profile string) string {
+	if supBy == "" {
+		return fmt.Sprintf("   (not superseded; cap %s)", rank.Dec(config.SupersessionPenaltyCap))
+	}
+	if !rank.Profile(profile).IsP2() {
+		return fmt.Sprintf("   (superseded by %s at %s; NOT weighted under %s)", supBy, supAt, profile)
+	}
+	return fmt.Sprintf("   (superseded by %s at %s; cap %s)", supBy, supAt,
+		rank.Dec(config.SupersessionPenaltyCap))
 }
 
 // --- enrichment ---------------------------------------------------------------
@@ -864,6 +1091,7 @@ func (d *Daemon) EnrichOnce(batch int) (int, error) {
 			continue // expired/missing: stays unembedded; lexical_only for it
 		}
 		vecs, err := e.Embed([]string{string(body)})
+		d.noteEmbed(err) // D10: a failing embedder is a reportable state, not just a log line
 		if err != nil {
 			return done, err
 		}
@@ -911,21 +1139,68 @@ type ThreadOutput struct {
 	Included      int    `json:"included"`
 	Omitted       int    `json:"omitted,omitempty"`
 	Payload       string `json:"payload"` // ≤ budget_chars, metadata included
+	// Withheld (D3) counts messages dropped because they lie outside the
+	// session's topic grant — distinct from Omitted, which is budget.
+	Withheld int `json:"withheld_out_of_scope,omitempty"`
+	// Budget (D4): mode, limit, tokenizer and the payload's cost in that unit.
+	Budget rank.Report `json:"budget"`
+}
+
+// ThreadOptions is one thread expansion request. It became a struct with D4:
+// a budget is now a mode plus a limit plus a capability ceiling, and three
+// more positional ints would have been unreadable.
+type ThreadOptions struct {
+	ThreadID string `json:"thread_id"`
+	// D4: exactly one of these; both is a refusal. Neither = unbudgeted.
+	BudgetChars  int `json:"budget_chars,omitempty"`
+	BudgetTokens int `json:"budget_tokens,omitempty"`
+	// BudgetCeilingChars (D4 × D3), Principal and Confine are dispatch-set.
+	BudgetCeilingChars int      `json:"-"`
+	Principal          string   `json:"-"`
+	Confine            []string `json:"-"`
 }
 
 // Thread renders a whole conversation. Until this existed an agent handed
 // a reply could see that a thread existed (peek exposes thread_id) but had
 // no way to read it. Bodies are quoted per line (untrusted content).
-func (d *Daemon) Thread(threadID string, budget int, principal string) (*ThreadOutput, error) {
+func (d *Daemon) Thread(opts ThreadOptions) (*ThreadOutput, error) {
+	threadID, confine, principal := opts.ThreadID, opts.Confine, opts.Principal
 	if threadID == "" {
 		return nil, fmt.Errorf("thread_id is required")
 	}
-	msgs, err := d.proj.ThreadMessages(threadID)
+	spec, err := rank.NewSpec(opts.BudgetChars, opts.BudgetTokens)
 	if err != nil {
 		return nil, err
 	}
+	spec.Ceiling = opts.BudgetCeilingChars
+	msgs, terr := d.proj.ThreadMessages(threadID)
+	if terr != nil {
+		return nil, terr
+	}
 	if len(msgs) == 0 {
 		return nil, fmt.Errorf("thread %s not found (or has no live messages)", threadID)
+	}
+	// D3: a thread crosses topics by construction — a reply is linked to its
+	// own topics, not its parent's — so the grant is applied per MESSAGE here,
+	// not per thread. The caller (dispatch) turns "everything withheld" into a
+	// typed refusal; a partially-in-scope thread renders its in-scope part and
+	// reports the count it withheld.
+	withheld := 0
+	if confined, cerr := d.confineScope(confine); cerr != nil {
+		return nil, cerr
+	} else if confined != nil {
+		kept := msgs[:0]
+		for _, m := range msgs {
+			if confined[m.MessageID] {
+				kept = append(kept, m)
+			} else {
+				withheld++
+			}
+		}
+		msgs = kept
+	}
+	if len(msgs) == 0 {
+		return &ThreadOutput{ThreadID: threadID, Withheld: withheld, Budget: spec.Report("")}, nil
 	}
 	interactionID := d.newUUID()
 	header := fmt.Sprintf("# thread %s — %d message(s)\ninteraction: %s\n\n", threadID, len(msgs), interactionID)
@@ -941,24 +1216,18 @@ func (d *Daemon) Thread(threadID string, budget int, principal string) (*ThreadO
 		}
 		return entry + "\n"
 	}
-	included := len(msgs)
-	payload := header
-	for i := range msgs {
-		payload += render(i)
-	}
-	if budget > 0 {
-		included, payload = rank.TakeWithinBudget(len(msgs), budget,
-			rank.BudgetRender{Header: header, Marker: "…truncated…\n"}, render)
-	}
+	included, payload := rank.TakeWithinBudget(len(msgs), spec.Limits(),
+		rank.BudgetRender{Header: header, Marker: "…truncated…\n"}, render)
 	out := &ThreadOutput{
 		InteractionID: interactionID, ThreadID: threadID,
 		Included: included, Omitted: len(msgs) - included, Payload: payload,
+		Withheld: withheld, Budget: spec.Report(payload),
 	}
 	so := &SearchOutput{Payload: payload, RetrievalMode: "thread"}
 	for i := 0; i < included; i++ {
 		so.Results = append(so.Results, RankedResult{MessageID: msgs[i].MessageID})
 	}
-	d.recordInteraction("thread", interactionID, threadID, budget, so, "", "", "", principal)
+	d.recordInteraction("thread", interactionID, threadID, out.Budget, so, "", "", "", principal)
 	return out, nil
 }
 
@@ -985,5 +1254,54 @@ func (d *Daemon) emb() embed.Embedder {
 func (d *Daemon) SetEmbedderForTest(e embed.Embedder) {
 	d.embMu.Lock()
 	d.embedder = e
+	// a different embedder's health is not this one's (D10)
+	d.embLastOK, d.embLastFail, d.embLastErr = time.Time{}, time.Time{}, ""
 	d.embMu.Unlock()
+}
+
+// noteEmbed records the outcome of a real Embed call (D10). Health is "did the
+// LAST call work", not a rate: an embedder subprocess that has started failing
+// fails every call, and one that recovers reports healthy on its next success.
+func (d *Daemon) noteEmbed(err error) {
+	d.embMu.Lock()
+	defer d.embMu.Unlock()
+	if err == nil {
+		d.embLastOK = d.now()
+		return
+	}
+	d.embLastFail = d.now()
+	d.embLastErr = err.Error()
+}
+
+// RetrievalStatus explains what search will actually do right now and, when
+// that is lexical-only, WHY.
+//
+// D10: `lexical_only` in a search response has always been `d.emb() == nil`,
+// which is NOT the ladder's rung 4 — same visible state, unrelated causes,
+// opposite remedies (provision the venv vs wait out the load vs fix a broken
+// embedder), and `cairn status` could not tell them apart.
+type RetrievalStatus struct {
+	Mode   string `json:"mode"`             // "hybrid" | "lexical_only"
+	Cause  string `json:"cause,omitempty"`  // "" | "no_embedder" | "ladder_rung_4" | "embedder_failing"
+	Detail string `json:"detail,omitempty"` // one line, naming the remedy
+}
+
+func (d *Daemon) RetrievalStatus() RetrievalStatus {
+	e := d.emb()
+	if e == nil {
+		return RetrievalStatus{Mode: "lexical_only", Cause: "no_embedder",
+			Detail: "no embedder configured; provision the embed venv (scripts/cairn-embed-bootstrap.sh) or set CAIRN_EMBED_PYTHON"}
+	}
+	if d.DegradationLevel().LexicalOnlyForced() {
+		return RetrievalStatus{Mode: "lexical_only", Cause: "ladder_rung_4",
+			Detail: "degradation ladder rung 4; the embedding backlog is shedding the vector query, and it clears as the enricher catches up"}
+	}
+	d.embMu.RLock()
+	failedAt, okAt, lastErr := d.embLastFail, d.embLastOK, d.embLastErr
+	d.embMu.RUnlock()
+	if !failedAt.IsZero() && failedAt.After(okAt) {
+		return RetrievalStatus{Mode: "lexical_only", Cause: "embedder_failing",
+			Detail: fmt.Sprintf("embedder %s is configured but its last call failed; %s", e.ModelID(), lastErr)}
+	}
+	return RetrievalStatus{Mode: "hybrid"}
 }

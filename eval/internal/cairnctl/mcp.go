@@ -143,6 +143,99 @@ func (s *MCPSession) Call(ctx context.Context, tool string, args map[string]any)
 	return &res, nil
 }
 
+// MCPEnvelope is the untrusted-content envelope cairn's MCP server wraps every
+// content-bearing result in. Only the fields the harness uses are declared;
+// Raw keeps the rest.
+//
+// Trust and Content are the E6 surface: Trust must say "untrusted" and Content
+// is the text an agent is actually handed. Both are recorded verbatim, because
+// "the envelope protects agents" is a claim about these exact bytes.
+type MCPEnvelope struct {
+	Kind          string `json:"kind"`
+	Trust         string `json:"trust"`
+	InteractionID string `json:"interaction_id,omitempty"`
+	RetrievalMode string `json:"retrieval_mode,omitempty"`
+	Partial       bool   `json:"partial,omitempty"`
+	PartialReason string `json:"partial_reason,omitempty"`
+	Included      int    `json:"included,omitempty"`
+	Omitted       int    `json:"omitted,omitempty"`
+	Content       *struct {
+		Mime string `json:"mime"`
+		Text string `json:"text"`
+	} `json:"content,omitempty"`
+	// Provenance is the daemon-authored attribution block. It is what lets an
+	// agent tell an operator's record from a stranger's, so E6 checks it: a
+	// content-level sender spoof is unanswerable without it.
+	Provenance *struct {
+		MessageID   string `json:"message_id"`
+		RevisionID  string `json:"revision_id,omitempty"`
+		Sender      string `json:"sender,omitempty"`
+		ContentHash string `json:"content_hash,omitempty"`
+	} `json:"provenance,omitempty"`
+	Raw string `json:"-"`
+}
+
+// Text returns the envelope's content, or "" when it carries none.
+func (e MCPEnvelope) Text() string {
+	if e.Content == nil {
+		return ""
+	}
+	return e.Content.Text
+}
+
+// DigestViaMCP generates the digest through the MCP tool rather than the CLI.
+//
+// WHY MCP AND NOT `cairn digest`. The CLI prints the payload and nothing else;
+// the MCP envelope carries the same daemon-generated payload PLUS the
+// interaction id, which is the key `cairn why-ranked` needs. Without it the
+// digest surface has no published ranking arithmetic and E4's ±freshness /
+// ±priority ablations could only ever run on search — which would be the wrong
+// answer, because the digest is where freshness matters most (a 72-hour
+// half-life against search's 90 days). It is also the surface an agent
+// actually reads.
+func (s *MCPSession) DigestViaMCP(ctx context.Context, budgetChars int) (*MCPEnvelope, error) {
+	args := map[string]any{}
+	if budgetChars > 0 {
+		args["budget_chars"] = budgetChars
+	}
+	return s.envelope(ctx, "cairn_digest", args)
+}
+
+// SearchViaMCP runs the search tool. Used by E6, where the surface an agent
+// reads is part of what is being evaluated.
+func (s *MCPSession) SearchViaMCP(ctx context.Context, query string, k, budgetChars int) (*MCPEnvelope, error) {
+	args := map[string]any{"query": query}
+	if k > 0 {
+		args["k"] = k
+	}
+	if budgetChars > 0 {
+		args["budget_chars"] = budgetChars
+	}
+	return s.envelope(ctx, "cairn_search", args)
+}
+
+// FetchViaMCP retrieves one body with provenance through the agent surface.
+func (s *MCPSession) FetchViaMCP(ctx context.Context, messageID string) (*MCPEnvelope, error) {
+	return s.envelope(ctx, "cairn_fetch", map[string]any{"message_id": messageID})
+}
+
+func (s *MCPSession) envelope(ctx context.Context, tool string, args map[string]any) (*MCPEnvelope, error) {
+	res, err := s.Call(ctx, tool, args)
+	if err != nil {
+		return nil, err
+	}
+	text := res.Text()
+	if res.IsError {
+		return nil, fmt.Errorf("mcp %s refused: %s", tool, text)
+	}
+	var env MCPEnvelope
+	if err := json.Unmarshal([]byte(text), &env); err != nil {
+		return nil, fmt.Errorf("parsing %s envelope: %w\n%s", tool, err, text)
+	}
+	env.Raw = text
+	return &env, nil
+}
+
 func (s *MCPSession) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

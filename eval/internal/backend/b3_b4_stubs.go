@@ -6,7 +6,7 @@ import (
 )
 
 // stub is a DECLARED, not accidental, gap: B3 (naive vector-DB RAG) and B4
-// (full-context stuffing) are part of EVAL-PLAN §5-E4's baseline set but
+// (full-context stuffing) are part of BUILD-PLAN §5-E4's baseline set but
 // neither can be built honestly in the T0 tier.
 //
 //   - B3 needs an embedding model and a vector store. Building it with

@@ -34,7 +34,7 @@ type Options struct {
 	DisplayName string
 
 	// Thin provisions a thin node (recent window only, partial universal
-	// search). EVAL-PLAN §9.4 measures partiality honesty on such a node.
+	// search). BUILD-PLAN §9.4 measures partiality honesty on such a node.
 	Thin bool
 
 	// SyncListen is passed to `cairn init --sync-listen`. It defaults to

@@ -69,6 +69,13 @@ func renderCompaction(c projection.CompactionStats, live int, ratio float64, gen
 	fmt.Fprintf(&b, "- %d events → %d live entities (compaction ratio %.2f×)\n\n", c.TotalEvents, live, ratio)
 	fmt.Fprintf(&b, "## current state\n\n")
 	fmt.Fprintf(&b, "- live messages: %d\n", c.LiveMessages)
+	// D16: of the live messages, how many still state the current fact. A
+	// superseded message is NOT compacted away — it stays live, fetchable and
+	// searchable with its attribution intact, and is only demoted — so it is
+	// reported here, under current state, rather than below under what
+	// collapsed.
+	fmt.Fprintf(&b, "- current (not superseded): %d\n", c.CurrentMessages)
+	fmt.Fprintf(&b, "- superseded by a later message: %d\n", c.SupersededMessages)
 	fmt.Fprintf(&b, "- active topic links: %d\n", c.ActiveTopicLinks)
 	fmt.Fprintf(&b, "- active pins: %d\n", c.ActivePins)
 	fmt.Fprintf(&b, "- active subscriptions: %d\n\n", c.ActiveSubscriptions)

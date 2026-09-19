@@ -17,3 +17,14 @@ var topicNameRe = regexp.MustCompile(TopicNamePattern)
 // rendered into agent-facing views); every path that creates or ingests one
 // MUST gate on this before the name becomes durable or projected (R53).
 func ValidTopicName(name string) bool { return topicNameRe.MatchString(name) }
+
+// TopicSelectorPattern is TopicNamePattern plus `*` — the shape of a D3
+// capability topic selector (spec §7.2 `topic="project/x/*"`). It lives beside
+// the name rule so a selector can never admit a character a topic name cannot
+// contain: a grant that cannot be written is a grant that cannot be confused.
+const TopicSelectorPattern = `^[a-z0-9*][a-z0-9/_*-]*$`
+
+var topicSelectorRe = regexp.MustCompile(TopicSelectorPattern)
+
+// ValidTopicSelector reports whether s is a well-formed topic selector.
+func ValidTopicSelector(s string) bool { return topicSelectorRe.MatchString(s) }

@@ -43,6 +43,17 @@ func pairPayload(t *testing.T, inv *identity.PairingInvitation) []byte {
 	return blob
 }
 
+// inviteTrust is the mesh membership the invitation proves from genesis — what
+// the joining node authenticates the INVITING node against (P3-5).
+func inviteTrust(t *testing.T, inv *identity.PairingInvitation) *identity.Trust {
+	t.Helper()
+	trust, _, err := identity.VerifyPairingInvitation(inv, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return trust
+}
+
 func invitePriv(t *testing.T, inv *identity.PairingInvitation) ed25519.PrivateKey {
 	t.Helper()
 	raw, err := base64.StdEncoding.DecodeString(inv.DevicePrivB64)
@@ -65,9 +76,10 @@ func TestP32cPairingHandshakeAdmitsRemotely(t *testing.T) {
 	}
 	cairnID := loaded.Portable.CairnID
 	inv := mintInvite(t, dir, time.Now())
+	meshTrust := inviteTrust(t, inv)
 
 	// a new node pairs over the wire
-	evID, err := peer.PairDial(addr, cairnID, pairPayload(t, inv), invitePriv(t, inv))
+	evID, err := peer.PairDial(addr, cairnID, pairPayload(t, inv), invitePriv(t, inv), meshTrust)
 	if err != nil {
 		t.Fatalf("pair dial: %v", err)
 	}
@@ -85,7 +97,7 @@ func TestP32cPairingHandshakeAdmitsRemotely(t *testing.T) {
 	}
 
 	// HARD single-use: a second pairing with the same invite is refused
-	if _, err := peer.PairDial(addr, cairnID, pairPayload(t, inv), invitePriv(t, inv)); err == nil {
+	if _, err := peer.PairDial(addr, cairnID, pairPayload(t, inv), invitePriv(t, inv), meshTrust); err == nil {
 		t.Fatal("second pairing with the same invitation accepted")
 	}
 }
@@ -103,7 +115,7 @@ func TestP32cPairingRejectsWrongKey(t *testing.T) {
 	// present the real (root-signed) cert but answer the challenge with a
 	// DIFFERENT key — key-possession must fail.
 	_, wrongPriv, _ := ed25519.GenerateKey(nil)
-	if _, err := peer.PairDial(addr, loaded.Portable.CairnID, pairPayload(t, inv), wrongPriv); err == nil {
+	if _, err := peer.PairDial(addr, loaded.Portable.CairnID, pairPayload(t, inv), wrongPriv, inviteTrust(t, inv)); err == nil {
 		t.Fatal("pairing accepted a dialer that does not hold the device key")
 	}
 	// nothing was admitted
@@ -142,7 +154,7 @@ func TestP32dPairedDeviceSyncsWithoutRestart(t *testing.T) {
 	}
 
 	// pair over the wire
-	if _, err := peer.PairDial(addr, cairnID, pairPayload(t, inv), priv); err != nil {
+	if _, err := peer.PairDial(addr, cairnID, pairPayload(t, inv), priv, dialerTrust); err != nil {
 		t.Fatalf("pair: %v", err)
 	}
 
@@ -216,7 +228,7 @@ func TestP32fPairJoinInstallAndAuthenticate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := peer.PairDial(addr, inv2.CairnID, payload, priv); err != nil {
+	if _, err := peer.PairDial(addr, inv2.CairnID, payload, priv, bt); err != nil {
 		t.Fatalf("pair dial: %v", err)
 	}
 
@@ -231,5 +243,48 @@ func TestP32fPairJoinInstallAndAuthenticate(t *testing.T) {
 		Invitation: inv2, Dir: dirB, Now: time.Now, Out: io.Discard,
 	}); err != nil {
 		t.Fatalf("pair join install not idempotent: %v", err)
+	}
+}
+
+// P3-5: an invitation minted by one mesh cannot pair with a node of ANOTHER
+// mesh — over the real wire, with two real daemons' worth of identity. The
+// refusal is mutual by construction: the node refuses a dialer claiming a cairn
+// that is not its own, and the dialer would refuse that node in turn because it
+// is absent from the invitation's genesis-verified chain. Nothing is admitted.
+func TestP35PairingRefusesForeignMesh(t *testing.T) {
+	t.Setenv("CAIRN_SYNC_ALLOW_LOOPBACK", "1")
+	t.Setenv("CAIRN_FAKE_VOLUME_STATUS", "encrypted")
+
+	// --- mesh A: mints an invitation (no daemon needed) ---
+	t.Setenv("CAIRN_DEVICE_STATE_DIR", t.TempDir())
+	dirA := filepath.Join(t.TempDir(), "cairnA")
+	if _, err := identity.Initialize(identity.InitOptions{Dir: dirA, SyncListen: "127.0.0.1:0", Out: io.Discard}); err != nil {
+		t.Fatal(err)
+	}
+	loadedA, err := identity.Load(dirA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv := mintInvite(t, dirA, time.Now())
+	trustA := inviteTrust(t, inv)
+
+	// --- mesh B: a completely separate cairn, listening ---
+	t.Setenv("CAIRN_DEVICE_STATE_DIR", t.TempDir())
+	dirB := filepath.Join(t.TempDir(), "cairnB")
+	if _, err := identity.Initialize(identity.InitOptions{Dir: dirB, SyncListen: "127.0.0.1:0", Out: io.Discard}); err != nil {
+		t.Fatal(err)
+	}
+	_, cancel, addrB := runListeningDaemon(t, dirB, &syncBuf{})
+	defer cancel()
+
+	if _, err := peer.PairDial(addrB, loadedA.Portable.CairnID, pairPayload(t, inv), invitePriv(t, inv), trustA); err == nil {
+		t.Fatal("an invitation for mesh A paired with a node of mesh B")
+	}
+	trustB, err := identity.MeshTrust(fsx.OS{}, dirB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trustB.Member(inv.Cert.DeviceID) {
+		t.Fatal("mesh B admitted a device from another mesh's invitation")
 	}
 }
