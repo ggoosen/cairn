@@ -74,6 +74,9 @@ The five commands above are the daily loop. The rest of what's built:
 **Attachments**
 - `cairn send "notes" --attach report.pdf --durability important --summary "Q3 audit"` — attachments become searchable through sandboxed deterministic extraction (size-capped, page-capped, hard-timeout, panics contained), with provenance back to the source blob via `cairn derivative list`. A sender's `--summary` is an untrusted claim, checked against the body; a divergent one is marked `[summary-disputed]` in digests.
 
+**Review accumulated handoffs**
+- `cairn review prepare --handoff <ids> --out <bundle.json>` snapshots selected notes for a human or agent reviewer. `cairn review packet --bundle <bundle.json> --proposals <proposals.json> --out <packet.md>` validates evidence and produces a local approval packet. No memory changes or automatic model calls. See [manual handoff review](docs/handoff-review.md).
+
 **Check its work**
 - `cairn doctor` — walk the whole log and verify every frame checksum, hash chain, signature, seal header, object, and cross-origin trust link. It reports; it never repairs. `cairn doctor fork` shows detected equivocation, `cairn doctor conflicts` your unresolved merge debt.
 - `cairn gates` — print the release gates (acknowledged-event loss, provenance, budget compliance, send-to-visible P95, blob durability, unresolved forks) computed live against your own mesh. It reports INCONCLUSIVE rather than faking a PASS on thin data.

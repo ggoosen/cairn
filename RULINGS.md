@@ -1115,3 +1115,28 @@ expiry (`PairingInviteTTL`) is anchored in the root-signed cert's
 issued_at (unforgeable); arrival consumption is hard single-use (replays
 refused, including within one daemon lifetime via the admitted-pairings
 set). Treat an unexpired unconsumed token like a credential.
+
+## R58 — Manual handoff review produces local proposals only
+
+Operator request (2026-11-03): manually review existing handoff notes and
+produce proposals for approval without changing memory. The first milestone
+uses explicitly selected handoff and optional target-memory IDs, fetched
+through the existing capability-aware read path. A local snapshot and reviewer
+instructions are prepared; a human or agent supplies structured proposals;
+Cairn validates evidence and renders an approval packet. No built-in model,
+network model calls, background schedule, approval-as-apply, or memory mutation
+is added. All source and proposal prose remains untrusted data. Output files
+are exclusive-create, outside the portable mesh, and never automatically ingested.
+This is a bounded review workflow, not an assertion that proposals are correct.
+
+### R58.1 — Review verification and future usefulness (2026-11-08)
+
+Every proposal declares observation, hypothesis, or tested_rule, explains its
+verification basis, supplies an explicit outcome-evidence array, and proposes
+a future test with a trigger, procedure and observable success criterion.
+A tested_rule requires at least one exact outcome citation from the selected
+snapshot. This validates evidence references, not their semantic sufficiency:
+verification remains a reviewer claim requiring human assessment. No tests
+are executed and approval still cannot apply changes. Reviewer guidance covers
+successful approaches and durable preferences as well as failures, and avoids
+redundant transient state. Transcript capture remains a separate milestone.
